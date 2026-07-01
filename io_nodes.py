@@ -351,7 +351,12 @@ def _seq_range(source):
 
 # --------------------------------------------------------------------------- saving
 
-def _save_still(path, rgb, fmt, bit_depth, alpha=None, colorspace=None):
+# EXR compression choices (Nuke Write style) -> cv2.IMWRITE_EXR_COMPRESSION_* suffix.
+_EXR_COMP = {"none": "NO", "rle": "RLE", "zips": "ZIPS", "zip": "ZIP",
+             "piz": "PIZ", "pxr24": "PXR24", "dwaa": "DWAA", "dwab": "DWAB"}
+
+
+def _save_still(path, rgb, fmt, bit_depth, alpha=None, colorspace=None, compression="zip"):
     """Write one frame. bit_depth per format: exr 16f/32f (half/float), tiff 8/16/32f, png 8/16, jpeg 8.
     alpha (H,W) -> RGBA (exr/tiff/png; ignored for jpeg). colorspace is stamped into the file metadata
     where the format allows it (png text, tiff description, jpeg comment)."""
@@ -370,6 +375,12 @@ def _save_still(path, rgb, fmt, bit_depth, alpha=None, colorspace=None):
             params = [int(cv2.IMWRITE_EXR_TYPE), int(t)]
         except Exception:
             params = []
+        try:                                             # EXR compression (Nuke-style choice); ZIP = lossless default
+            comp = getattr(cv2, "IMWRITE_EXR_COMPRESSION_" + _EXR_COMP.get(compression, "ZIP"), None)
+            if comp is not None:
+                params += [int(cv2.IMWRITE_EXR_COMPRESSION), int(comp)]
+        except Exception:
+            pass
         bgr = rgb[..., ::-1].astype(np.float32)
         data = np.dstack([bgr, alpha.astype(np.float32)]) if has_a else bgr   # BGRA for cv2
         cv2.imwrite(path, np.ascontiguousarray(data), params)                 # (EXR colorspace attr: TODO OpenEXR)
@@ -523,6 +534,28 @@ class OCIORead:
 _STILL_EXT = {"exr": "exr", "tiff": "tif", "png": "png", "jpeg": "jpg"}
 
 
+# Short, recognizable filename tags for the common OCIO / ACES colorspaces: keep the CORE token, drop the
+# descriptive tail (" - Display", "Rec.1886 ...", camera/EI suffixes). Most specific token first.
+_CS_TAG_RULES = [
+    ("acescct", "acescct"), ("acescc", "acescc"), ("acescg", "acescg"), ("aces2065", "aces2065"),
+    ("logc", "logc"), ("canon log", "clog"), ("clog", "clog"), ("slog", "slog"), ("v-log", "vlog"), ("vlog", "vlog"),
+    ("rec.2020", "rec2020"), ("rec2020", "rec2020"),
+    ("rec.709", "rec709"), ("rec709", "rec709"), (" 709", "rec709"),
+    ("display p3", "p3"), ("p3-d", "p3"), ("p3", "p3"),
+    ("srgb", "srgb"),
+    ("linear", "linear"),
+]
+
+def _cs_tag(name):
+    """Colorspace name -> short filename token: 'sRGB - Display' -> 'srgb', 'Rec.1886 Rec.709 - Display' -> 'rec709',
+    'ARRI LogC3 (EI800)' -> 'logc', 'ACEScg' -> 'acescg'. Unknown names fall back to a trimmed sanitize."""
+    low = (name or "").lower()
+    for needle, tag in _CS_TAG_RULES:
+        if needle in low:
+            return tag
+    return re.sub(r"[^a-z0-9]+", "_", low).strip("_")[:24]
+
+
 class OCIOWrite:
     """Color-manage an IMAGE batch and write it (Nuke: Write).
 
@@ -563,6 +596,12 @@ class OCIOWrite:
                          "tooltip": "Nuke 'Raw Data': write the pixels as-is, skipping the from->out colorspace conversion."}),
             "output_folder": ("STRING", {"default": "", "tooltip": "Server folder. Empty = ComfyUI output dir. Relative = under it. Use the browse button."}),
             "filename": ("STRING", {"default": "ocio_out", "tooltip": "Base name. Numbering / extension are added automatically."}),
+            "colorspace_in_name": ("BOOLEAN", {"default": True,
+                                    "tooltip": "Put the output colorspace in the file name, before the frame number: name_acescg.0001.exr. Uses the sanitized output_colorspace (or 'raw' when Raw Data is on)."}),
+            "auto_colorspace": ("BOOLEAN", {"default": True,
+                                 "tooltip": "When the input is wired from LTX's LTXVHDRDecodePostprocess (SDR->HDR), auto-set from_colorspace = 'Linear Rec.709 (sRGB)' and output_colorspace = 'ACEScg', so you do not have to. Editing the colorspaces by hand still wins. Front-end only."}),
+            "compression": (["zip", "zips", "piz", "pxr24", "dwaa", "dwab", "rle", "none"], {"default": "zip",
+                            "tooltip": "EXR compression (Nuke Write style). ZIP / ZIPS = lossless (default). PIZ = lossless, good for grain. DWAA / DWAB = smaller, lossy. Applies to EXR only."}),
         }, "optional": {
             "alpha": ("MASK", {"tooltip": "Optional alpha channel -> RGBA (EXR / TIFF / PNG; ignored for JPEG). Wire OCIO Read's alpha output, or any MASK."}),
             "fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 240.0, "step": 0.001,
@@ -583,7 +622,8 @@ class OCIOWrite:
 
     def write(self, images, from_colorspace, output_colorspace, container, still_format, video_codec,
               bit_depth, auto_range, first_frame, last_frame, start_number, source_start, raw_data,
-              output_folder, filename, alpha=None, fps=24.0):
+              output_folder, filename, colorspace_in_name=True, auto_colorspace=True, compression="zip",
+              alpha=None, fps=24.0):
         img = images if raw_data else _convert(images, from_colorspace, output_colorspace)
         arr = img.detach().cpu().numpy().astype(np.float32)
         a_arr = None
@@ -596,6 +636,8 @@ class OCIOWrite:
         name = filename.strip() or "ocio_out"
         cs = None if raw_data else output_colorspace                       # colorspace stamped in metadata
         base = source_start if source_start else 1                         # logical number of the first batch frame
+        tag = ("raw" if raw_data else _cs_tag(output_colorspace)) if colorspace_in_name else ""
+        stem = f"{name}_{tag}" if tag else name                            # e.g. name_acescg.0001.exr
 
         def alpha_of(src_a, i, ref):
             if src_a is None:
@@ -606,8 +648,8 @@ class OCIOWrite:
         if container == "still image":
             ext = _STILL_EXT[still_format]
             idx = min(max(0, first_frame - base), n - 1)                   # frame number -> batch index
-            saved = os.path.join(folder, f"{name}.{ext}")
-            _save_still(saved, arr[idx], still_format, bit_depth, alpha_of(a_arr, idx, arr[idx]), cs)
+            saved = os.path.join(folder, f"{stem}.{ext}")
+            _save_still(saved, arr[idx], still_format, bit_depth, alpha_of(a_arr, idx, arr[idx]), cs, compression)
             count, preview = 1, arr[idx]
         else:
             s = max(0, first_frame - base)                                 # frame numbers -> batch sub-range
@@ -617,14 +659,14 @@ class OCIOWrite:
                 raise RuntimeError(f"nothing in write range [{first_frame}-{last_frame}] (input has {n} frame(s))")
             if container == "video":
                 ext = ".mov" if video_codec.startswith(("prores", "dnxhr")) else ".mp4"
-                saved = os.path.join(folder, name + ext)
+                saved = os.path.join(folder, stem + ext)
                 save_video(sub, saved, video_codec, float(fps) if fps and fps > 0 else 24.0)
             else:                                                          # sequence
                 ext = _STILL_EXT[still_format]
                 for i in range(sub.shape[0]):
-                    _save_still(os.path.join(folder, f"{name}.{start_number + i:04d}.{ext}"),
-                                sub[i], still_format, bit_depth, alpha_of(sub_a, i, sub[i]), cs)
-                saved = os.path.join(folder, f"{name}.{start_number:04d}.{ext}")
+                    _save_still(os.path.join(folder, f"{stem}.{start_number + i:04d}.{ext}"),
+                                sub[i], still_format, bit_depth, alpha_of(sub_a, i, sub[i]), cs, compression)
+                saved = os.path.join(folder, f"{stem}.{start_number:04d}.{ext}")
             count, preview = sub.shape[0], sub[0]
 
         return {"ui": {"images": self._preview(preview),

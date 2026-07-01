@@ -181,6 +181,41 @@ flips in / out.
 
 ---
 
+## Recipe: LTX-2.3 SDR-to-HDR, written as an ACEScg EXR sequence
+
+**OCIO Write takes the LTX-2.3 HDR IC-LoRA output and writes it as an ACEScg EXR sequence.** LTX's HDR IC-LoRA
+encodes the HDR range with the ARRI LogC3 curve on **Rec.709 primaries**. There are two ways to wire it to this pack.
+
+**Method A, one node (use LTX's own decoder).** LTX's `LTXVHDRDecodePostprocess` node undoes the LogC3 curve and
+gives a linear-HDR `IMAGE` on its `hdr_linear` output, a plain ComfyUI `IMAGE` that pipes straight into **OCIO Write**:
+
+```
+... VAE Decode -> LTXVHDRDecodePostprocess -> (hdr_linear) -> OCIO Write
+```
+
+Wire it and OCIO Write auto-detects the LTX node upstream and sets `from_colorspace = Linear Rec.709 (sRGB)` and
+`output_colorspace = ACEScg` for you (`auto_colorspace`, on by default).
+
+**Method B, our chain (skip LTX's decoder).** Do the whole decode on this pack: tap LTX's `VAE Decode` output (the
+raw LogC3 plate), run **OCIO LogConvert** (`log_to_lin`, curve `logc3`) to get linear Rec.709, then **OCIO ColorSpace**
+(`Linear Rec.709 (sRGB)` -> `ACEScg`), then **OCIO Write**:
+
+```
+... VAE Decode -> OCIO LogConvert (logc3) -> OCIO ColorSpace (Rec.709 -> ACEScg) -> OCIO Write
+```
+
+Use OCIO LogConvert's **`logc3`** curve, NOT the config's "ARRI LogC3" colorspace: that one assumes ARRI Wide Gamut
+primaries and would shift the gamut, but LTX keeps Rec.709.
+
+On either OCIO Write set `container = sequence`, `still_format = exr`, `bit_depth = 16f` (the 16-bit half float LTX
+targets). With `colorspace_in_name` on (default) the files come out `name_acescg.0001.exr, name_acescg.0002.exr, ...`.
+
+Verified on a live ComfyUI: the real `LTXVHDRDecodePostprocess` `hdr_linear` -> OCIO Write path writes a two-frame
+ACEScg EXR sequence with HDR values (well above 1.0) preserved; the `logc3` curve round-trips and matches LTX's own
+decode to float precision. As with any EXR here, set `OPENCV_IO_ENABLE_OPENEXR=1` before ComfyUI starts.
+
+---
+
 ## Example workflow
 
 `example_workflows/OCIO_Nodes.json` shows all eight nodes on one image. To open it:

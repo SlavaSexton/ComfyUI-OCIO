@@ -56,19 +56,42 @@ function showWidget(node, w, visible) {
     }
 }
 
+// the "_colorspace" the Write node injects before the frame number (mirrors io_nodes.py _cs_tag)
+const CS_TAG_RULES = [
+    ["acescct", "acescct"], ["acescc", "acescc"], ["acescg", "acescg"], ["aces2065", "aces2065"],
+    ["logc", "logc"], ["canon log", "clog"], ["clog", "clog"], ["slog", "slog"], ["v-log", "vlog"], ["vlog", "vlog"],
+    ["rec.2020", "rec2020"], ["rec2020", "rec2020"],
+    ["rec.709", "rec709"], ["rec709", "rec709"], [" 709", "rec709"],
+    ["display p3", "p3"], ["p3-d", "p3"], ["p3", "p3"],
+    ["srgb", "srgb"],
+    ["linear", "linear"],
+];
+function csCore(name) {
+    const low = (name || "").toLowerCase();
+    for (const [needle, tag] of CS_TAG_RULES) if (low.includes(needle)) return tag;
+    return low.replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 24);
+}
+function csTag(node) {
+    if (!(W(node, "colorspace_in_name")?.value)) return "";
+    if (W(node, "raw_data")?.value) return "_raw";
+    const cs = csCore(W(node, "output_colorspace")?.value || "");
+    return cs ? "_" + cs : "";
+}
+
 // the output filename example shown on the Write node
 function exampleName(node) {
     const name = (W(node, "filename")?.value || "ocio_out").trim() || "ocio_out";
+    const t = csTag(node);
     const c = W(node, "container")?.value;
     if (c === "video") {
         const v = W(node, "video_codec")?.value || "";
-        return name + (v.startsWith("prores") || v.startsWith("dnxhr") ? ".mov" : ".mp4");
+        return name + t + (v.startsWith("prores") || v.startsWith("dnxhr") ? ".mov" : ".mp4");
     }
     const ext = STILL_EXT[W(node, "still_format")?.value] || "exr";
-    if (c === "still image") return `${name}.${ext}`;
+    if (c === "still image") return `${name}${t}.${ext}`;
     const s = W(node, "start_number")?.value ?? 1;
     const pad = (n) => String(n).padStart(4, "0");
-    return `${name}.${pad(s)}.${ext}, ${name}.${pad(s + 1)}.${ext} ...`;
+    return `${name}${t}.${pad(s)}.${ext}, ${name}${t}.${pad(s + 1)}.${ext} ...`;
 }
 
 async function fillRange(node, source) {
@@ -142,8 +165,30 @@ function syncWriteFromUpstream(node) {
 }
 function resyncAllWrites() {
     for (const nd of (app.graph && app.graph._nodes) || []) {
-        if (nd.type === "OCIOWrite") syncWriteFromUpstream(nd);
+        if (nd.type === "OCIOWrite") { syncWriteFromUpstream(nd); applyAutoColorspace(nd); }
     }
+}
+// ---- auto colorspace: wired from LTX's HDR decode node -> set Linear Rec.709 -> ACEScg automatically ---------
+function findUpstreamType(node, typeName, seen) {
+    seen = seen || new Set();
+    if (!node || seen.has(node.id)) return null;
+    seen.add(node.id);
+    if (node.type === typeName) return node;
+    for (const inp of (node.inputs || [])) {
+        if (inp.link == null) continue;
+        const link = app.graph.links[inp.link];
+        if (!link) continue;
+        const found = findUpstreamType(app.graph.getNodeById(link.origin_id), typeName, seen);
+        if (found) return found;
+    }
+    return null;
+}
+function applyAutoColorspace(node) {
+    if (!(W(node, "auto_colorspace")?.value)) return;                 // only while auto is ON
+    if (!findUpstreamType(node, "LTXVHDRDecodePostprocess")) return;  // only for an LTX HDR upstream
+    setWSilent(node, "from_colorspace", "Linear Rec.709 (sRGB)");     // LTX hdr_linear = scene-linear Rec.709
+    setWSilent(node, "output_colorspace", "ACEScg");                  // grade space
+    node.setDirtyCanvas(true, true);
 }
 
 // wrap a widget's callback so we also run `after(value)`
@@ -402,26 +447,27 @@ app.registerExtension({
                 });
                 // auto frame range / fps from the upstream OCIO Read
                 onChange(this, "auto_range", (v) => { if (v) syncWriteFromUpstream(node); });
+                onChange(this, "auto_colorspace", (v) => { if (v) applyAutoColorspace(node); });
                 for (const w of ["first_frame", "last_frame", "start_number"]) {
                     onChange(this, w, () => { const ar = W(node, "auto_range"); if (ar) ar.value = false; });  // manual edit -> auto OFF
                 }
                 this.addWidget("button", "📁 browse output folder", null, () => openFolderDialog(this), { serialize: false });
                 this.addWidget("button", "▶ Render", null, () => app.queuePrompt(0, 1), { serialize: false });
-                setTimeout(() => { applyContainer(); syncWriteFromUpstream(node); }, 0);
+                setTimeout(() => { applyContainer(); syncWriteFromUpstream(node); applyAutoColorspace(node); }, 0);
                 return r;
             };
             const onConn = nodeType.prototype.onConnectionsChange;
             nodeType.prototype.onConnectionsChange = function () {
                 const r = onConn ? onConn.apply(this, arguments) : undefined;
                 const node = this;
-                setTimeout(() => syncWriteFromUpstream(node), 0);   // wire (re)connected -> pull range/fps
+                setTimeout(() => { syncWriteFromUpstream(node); applyAutoColorspace(node); }, 0);   // wire (re)connected -> pull range/fps + auto colorspace
                 return r;
             };
             const onConfigW = nodeType.prototype.onConfigure;
             nodeType.prototype.onConfigure = function () {
                 const r = onConfigW ? onConfigW.apply(this, arguments) : undefined;
                 const node = this;
-                setTimeout(() => syncWriteFromUpstream(node), 0);   // loaded workflow -> re-detect
+                setTimeout(() => { syncWriteFromUpstream(node); applyAutoColorspace(node); }, 0);   // loaded workflow -> re-detect
                 return r;
             };
             const onDraw = nodeType.prototype.onDrawForeground;

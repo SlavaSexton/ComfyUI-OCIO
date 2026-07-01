@@ -221,10 +221,28 @@ def _acescc_to_lin(y):
     return np.where(y < (9.72 - 15.0) / 17.52, (np.exp2(y * 17.52 - 9.72) - 2.0 ** -16) * 2.0,
             np.where(y < (np.log2(65504.0) + 9.72) / 17.52, np.exp2(y * 17.52 - 9.72), 65504.0)).astype(np.float32)
 
+# ARRI LogC3 (EI 800) - the tone curve LTX-2's HDR IC-LoRA uses to fit HDR into [0,1]. Curve ONLY: the LTX data
+# stays in Rec.709 primaries, so pair this with a Rec.709 -> ACEScg colorspace step, NOT the config's "ARRI LogC3"
+# (that one assumes ARRI Wide Gamut primaries and would shift the gamut). Published ARRI constants.
+_LC3_A, _LC3_B, _LC3_C, _LC3_D = 5.555556, 0.052272, 0.247190, 0.385537
+_LC3_E, _LC3_F, _LC3_CUT = 5.367655, 0.092809, 0.010591
+
+def _lin_to_logc3(x):
+    x = np.maximum(np.asarray(x, np.float64), 0.0)
+    return np.where(x >= _LC3_CUT, _LC3_C * np.log10(_LC3_A * x + _LC3_B) + _LC3_D,
+                    _LC3_E * x + _LC3_F).astype(np.float32)
+
+def _logc3_to_lin(y):
+    y = np.asarray(y, np.float64)
+    cut_log = _LC3_E * _LC3_CUT + _LC3_F
+    return np.where(y >= cut_log, (10.0 ** ((y - _LC3_D) / _LC3_C) - _LC3_B) / _LC3_A,
+                    (y - _LC3_F) / _LC3_E).astype(np.float32)
+
 _CURVES = {
     "cineon": (_lin_to_cineon, _cineon_to_lin),
     "acescct": (_lin_to_acescct, _acescct_to_lin),
     "acescc": (_lin_to_acescc, _acescc_to_lin),
+    "logc3": (_lin_to_logc3, _logc3_to_lin),
 }
 
 
@@ -232,15 +250,16 @@ _CURVES = {
 
 class OCIOLogConvert:
     """Linear <-> log (Nuke: OCIOLogConvert). Default curve Cineon (Nuke's flat film log, black 0 -> 0.0928);
-    also ACEScct, ACEScc. Dependency-free. The 'swap direction' button flips lin<->log."""
+    also ACEScct, ACEScc, and ARRI LogC3 EI800 (the curve LTX-2's HDR IC-LoRA uses - decode a LogC3 plate to
+    linear on OUR nodes without the config's ARRI gamut assumption). Dependency-free. 'swap direction' flips lin<->log."""
 
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
             "image": ("IMAGE",),
             "operation": (["lin_to_log", "log_to_lin"], {"default": "lin_to_log"}),
-            "curve": (["cineon", "acescct", "acescc"], {"default": "cineon",
-                      "tooltip": "cineon = Nuke flat film log (black 0.0928). acescct = ACES log with a toe (0.0729). acescc = pure ACES log."}),
+            "curve": (["cineon", "acescct", "acescc", "logc3"], {"default": "cineon",
+                      "tooltip": "cineon = Nuke flat film log (black 0.0928). acescct = ACES log with a toe (0.0729). acescc = pure ACES log. logc3 = ARRI LogC3 EI800, the LTX-2 HDR curve (log_to_lin decodes an LTX LogC3 plate to linear; keep Rec.709 primaries, then convert Rec.709 -> ACEScg)."}),
             "mix": _mix_input(),
         }}
 

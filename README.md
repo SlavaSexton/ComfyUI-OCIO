@@ -186,6 +186,12 @@ flips in / out.
 **OCIO Write takes the LTX-2.3 HDR IC-LoRA output and writes it as an ACEScg EXR sequence.** LTX's HDR IC-LoRA
 encodes the HDR range with the ARRI LogC3 curve on **Rec.709 primaries**. There are two ways to wire it to this pack.
 
+<div align="center">
+
+<img src="docs/assets/ltx_hdr_to_acescg.png" width="880" alt="Both methods on one graph: Method A hangs OCIO Write off LTX's LTXVHDRDecodePostprocess.hdr_linear; Method B runs LTX's VAE Decode through OCIO LogConvert (logc3) then OCIO ColorSpace (Rec.709 to ACEScg) into OCIO Write.">
+
+</div>
+
 **Method A, one node (use LTX's own decoder).** LTX's `LTXVHDRDecodePostprocess` node undoes the LogC3 curve and
 gives a linear-HDR `IMAGE` on its `hdr_linear` output, a plain ComfyUI `IMAGE` that pipes straight into **OCIO Write**:
 

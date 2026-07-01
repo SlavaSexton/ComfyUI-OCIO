@@ -50,6 +50,17 @@ _FFMPEG = shutil.which("ffmpeg") or "ffmpeg"     # relies on ffmpeg being on PAT
 _dir = os.path.dirname(_FFMPEG)
 _FFPROBE = shutil.which("ffprobe") or (os.path.join(_dir, "ffprobe.exe") if _dir else "ffprobe")
 
+
+def _require_ffmpeg():
+    """Video Read/Write shell out to ffmpeg (the codec engine for ProRes/DNxHR/h264/hevc). Fail with a clear
+    message if it is not installed, rather than a cryptic FileNotFoundError. Stills need no ffmpeg."""
+    if shutil.which("ffmpeg") is None and not os.path.isfile(_FFMPEG):
+        raise RuntimeError(
+            "Video needs ffmpeg on your PATH (a full build, for ProRes / DNxHR / h264 / hevc). Install it from "
+            "gyan.dev (Windows), 'brew install ffmpeg' (macOS) or your package manager, then restart ComfyUI. "
+            "Stills and image sequences (EXR / TIFF / PNG / JPEG) work without ffmpeg.")
+
+
 STILL_EXTS = (".exr", ".hdr", ".tif", ".tiff", ".png", ".jpg", ".jpeg", ".bmp", ".dpx")
 VIDEO_EXTS = (".mov", ".mp4", ".mkv", ".avi", ".webm", ".mxf", ".m4v")
 
@@ -233,6 +244,7 @@ def _video_fps(info):
 
 def _read_video(path, frame_start, frame_count):
     """Decode a video -> float32 RGB [N,H,W,3] (0..1) via ffmpeg piping 16-bit rgb48le."""
+    _require_ffmpeg()
     probe = subprocess.run([_FFPROBE, "-v", "error", "-select_streams", "v:0",
                             "-show_entries", "stream=width,height,nb_frames,codec_name,r_frame_rate,avg_frame_rate",
                             "-of", "default=noprint_wrappers=1", path], capture_output=True, text=True)
@@ -397,6 +409,7 @@ def _save_still(path, rgb, fmt, bit_depth, alpha=None, colorspace=None):
 
 
 def save_video(arr01, out_path, codec, fps):
+    _require_ffmpeg()
     n, h, w, _ = arr01.shape
     enc = {
         "prores_4444": ["-c:v", "prores_ks", "-profile:v", "4", "-pix_fmt", "yuv444p10le"],

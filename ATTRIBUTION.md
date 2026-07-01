@@ -4,6 +4,13 @@ The **ComfyUI-OCIO** node code (`nodes.py`, `io_nodes.py`, `__init__.py`, the `w
 workflow) is original and MIT-licensed - see [`LICENSE`](LICENSE). Author: **Slava Sexton**, for
 **[AI VFX NEWS](https://t.me/AI_VFX_NEWS)**.
 
+## Reuse and credit
+
+The MIT license lets you reuse this freely. In return, keep the copyright notice **and credit
+`Slava Sexton` as the author** whenever you reuse this work - **in full, in part, as a derivative, or as the
+design / idea**. This holds wherever it is used, including inside
+**[ComfyUI-Agent-Kit](https://github.com/SlavaSexton/ComfyUI-Agent-Kit)** and any other project.
+
 ## Built on
 
 The nodes are a thin ComfyUI layer over established color tools. Credit to their authors; each keeps its own

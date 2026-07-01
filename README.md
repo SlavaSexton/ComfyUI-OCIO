@@ -4,7 +4,9 @@
 
 # ComfyUI-OCIO
 
-**Nuke-style OpenColorIO color nodes for ComfyUI. Read a sequence, grade in ACES, write ProRes - fully color-managed.**
+**Nuke-style OpenColorIO color nodes for ComfyUI.**
+<br>
+**Read a sequence, grade in ACES, write ProRes - fully color-managed.**
 
 **By [AI VFX NEWS](https://t.me/AI_VFX_NEWS) · Slava Sexton.**
 
@@ -54,9 +56,24 @@ it installs from Manager's node list. Until then, use the manual clone above.
 
 - **OpenColorIO** (`pip install opencolorio`) - the color engine. All nodes except **OCIO LogConvert** need it.
 - **OpenCV** (`opencv-python-headless`), **tifffile**, **Pillow**, **numpy** - image IO.
-- **ffmpeg** on `PATH` - for video Read / Write (ProRes, DNxHR, h264, hevc). Optional if you only use stills.
 
-`requirements.txt` covers the Python packages; ffmpeg you install yourself.
+`requirements.txt` covers all of the Python packages above (`pip install -r requirements.txt`).
+
+### Video and codecs (ffmpeg)
+
+**Stills and image sequences need nothing extra** - EXR / TIFF / PNG / JPEG go through OpenCV, tifffile and
+Pillow, installed by `requirements.txt`.
+
+**Video needs ffmpeg.** ffmpeg *is* the codec engine: ProRes, DNxHR, h264 and hevc all come from it, so OCIO
+Read / Write shell out to `ffmpeg` (and `ffprobe`) for any `.mov` / `.mp4`. You install it yourself, once, and
+it must be a **full build** (the codecs above are only in full builds) on your system `PATH`:
+
+- **Windows:** [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) *full* build, or `winget install Gyan.FFmpeg`.
+- **macOS:** `brew install ffmpeg`.
+- **Linux:** `apt install ffmpeg` (or your distro's package).
+
+Check it is found with `ffmpeg -version` in a terminal. If ffmpeg is not on `PATH`, the still/sequence nodes
+still work - only the video container in OCIO Read / Write is unavailable, and it says so.
 
 ## Colorspaces, the short version
 

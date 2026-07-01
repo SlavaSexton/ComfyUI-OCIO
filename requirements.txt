@@ -1,0 +1,5 @@
+opencolorio>=2.2
+opencv-python-headless
+tifffile
+Pillow
+numpy

@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.DS_Store
+Thumbs.db
+
+# Local asset generators (they depend on the private herogen; only the rendered PNGs in docs/assets ship)
+tools/assets/

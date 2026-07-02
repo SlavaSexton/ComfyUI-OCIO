@@ -282,96 +282,153 @@ function _thumbQuery(node, src) {
         raw: W(node, "raw_data")?.value ? "1" : "0", rand: String(Date.now()) }).toString();
 }
 // ---- Nuke-style transport bar for the video viewport (client-side, drives the hidden <video>; the WebGL
-// loop renders whatever frame it lands on). Repeat / Bounce mode, jump to first/last, step one frame,
-// play reverse / stop / play forward / pause, a frame counter with step arrows, and a scrub timeline.
-// Shown only for a video source.
+// loop renders whatever frame it lands on). A numbered timeline ruler with a draggable playhead and in / out
+// range handles, Repeat / Bounce, go to first / last, play reverse / forward, step one frame, step by N, a
+// frame field, and a range-reset. The in / out handles ARE the node's start_frame / end_frame widgets (single
+// source of truth): dragging a handle edits the field, editing the field moves the handle, and playback loops
+// or bounces inside [in, out]. Shown only for a video source.
 const _SVG = {
-    first:   '<path d="M5 3v10M13 3l-6 5 6 5z"/>',
-    stepB:   '<path d="M6 3v10M13 4l-6 4 6 4z"/>',
-    playRev: '<path d="M12 3L4 8l8 5z"/>',
-    stop:    '<rect x="4" y="4" width="8" height="8"/>',
-    play:    '<path d="M4 3l8 5-8 5z"/>',
+    first:   '<path d="M4 3v10M13 3l-7 5 7 5z"/>',                 // |<  to first / in
+    last:    '<path d="M12 3v10M3 3l7 5-7 5z"/>',                  // >|  to last / out
+    playRev: '<path d="M13 3l-6 5 6 5zM7 3l-5 5 5 5z"/>',          // <<  play reverse
+    playFwd: '<path d="M3 3l6 5-6 5zM9 3l5 5-5 5z"/>',             // >>  play forward
+    stepB:   '<path d="M11 3l-7 5 7 5z"/>',                        // <   step back one
+    stepF:   '<path d="M5 3l7 5-7 5z"/>',                          // >   step forward one
     pause:   '<path d="M4 3h3v10H4zM9 3h3v10H9z"/>',
-    stepF:   '<path d="M10 3v10M3 4l6 4-6 4z"/>',
-    last:    '<path d="M11 3v10M3 3l6 5-6 5z"/>',
     loop:    '<path fill="none" stroke="currentColor" stroke-width="1.5" d="M4.5 9a3.5 3.5 0 1 1 1 2.5"/><path d="M3 7.5l1.6 2.6 2.2-1.9z"/>',
     bounce:  '<path d="M3 8l3-3v2h4V5l3 3-3 3v-2H6v2z"/>',
+    reset:   '<path fill="none" stroke="currentColor" stroke-width="1.4" d="M12 6.5A4 4 0 1 0 12.6 10"/><path d="M12.6 2.5v3.2h-3.2z"/>',
 };
 function _tBtn(icon, title) {
-    const b = document.createElement("button"); b.title = title;
-    b.style.cssText = "width:20px;height:18px;padding:0;margin:0 1px;border:0;border-radius:3px;background:#2a2a2a;color:#cfe;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;";
-    b.innerHTML = `<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">${icon}</svg>`;
+    const b = document.createElement("button"); b.title = title; b.dataset.icon = "1";
+    b.style.cssText = "width:19px;height:17px;padding:0;margin:0;border:0;border-radius:2px;background:#2a2a2a;color:#dbe6f0;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;";
+    b.innerHTML = `<svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor">${icon}</svg>`;
     b.onmouseenter = () => b.style.background = "#39395a"; b.onmouseleave = () => b.style.background = "#2a2a2a";
     return b;
 }
-function _pbFrames(p) { return Math.max(1, Math.round((p.video.duration || 0) * (p.pb.fps || 24)) || 1); }
+function _setIcon(b, icon) { b.innerHTML = `<svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor">${icon}</svg>`; }
+function _pbFrames(p) { const d = p.video && p.video.duration; if (!(d > 0) || !isFinite(d)) return 1; return Math.max(1, Math.min(1e6, Math.round(d * (p.pb.fps || 24)) || 1)); }
+function _pbLast(p) { return _pbFrames(p) - 1; }
 function _pbCur(p) { return Math.round(p.video.currentTime * (p.pb.fps || 24)); }
-function _pbSeek(p, f) { const n = _pbFrames(p); f = Math.max(0, Math.min(n - 1, Math.round(f))); p.video.currentTime = (f + 0.001) / (p.pb.fps || 24); }
+function _pbSeek(p, f) { f = Math.max(0, Math.min(_pbLast(p), Math.round(f))); p.video.currentTime = (f + 0.001) / (p.pb.fps || 24); }
+// in / out range = the node's start_frame / end_frame widgets (single source of truth, bidirectional).
+function _pbIn(p) { const w = W(p.node, "start_frame"); return Math.max(0, Math.min(_pbLast(p), Math.round(w?.value ?? 0))); }
+function _pbOut(p) { const w = W(p.node, "end_frame"); const last = _pbLast(p); return Math.max(_pbIn(p), Math.min(last, Math.round(w?.value ?? last))); }
+function _pbSetField(p, name, f) { const w = W(p.node, name); if (!w) return; w.value = f; try { w.callback && w.callback(f); } catch (e) {} p.node.setDirtyCanvas(true, true); }
+function _pbSetIn(p, f) { _pbSetField(p, "start_frame", Math.max(0, Math.min(_pbOut(p), Math.round(f)))); }
+function _pbSetOut(p, f) { _pbSetField(p, "end_frame", Math.max(_pbIn(p), Math.min(_pbLast(p), Math.round(f)))); }
+function _pbResetRange(p) { _pbSetField(p, "start_frame", 0); _pbSetField(p, "end_frame", _pbLast(p)); }
 function _pbSet(node, p, on, dir) {
     p.pb.playing = on; p.pb.dir = dir || 1; p.pb.lastT = 0;
-    if (on && p.pb.dir > 0) { p.video.loop = (p.pb.mode === "loop"); p.video.playbackRate = 1; p.video.play().catch(() => {}); }
+    const inF = _pbIn(p), outF = _pbOut(p), cur = _pbCur(p);
+    if (on && p.pb.dir > 0) { if (cur >= outF) _pbSeek(p, inF); p.video.loop = false; p.video.playbackRate = 1; p.video.play().catch(() => {}); }
+    else if (on) { if (cur <= inF) _pbSeek(p, outF); p.video.pause(); }   // reverse is driven manually in _tickPlayback
     else { p.video.pause(); }
     _syncTransport(p);
 }
-function _pbStop(node, p) { _pbSet(node, p, false, 1); _pbSeek(p, 0); }
+function _pbStop(node, p) { _pbSet(node, p, false, 1); _pbSeek(p, _pbIn(p)); }
 function _pbStep(node, p, d) { _pbSet(node, p, false, 1); _pbSeek(p, _pbCur(p) + d); }
-function _pbJump(node, p, end) { _pbSet(node, p, false, 1); _pbSeek(p, end ? _pbFrames(p) - 1 : 0); }
-function _pbMode(p, mode) { p.pb.mode = mode; if (p.pb.playing && p.pb.dir > 0) p.video.loop = (mode === "loop"); _syncTransport(p); }
+function _pbJump(node, p, end) { _pbSet(node, p, false, 1); _pbSeek(p, end ? _pbOut(p) : _pbIn(p)); }
+function _pbMode(p, mode) { p.pb.mode = mode; _syncTransport(p); }
 function _tickPlayback(p, now) {
     const pb = p.pb, v = p.video; if (!pb) return;
     const dt = Math.min(0.1, (now - (pb.lastT || now)) / 1000); pb.lastT = now;
     if (!pb.playing || !(v.duration > 0)) return;
+    const fps = pb.fps || 24, inT = _pbIn(p) / fps, outT = Math.min(v.duration - 0.001, (_pbOut(p) + 0.999) / fps);
     if (pb.dir > 0) {
-        if (pb.mode === "bounce" && v.currentTime >= v.duration - 0.05) { pb.dir = -1; v.pause(); }   // hit end -> reverse
+        if (v.currentTime >= outT || v.ended) {
+            if (pb.mode === "bounce") { pb.dir = -1; if (!v.paused) v.pause(); v.currentTime = outT; }
+            else { v.currentTime = inT; if (v.paused) v.play().catch(() => {}); }                        // loop within [in,out]
+        }
     } else {
         let t = v.currentTime - dt * (v.playbackRate || 1);
-        if (t <= 0) {
-            if (pb.mode === "bounce") { pb.dir = 1; v.currentTime = 0; v.loop = false; v.play().catch(() => {}); }
-            else { v.currentTime = v.duration - 0.001; }                                                // loop back to end
+        if (t <= inT) {
+            if (pb.mode === "bounce") { pb.dir = 1; v.currentTime = inT; v.loop = false; v.play().catch(() => {}); }
+            else { v.currentTime = outT; }                                                               // reverse-loop to out
         } else { v.currentTime = t; }
     }
 }
+function _niceStep(n, maxLabels) {
+    const raw = Math.max(1, n / Math.max(1, maxLabels)), pow = Math.pow(10, Math.floor(Math.log10(raw)));
+    for (const m of [1, 2, 5, 10]) if (pow * m >= raw) return pow * m;
+    return pow * 10;
+}
+function _drawTimeline(p) {
+    const t = p.transport; if (!t || !t.tl) return; const cv = t.tl;
+    const Wd = cv.clientWidth || 250; if (cv.width !== Wd) cv.width = Wd; const H = cv.height;
+    const g = cv.getContext("2d"); if (!g) return; const PAD = 8;
+    const last = _pbLast(p), cur = _pbCur(p), inF = _pbIn(p), outF = _pbOut(p);
+    const X = f => PAD + (last > 0 ? f / last : 0) * (Wd - 2 * PAD);
+    g.clearRect(0, 0, Wd, H); g.fillStyle = "#141414"; g.fillRect(0, 0, Wd, H);
+    g.fillStyle = "#123039"; g.fillRect(X(inF), H - 5, X(outF) - X(inF), 3);                             // active-range band
+    g.fillStyle = "rgba(0,0,0,0.5)"; g.fillRect(0, 0, X(inF), H); g.fillRect(X(outF), 0, Wd - X(outF), H);
+    const maxLabels = Math.max(2, Math.floor((Wd - 2 * PAD) / 34)), step = Math.max(1, _niceStep(last + 1, maxLabels));
+    g.fillStyle = "#7a8a99"; g.strokeStyle = "#3a3a3a"; g.font = "8px monospace"; g.textAlign = "center";
+    for (let f = 0; f <= last; f += step) {
+        const x = X(f); g.beginPath(); g.moveTo(x, H - 6); g.lineTo(x, H - 9); g.stroke();
+        g.fillText(String(f), Math.max(7, Math.min(Wd - 7, x)), H - 11);
+    }
+    g.strokeStyle = "#333"; g.beginPath(); g.moveTo(PAD, H - 6); g.lineTo(Wd - PAD, H - 6); g.stroke();
+    const handle = (x, d) => { g.fillStyle = "#4cc3ff"; g.fillRect(x - 0.5, 2, 1, H - 6); g.beginPath(); g.moveTo(x, 2); g.lineTo(x + d * 5, 2); g.lineTo(x, 7); g.closePath(); g.fill(); };
+    handle(X(inF), 1); handle(X(outF), -1);
+    const xc = X(cur); g.fillStyle = "#ff8c1a"; g.fillRect(xc - 0.75, 0, 1.5, H - 5);                    // playhead
+    g.beginPath(); g.moveTo(xc - 4, 0); g.lineTo(xc + 4, 0); g.lineTo(xc, 5); g.closePath(); g.fill();
+}
 function _syncTransport(p) {
     const t = p.transport; if (!t) return;
-    const cur = _pbCur(p), n = _pbFrames(p);
-    if (document.activeElement !== t.slider) { t.slider.max = String(n - 1); t.slider.value = String(cur); }
-    if (document.activeElement !== t.frame) { t.frame.value = String(cur); }
+    const cur = _pbCur(p), n = _pbFrames(p), pb = p.pb;
+    if (document.activeElement !== t.frame) t.frame.value = String(cur);
     t.total.textContent = "/ " + (n - 1);
-    const playing = p.pb.playing && p.pb.dir > 0;
-    t.play.innerHTML = `<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">${playing ? _SVG.pause : _SVG.play}</svg>`;
-    t.mode.title = p.pb.mode === "loop" ? "Repeat (loop)" : "Bounce (ping-pong)";
-    t.mode.innerHTML = `<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">${p.pb.mode === "loop" ? _SVG.loop : _SVG.bounce}</svg>`;
+    _setIcon(t.playFwd, (pb.playing && pb.dir > 0) ? _SVG.pause : _SVG.playFwd);
+    _setIcon(t.playRev, (pb.playing && pb.dir < 0) ? _SVG.pause : _SVG.playRev);
+    t.mode.title = pb.mode === "loop" ? "Repeat (loop)" : "Bounce (ping-pong)";
+    _setIcon(t.mode, pb.mode === "loop" ? _SVG.loop : _SVG.bounce);
+    _drawTimeline(p);
 }
 function _ensureTransport(node, p) {
     if (p.transport) return p.transport;
+    p.node = node;
     const bar = document.createElement("div");
-    bar.style.cssText = "width:100%;display:none;flex-direction:column;gap:3px;padding:3px 4px 4px;box-sizing:border-box;background:#181818;";
-    const slider = document.createElement("input");
-    slider.type = "range"; slider.min = "0"; slider.max = "1"; slider.value = "0"; slider.step = "1";
-    slider.style.cssText = "width:100%;margin:0;accent-color:#5cf;cursor:pointer;height:12px;";
-    slider.addEventListener("input", () => { const f = parseInt(slider.value, 10) || 0; _pbSet(node, p, false, 1); _pbSeek(p, f); });
+    bar.style.cssText = "width:100%;display:none;flex-direction:column;gap:2px;padding:2px 4px 3px;box-sizing:border-box;background:#181818;";
+    const tl = document.createElement("canvas"); tl.height = 26;
+    tl.style.cssText = "width:100%;height:26px;display:block;cursor:pointer;";
     const row = document.createElement("div");
     row.style.cssText = "display:flex;align-items:center;justify-content:center;gap:1px;flex-wrap:nowrap;";
-    const mode = _tBtn(_SVG.loop, "Repeat (loop)");  mode.onclick = () => _pbMode(p, p.pb.mode === "loop" ? "bounce" : "loop");
-    const first = _tBtn(_SVG.first, "Go to first frame"); first.onclick = () => _pbJump(node, p, false);
-    const sb = _tBtn(_SVG.stepB, "Back one frame");  sb.onclick = () => _pbStep(node, p, -1);
-    const rev = _tBtn(_SVG.playRev, "Play reverse"); rev.onclick = () => _pbSet(node, p, !(p.pb.playing && p.pb.dir < 0), -1);
-    const stop = _tBtn(_SVG.stop, "Stop");           stop.onclick = () => _pbStop(node, p);
-    const play = _tBtn(_SVG.play, "Play / Pause");   play.onclick = () => _pbSet(node, p, !(p.pb.playing && p.pb.dir > 0), 1);
-    const sf = _tBtn(_SVG.stepF, "Forward one frame"); sf.onclick = () => _pbStep(node, p, 1);
-    const last = _tBtn(_SVG.last, "Go to last frame"); last.onclick = () => _pbJump(node, p, true);
-    const dec = _tBtn(_SVG.stepB, "Back one frame");  dec.onclick = () => _pbStep(node, p, -1);
+    const mode = _tBtn(_SVG.loop, "Repeat (loop)");   mode.onclick = () => _pbMode(p, p.pb.mode === "loop" ? "bounce" : "loop");
+    const first = _tBtn(_SVG.first, "Go to in point"); first.onclick = () => _pbJump(node, p, false);
+    const playRev = _tBtn(_SVG.playRev, "Play reverse"); playRev.onclick = () => _pbSet(node, p, !(p.pb.playing && p.pb.dir < 0), -1);
+    const sb = _tBtn(_SVG.stepB, "Back one frame");   sb.onclick = () => _pbStep(node, p, -1);
     const frame = document.createElement("input"); frame.type = "number"; frame.value = "0";
-    frame.style.cssText = "width:44px;height:15px;text-align:center;background:#101010;color:#cfe;border:1px solid #333;border-radius:3px;font:10px monospace;margin:0 1px;";
+    frame.style.cssText = "width:40px;height:15px;text-align:center;background:#101010;color:#cfe;border:1px solid #333;border-radius:2px;font:10px monospace;margin:0 2px;";
     frame.addEventListener("change", () => { const f = parseInt(frame.value, 10) || 0; _pbSet(node, p, false, 1); _pbSeek(p, f); });
-    const inc = _tBtn(_SVG.stepF, "Forward one frame"); inc.onclick = () => _pbStep(node, p, 1);
-    const total = document.createElement("span"); total.style.cssText = "color:#789;font:10px monospace;margin-left:3px;min-width:34px;"; total.textContent = "/ 0";
-    row.append(mode, first, sb, rev, stop, play, sf, last, dec, frame, inc, total);
-    bar.append(slider, row);
+    const total = document.createElement("span"); total.style.cssText = "color:#789;font:9px monospace;margin:0 3px 0 1px;min-width:26px;"; total.textContent = "/ 0";
+    const sf = _tBtn(_SVG.stepF, "Forward one frame"); sf.onclick = () => _pbStep(node, p, 1);
+    const playFwd = _tBtn(_SVG.playFwd, "Play forward"); playFwd.onclick = () => _pbSet(node, p, !(p.pb.playing && p.pb.dir > 0), 1);
+    const last = _tBtn(_SVG.last, "Go to out point");  last.onclick = () => _pbJump(node, p, true);
+    const reset = _tBtn(_SVG.reset, "Reset range (in / out to full clip)"); reset.onclick = () => { _pbResetRange(p); _drawTimeline(p); };
+    const nstep = document.createElement("input"); nstep.type = "number"; nstep.value = "10"; nstep.min = "1";
+    nstep.style.cssText = "width:28px;height:15px;text-align:center;background:#101010;color:#9ab;border:1px solid #333;border-radius:2px;font:9px monospace;margin:0 1px;";
+    const nsB = _tBtn(_SVG.playRev, "Back N frames");  nsB.onclick = () => _pbStep(node, p, -(parseInt(nstep.value, 10) || 10));
+    const nsF = _tBtn(_SVG.playFwd, "Forward N frames"); nsF.onclick = () => _pbStep(node, p, (parseInt(nstep.value, 10) || 10));
+    const sep = () => { const s = document.createElement("span"); s.style.cssText = "width:6px;display:inline-block;"; return s; };
+    row.append(mode, sep(), first, playRev, sb, frame, total, sf, playFwd, last, sep(), reset, sep(), nsB, nstep, nsF);
+    bar.append(tl, row);
     const w = node.addDOMWidget("transport", "div", bar, { serialize: false });
-    w.computeSize = () => [0, p.pb && p.pb.showTransport ? 46 : 0];
+    w.computeSize = () => [0, p.pb && p.pb.showTransport ? 54 : 0];
     w._ocioAlwaysVisible = true;
-    p.transport = { bar, slider, frame, total, play, mode };
+    // timeline scrub + in/out drag
+    tl.addEventListener("mousedown", (e) => {
+        const r = tl.getBoundingClientRect(), PAD = 8, last = _pbLast(p);
+        const X = f => r.left + PAD + (last > 0 ? f / last : 0) * (r.width - 2 * PAD);
+        const toF = cx => { let fr = (cx - r.left - PAD) / (r.width - 2 * PAD); return Math.max(0, Math.min(last, Math.round(Math.max(0, Math.min(1, fr)) * last))); };
+        const grab = Math.abs(e.clientX - X(_pbIn(p))) <= 7 ? "in" : Math.abs(e.clientX - X(_pbOut(p))) <= 7 ? "out" : "scrub";
+        _pbSet(node, p, false, 1);
+        const move = ev => { const f = toF(ev.clientX); if (grab === "in") _pbSetIn(p, f); else if (grab === "out") _pbSetOut(p, f); else _pbSeek(p, f); _drawTimeline(p); };
+        move(e);
+        const up = () => { document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); };
+        document.addEventListener("mousemove", move); document.addEventListener("mouseup", up); e.preventDefault();
+    });
+    p.transport = { bar, tl, frame, total, playFwd, playRev, mode };
     return p.transport;
 }
 function updateReadPreview(node) {

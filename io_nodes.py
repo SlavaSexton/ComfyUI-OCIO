@@ -420,11 +420,43 @@ def _save_still(path, rgb, fmt, bit_depth, alpha=None, colorspace=None, compress
     im.save(path, quality=95, **({"comment": colorspace.encode()} if colorspace else {}))
 
 
-def save_video(arr01, out_path, codec, fps):
+# sRGB transfer tag for ffmpeg's -color_trc: confirmed accepted by this build's libx264/libx265/prores_ks/dnxhd
+# (probed 2026-07-01: `ffmpeg -f lavfi -i testsrc2... -color_trc iec61966-2-1 -f null -` exits 0, no
+# unrecognized/invalid warning). Kept as a constant (not inlined) so a build that rejects it only needs this
+# line changed to "bt709".
+_SRGB_TRC = "iec61966-2-1"
+
+
+def _video_color_tags(output_colorspace):
+    """Map the (already-converted-to) output colorspace to ffmpeg NCLC color tags, so the written file is
+    tagged and does not gamma-shift across players (untagged files currently show color_primaries/transfer =
+    unknown and players guess). -movflags +write_colr writes the QuickTime colr atom on .mov; confirmed
+    harmless on .mp4 too (probed: libx264 -movflags +write_colr on mp4 exits 0, writes nclx/nclc instead).
+
+    Flaw found while probing this build (ffmpeg 2024-10-02 gyan.dev full_build): the generic -color_primaries /
+    -color_trc / -colorspace OUTPUT options are silently no-ops for libx264/libx265/prores_ks/dnxhd here (only
+    -colorspace's matrix half lands; primaries/transfer stay "unspecified" in the written colr/nclx atom, and
+    ffmpeg logs no warning). A -vf setparams=... filter (tagging the frames before they hit the encoder) is
+    what actually lands all three tags for every codec tested - confirmed by a real encode+ffprobe per codec.
+    So this returns BOTH the (still-needed, still-correct) trailing output options AND the setparams -vf; the
+    caller must place the -vf before the output path same as any other output option."""
+    cs = (output_colorspace or "").lower()
+    if "2100" in cs or "pq" in cs:
+        prim, trc, spc = "bt2020", "smpte2084", "bt2020nc"          # HDR
+    elif "1886" in cs or "rec.709" in cs or "rec709" in cs:
+        prim, trc, spc = "bt709", "bt709", "bt709"                  # broadcast 2.4
+    else:                                                           # sRGB - Display default (WYSIWYG)
+        prim, trc, spc = "bt709", _SRGB_TRC, "bt709"
+    vf = f"setparams=color_primaries={prim}:color_trc={trc}:colorspace={spc}:range=tv"
+    return ["-vf", vf, "-color_primaries", prim, "-color_trc", trc, "-colorspace", spc,
+            "-color_range", "tv", "-movflags", "+write_colr"]
+
+
+def save_video(arr01, out_path, codec, fps, output_colorspace=None):
     _require_ffmpeg()
     n, h, w, _ = arr01.shape
     enc = {
-        "prores_4444": ["-c:v", "prores_ks", "-profile:v", "4", "-pix_fmt", "yuv444p10le"],
+        "prores_4444": ["-c:v", "prores_ks", "-profile:v", "4", "-pix_fmt", "yuv444p12le"],
         "prores_422hq": ["-c:v", "prores_ks", "-profile:v", "3", "-pix_fmt", "yuv422p10le"],
         "prores_422": ["-c:v", "prores_ks", "-profile:v", "2", "-pix_fmt", "yuv422p10le"],
         "dnxhr_hq": ["-c:v", "dnxhd", "-profile:v", "dnxhr_hq", "-pix_fmt", "yuv422p"],
@@ -432,7 +464,8 @@ def save_video(arr01, out_path, codec, fps):
         "hevc": ["-c:v", "libx265", "-crf", "18", "-pix_fmt", "yuv420p"],
     }.get(codec, ["-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p"])
     cmd = [_FFMPEG, "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb48le",
-           "-s", f"{w}x{h}", "-r", str(fps), "-i", "-", *enc, "-r", str(fps), out_path]
+           "-s", f"{w}x{h}", "-r", str(fps), "-i", "-", *enc, *_video_color_tags(output_colorspace),
+           "-r", str(fps), out_path]
     proc = subprocess.run(cmd, input=(np.clip(arr01, 0, 1) * 65535).astype("<u2").tobytes(), capture_output=True)
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg encode failed: {proc.stderr.decode('utf-8', 'ignore')[:300]}")
@@ -680,7 +713,8 @@ class OCIOWrite:
             if container == "video":
                 ext = ".mov" if video_codec.startswith(("prores", "dnxhr")) else ".mp4"
                 saved = os.path.join(folder, stem + ext)
-                save_video(sub, saved, video_codec, float(fps) if fps and fps > 0 else 24.0)
+                save_video(sub, saved, video_codec, float(fps) if fps and fps > 0 else 24.0,
+                           None if raw_data else output_colorspace)
             else:                                                          # sequence
                 ext = _STILL_EXT[still_format]
                 for i in range(sub.shape[0]):

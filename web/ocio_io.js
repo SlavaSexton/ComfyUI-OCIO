@@ -43,6 +43,19 @@ const BITS = { exr: ["16f", "32f"], tiff: ["8", "16", "32f"], png: ["8", "16"], 
 const BIT_DEF = { exr: "16f", tiff: "16", png: "8", jpeg: "8" };
 const STILL_EXT = { exr: "exr", tiff: "tif", png: "png", jpeg: "jpg" };
 
+// video codec -> real bit depth + extension (mirrors io_nodes.py save_video's codec->pix_fmt map). bit_depth
+// stays hidden for video (still-format 16f/32f/16/8 don't map to video 8/10/12) - this footer shows the real,
+// codec-fixed depth instead.
+const CODEC_INFO = {
+    prores_4444: { bits: "12-bit", ext: ".mov" }, prores_422hq: { bits: "10-bit", ext: ".mov" },
+    prores_422: { bits: "10-bit", ext: ".mov" }, dnxhr_hq: { bits: "8-bit", ext: ".mov" },
+    h264: { bits: "8-bit", ext: ".mp4" }, hevc: { bits: "8-bit", ext: ".mp4" },
+};
+const CODEC_LABEL = {
+    prores_4444: "ProRes 4444", prores_422hq: "ProRes 422 HQ", prores_422: "ProRes 422",
+    dnxhr_hq: "DNxHR HQ", h264: "H.264", hevc: "HEVC",
+};
+
 // hide / show a widget (type swap + zero height; survives older and newer ComfyUI)
 const OCIO_HIDDEN = "ocio-hidden";
 function showWidget(node, w, visible) {
@@ -525,6 +538,7 @@ app.registerExtension({
                     applyFormat();
                     setW(node, "output_colorspace", autoOutCs(W(node, "container")?.value, W(node, "still_format")?.value));
                 });
+                onChange(this, "video_codec", () => node.setDirtyCanvas(true, true));  // redraw the codec/bit-depth footer
                 // auto frame range / fps from the upstream OCIO Read
                 onChange(this, "auto_range", (v) => { if (v) syncWriteFromUpstream(node); });
                 onChange(this, "auto_colorspace", (v) => { if (v) applyAutoColorspace(node); });
@@ -572,6 +586,13 @@ app.registerExtension({
                 ctx.fillText(`${shorten(a.value)} → ${shorten(b.value)}  [${fmt}]`, this.size[0] - 8, -6);
                 ctx.font = "9px sans-serif"; ctx.fillStyle = "#7a9"; ctx.textAlign = "left";
                 ctx.fillText("→ " + exampleName(this), 8, this.size[1] - 6);
+                if (W(this, "container")?.value === "video") {
+                    const info = CODEC_INFO[fmt];
+                    if (info) {
+                        ctx.fillStyle = "#7a9"; ctx.textAlign = "left"; ctx.font = "9px sans-serif";
+                        ctx.fillText(`${CODEC_LABEL[fmt] || fmt} - ${info.bits}`, 8, this.size[1] - 18);
+                    }
+                }
                 if (this._ocioWrote != null) {
                     ctx.fillStyle = "#6c6"; ctx.textAlign = "right";
                     ctx.fillText(`✓ wrote ${this._ocioWrote} frame(s)`, this.size[0] - 8, this.size[1] - 6);

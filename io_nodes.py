@@ -500,6 +500,20 @@ def _cs_combo(default):
     return _combo_or_string(_colorspace_names(), default, "Colorspace from the active OCIO (ACES) config.")
 
 
+def _save_preview_png(frame0, filename):
+    """Save one frame as an 8-bit PNG to the ComfyUI temp dir and return the ComfyUI ui 'images' list. Shared by
+    OCIORead._preview and OCIOWrite._preview (same shape: naive display of the frame in its own colorspace)."""
+    if folder_paths is None:
+        return []
+    tdir = folder_paths.get_temp_directory()
+    os.makedirs(tdir, exist_ok=True)
+    if hasattr(frame0, "detach"):                 # torch Tensor (OCIORead passes rgb[0]); OCIOWrite passes numpy
+        frame0 = frame0.detach().cpu().numpy()
+    px = (np.clip(np.asarray(frame0, np.float32), 0.0, 1.0) * 255.0).astype(np.uint8)
+    Image.fromarray(px).save(os.path.join(tdir, filename))
+    return [{"filename": filename, "subfolder": "", "type": "temp"}]
+
+
 # --------------------------------------------------------------------------- nodes
 
 class OCIORead:
@@ -562,7 +576,11 @@ class OCIORead:
                 "video": f"video: {label}, {n} frame(s), {res}, {out_fps:g} fps",
                 "still": f"single: {label}, {res}"}.get(kind, f"{n} frame(s), {res}")
         txt = f"{head}{shift_txt}{miss_txt}, {cs}"
-        return (rgb, mask, out_fps, txt)
+        return {"ui": {"images": self._preview(rgb[0])}, "result": (rgb, mask, out_fps, txt)}
+
+    def _preview(self, frame0):
+        """First loaded frame, shown in its (already-converted) output colorspace. Mirrors OCIOWrite._preview."""
+        return _save_preview_png(frame0, "ocio_read_preview.png")
 
 
 _STILL_EXT = {"exr": "exr", "tiff": "tif", "png": "png", "jpeg": "jpg"}
@@ -620,6 +638,8 @@ class OCIOWrite:
                             {"default": "prores_4444", "tooltip": "Used for video (hidden otherwise)."}),
             "bit_depth": (["16f", "32f", "16", "8"], {"default": "16f",
                           "tooltip": "Per format: JPEG 8; PNG 8/16; TIFF 8/16/32f; EXR 16f/32f. The list narrows to the chosen format."}),
+            "compression": (["zip", "zips", "piz", "pxr24", "dwaa", "dwab", "rle", "none"], {"default": "zip",
+                            "tooltip": "EXR compression (Nuke Write style). ZIP / ZIPS = lossless (default). PIZ = lossless, good for grain. DWAA / DWAB = smaller, lossy. Applies to EXR only."}),
             "auto_range": ("BOOLEAN", {"default": True,
                            "tooltip": "ON: first_frame / last_frame / start_number / fps are pulled automatically from the OCIO Read at the other end of the wire (through any number of nodes). Editing them by hand turns this OFF; turn it back ON to re-detect."}),
             "first_frame": ("INT", {"default": 1, "min": 0, "max": 100000000,
@@ -632,14 +652,12 @@ class OCIOWrite:
                              "tooltip": "(auto) the source's first frame number, used to map first_frame/last_frame to the batch. Set by the wire."}),
             "raw_data": ("BOOLEAN", {"default": False,
                          "tooltip": "Nuke 'Raw Data': write the pixels as-is, skipping the from->out colorspace conversion."}),
-            "output_folder": ("STRING", {"default": "", "tooltip": "Server folder. Empty = ComfyUI output dir. Relative = under it. Use the browse button."}),
-            "filename": ("STRING", {"default": "ocio_out", "tooltip": "Base name. Numbering / extension are added automatically."}),
             "colorspace_in_name": ("BOOLEAN", {"default": True,
                                     "tooltip": "Put the output colorspace in the file name, before the frame number: name_acescg.0001.exr. Uses the sanitized output_colorspace (or 'raw' when Raw Data is on)."}),
+            "output_folder": ("STRING", {"default": "", "tooltip": "Server folder. Empty = ComfyUI output dir. Relative = under it. Use the browse button."}),
+            "filename": ("STRING", {"default": "ocio_out", "tooltip": "Base name. Numbering / extension are added automatically."}),
             "auto_colorspace": ("BOOLEAN", {"default": True,
                                  "tooltip": "When the input is wired from LTX's LTXVHDRDecodePostprocess (SDR->HDR), auto-set from_colorspace = 'Linear Rec.709 (sRGB)' and output_colorspace = 'ACEScg', so you do not have to. Editing the colorspaces by hand still wins. Front-end only."}),
-            "compression": (["zip", "zips", "piz", "pxr24", "dwaa", "dwab", "rle", "none"], {"default": "zip",
-                            "tooltip": "EXR compression (Nuke Write style). ZIP / ZIPS = lossless (default). PIZ = lossless, good for grain. DWAA / DWAB = smaller, lossy. Applies to EXR only."}),
         }, "optional": {
             "alpha": ("MASK", {"tooltip": "Optional alpha channel -> RGBA (EXR / TIFF / PNG; ignored for JPEG). Wire OCIO Read's alpha output, or any MASK."}),
             "fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 240.0, "step": 0.001,
@@ -730,13 +748,7 @@ class OCIOWrite:
 
     def _preview(self, frame0):
         """First written frame, shown naively in its output colorspace (a wrong pick looks visibly wrong)."""
-        if folder_paths is None:
-            return []
-        tdir = folder_paths.get_temp_directory()
-        os.makedirs(tdir, exist_ok=True)
-        fn = "ocio_write_preview.png"
-        Image.fromarray((np.clip(frame0, 0, 1) * 255).astype(np.uint8)).save(os.path.join(tdir, fn))
-        return [{"filename": fn, "subfolder": "", "type": "temp"}]
+        return _save_preview_png(frame0, "ocio_write_preview.png")
 
 
 NODE_CLASS_MAPPINGS = {"OCIORead": OCIORead, "OCIOWrite": OCIOWrite}

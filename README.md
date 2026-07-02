@@ -84,6 +84,12 @@ files *into* it and **OCIO Write** converts *out* of it. Defaults follow the fil
 config (the built-in ACES **studio-config**, ~55 spaces including ARRI / RED / Sony camera spaces); drop a custom
 `.ocio` in your input folder to use your own.
 
+The config is **ACES 2.0**, so a few names differ from the ACES 1.x names you may know from Nuke: `Linear Rec.709
+(sRGB)` is the old `Utility - Linear - sRGB`, and `ARRI LogC3 (EI800)` is `Input - ARRI - V3 LogC (EI800)`. The
+whole camera set is present (ARRI LogC3 / LogC4, RED Log3G10, Sony S-Log3, Canon Log, Panasonic V-Log, Apple Log,
+and more), just under the 2.0 names. Colorspace conversions match Nuke's; the display transform (OCIO Display) is
+the ACES 2.0 output, which reads slightly different from an ACES 1.x setup.
+
 ---
 
 ## The eight nodes
@@ -139,6 +145,19 @@ wrong) and reports **"wrote N frame(s)"**. The **▶ Render** button queues the 
 
 Naming: still image -> `<name>.<ext>`; sequence -> `<name>.0086.<ext>, <name>.0087.<ext>, ...`; video ->
 `<name>.mov` (ProRes / DNxHR) or `<name>.mp4` (h264 / hevc).
+
+**HDR source profiles (`profile`).** The top dropdown presets the whole node for a known HDR source.
+`LTX 2.3 HDR` sets `Linear Rec.709 (sRGB) -> ACEScg`. `LumiPic LogC3 (Flux/Qwen)` and `LumiPic V10 LogC4` also
+decode the log curve inside Write, so you wire a LumiPic VAE-decode plate straight in and it lands in ACEScg. Any
+HDR profile forces an EXR 16f master. `auto` reads the upstream node: it detects LTX reliably, and for LumiPic it
+guesses from the LoRA filename, so confirm that pick. `none` leaves the colorspaces as you set them, and editing a
+colorspace by hand switches `profile` back to `none`. `Seedance 4K 10-bit` is a placeholder pending its color spec.
+
+**Codec drives the video output.** The `video_codec` fixes the bit depth and container: ProRes 4444 is 12-bit
+`.mov`, ProRes 422 / 422 HQ 10-bit `.mov`, DNxHR HQ 8-bit `.mov`, h264 and hevc 8-bit `.mp4`. The file carries the
+right NCLC color tags (primaries / transfer / matrix) from `output_colorspace`, so it does not gamma-shift between
+players. Video defaults to `sRGB - Display` to match the ComfyUI preview; switch it to `Rec.1886 Rec.709 - Display`
+for a broadcast 2.4 master, or `Rec.2100-PQ` for HDR video.
 
 ### OCIO ColorSpace
 

@@ -16,6 +16,9 @@
 #    against the built-in ACES studio config (OCIO 2.5.2). `pip install opencolorio`.
 
 import os
+import threading
+from collections import OrderedDict
+
 import numpy as np
 import torch
 
@@ -31,25 +34,96 @@ except Exception:
     folder_paths = None
 
 
+# --------------------------------------------------------------------------- bounded thread-safe LRU cache
+
+class _LRUCache:
+    """Small bounded LRU: OrderedDict + RLock. get() moves the hit key to the end (most-recent);
+    put() evicts the oldest entry (front of the dict) once over maxsize."""
+
+    def __init__(self, maxsize):
+        self._maxsize = maxsize
+        self._lock = threading.RLock()
+        self._d = OrderedDict()
+
+    def get(self, key):
+        with self._lock:
+            if key not in self._d:
+                return None
+            self._d.move_to_end(key)
+            return self._d[key]
+
+    def put(self, key, value):
+        with self._lock:
+            self._d[key] = value
+            self._d.move_to_end(key)
+            while len(self._d) > self._maxsize:
+                self._d.popitem(last=False)
+
+    def __len__(self):
+        with self._lock:
+            return len(self._d)
+
+
+_CONFIG_CACHE = _LRUCache(8)
+_PROCESSOR_CACHE = _LRUCache(64)
+
+
+def _cached_config(cache_key, build):
+    """Fetch-or-build an OCIO Config for cache_key, using build() (called at most once per key)."""
+    cfg = _CONFIG_CACHE.get(cache_key)
+    if cfg is not None:
+        return cfg
+    cfg = build()
+    if cfg is not None:
+        _CONFIG_CACHE.put(cache_key, cfg)
+    return cfg
+
+
+def _cached_cpu_processor(cfg_key, tf_key, build):
+    """Fetch-or-build a CPU processor for (cfg_key, tf_key), using build() -> cfg.getProcessor(...).
+    build() is called at most once per distinct key; the result is cached as the CPU processor
+    (getDefaultCPUProcessor already applied), so callers never call it twice."""
+    key = (cfg_key, tf_key)
+    cpu = _PROCESSOR_CACHE.get(key)
+    if cpu is not None:
+        return cpu
+    processor = build()
+    cpu = processor.getDefaultCPUProcessor()
+    _PROCESSOR_CACHE.put(key, cpu)
+    return cpu
+
+
 # --------------------------------------------------------------------------- config + apply helpers
 
-def _resolve_config(path=""):
-    """Resolve an OCIO config: explicit file -> $OCIO env -> built-in ACES studio config. None if unavailable."""
+def _resolve_config_keyed(path=""):
+    """Resolve an OCIO config: explicit file -> $OCIO env -> built-in ACES studio config.
+    Returns (config, cache_key); (None, None) if unavailable. Cached: a real .ocio file is
+    keyed on (path, mtime_ns, size) so an edited file is not silently stale; the built-in /
+    $OCIO path is keyed on a fixed name."""
     if not _HAS_OCIO:
-        return None
+        return None, None
     if path and os.path.isfile(path):
-        return OCIO.Config.CreateFromFile(path)
+        st = os.stat(path)
+        key = ("file", path, st.st_mtime_ns, st.st_size)
+        return _cached_config(key, lambda: OCIO.Config.CreateFromFile(path)), key
     if os.environ.get("OCIO"):
         try:
-            return OCIO.Config.CreateFromEnv()
+            key = ("env", os.environ["OCIO"])
+            return _cached_config(key, lambda: OCIO.Config.CreateFromEnv()), key
         except Exception:
             pass
     for builtin in ("studio-config-latest", "cg-config-latest", "ocio://default"):
         try:
-            return OCIO.Config.CreateFromBuiltinConfig(builtin)
+            key = ("builtin", builtin)
+            return _cached_config(key, lambda b=builtin: OCIO.Config.CreateFromBuiltinConfig(b)), key
         except Exception:
             continue
-    return None
+    return None, None
+
+
+def _resolve_config(path=""):
+    """Back-compat wrapper: config only, no cache key (used where the key is not needed)."""
+    return _resolve_config_keyed(path)[0]
 
 
 BUILTIN = "(built-in ACES config)"
@@ -77,13 +151,20 @@ def _scan_files(exts):
     return sorted(out)
 
 
-def _config_from_choice(choice):
-    """Combo choice ('(built-in ...)' or a .ocio file in input) -> an OCIO Config."""
+def _config_from_choice_keyed(choice):
+    """Combo choice ('(built-in ...)' or a .ocio file in input) -> (OCIO Config, cache_key)."""
     if choice and choice != BUILTIN:
         p = choice if os.path.isabs(choice) else os.path.join(_input_dir(), choice)
         if os.path.isfile(p):
-            return OCIO.Config.CreateFromFile(p)
-    return _resolve_config("")
+            st = os.stat(p)
+            key = ("file", p, st.st_mtime_ns, st.st_size)
+            return _cached_config(key, lambda: OCIO.Config.CreateFromFile(p)), key
+    return _resolve_config_keyed("")
+
+
+def _config_from_choice(choice):
+    """Back-compat wrapper: config only, no cache key."""
+    return _config_from_choice_keyed(choice)[0]
 
 
 def _lut_path(choice):
@@ -170,8 +251,8 @@ def _blend(orig, new, mix):
     return orig * (1.0 - mix) + new * mix
 
 
-def _apply_processor(img, processor):
-    cpu = processor.getDefaultCPUProcessor()
+def _apply_processor(img, cpu):
+    """Apply an already-resolved CPU processor (OCIO.CPUProcessor) to a batched IMAGE tensor."""
     arr = img.detach().cpu().numpy().astype(np.float32)
     b, h, w, c = arr.shape
     out = arr.copy()
@@ -422,6 +503,7 @@ class OCIOLogConvert:
 
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("image",)
+    OUTPUT_TOOLTIPS = ("Image with the lin<->log curve applied.",)
     FUNCTION = "run"
     CATEGORY = "OCIO"
 
@@ -448,15 +530,18 @@ class OCIOColorSpace:
 
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("image",)
+    OUTPUT_TOOLTIPS = ("Image converted from in_colorspace to out_colorspace.",)
     FUNCTION = "convert"
     CATEGORY = "OCIO"
 
     def convert(self, image, in_colorspace, out_colorspace, mix=1.0, config_path=BUILTIN):
         _require_ocio()
-        cfg = _config_from_choice(config_path)
+        cfg, cfg_key = _config_from_choice_keyed(config_path)
         if cfg is None:
             raise RuntimeError("No OCIO config found.")
-        return (_blend(image, _apply_processor(image, cfg.getProcessor(in_colorspace, out_colorspace)), mix),)
+        tf_key = ("colorspace", in_colorspace, out_colorspace)
+        cpu = _cached_cpu_processor(cfg_key, tf_key, lambda: cfg.getProcessor(in_colorspace, out_colorspace))
+        return (_blend(image, _apply_processor(image, cpu), mix),)
 
 
 class OCIODisplay:
@@ -470,23 +555,31 @@ class OCIODisplay:
             "display": _display_input(),
             "view": _view_input(),
             "invert_direction": ("BOOLEAN", {"default": False,
+                      "label_on": "Inverse (display -> scene)", "label_off": "Forward (scene -> display)",
                       "tooltip": "Invert (display-referred back to the input colorspace)."}),
             "mix": _mix_input(),
         }, "optional": {"config_path": _config_input()}}
 
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("image",)
+    OUTPUT_TOOLTIPS = ("Image with the display + view transform applied (or inverted).",)
     FUNCTION = "run"
     CATEGORY = "OCIO"
 
     def run(self, image, in_colorspace, display, view, invert_direction=False, mix=1.0, config_path=BUILTIN):
         _require_ocio()
-        cfg = _config_from_choice(config_path)
+        cfg, cfg_key = _config_from_choice_keyed(config_path)
         if cfg is None:
             raise RuntimeError("No OCIO config found.")
-        t = OCIO.DisplayViewTransform(src=in_colorspace, display=display, view=view)
-        t.setDirection(OCIO.TRANSFORM_DIR_INVERSE if invert_direction else OCIO.TRANSFORM_DIR_FORWARD)
-        return (_blend(image, _apply_processor(image, cfg.getProcessor(t)), mix),)
+        tf_key = ("display", in_colorspace, display, view, invert_direction)
+
+        def build():
+            t = OCIO.DisplayViewTransform(src=in_colorspace, display=display, view=view)
+            t.setDirection(OCIO.TRANSFORM_DIR_INVERSE if invert_direction else OCIO.TRANSFORM_DIR_FORWARD)
+            return cfg.getProcessor(t)
+
+        cpu = _cached_cpu_processor(cfg_key, tf_key, build)
+        return (_blend(image, _apply_processor(image, cpu), mix),)
 
 
 class OCIOCDLTransform:
@@ -507,20 +600,30 @@ class OCIOCDLTransform:
 
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("image",)
+    OUTPUT_TOOLTIPS = ("Image with the ASC CDL grade applied.",)
     FUNCTION = "run"
     CATEGORY = "OCIO"
 
     def run(self, image, slope_r, slope_g, slope_b, offset_r, offset_g, offset_b,
             power_r, power_g, power_b, saturation, direction, mix=1.0):
         _require_ocio()
-        cfg = _resolve_config("") or OCIO.Config.CreateRaw()
-        t = OCIO.CDLTransform()
-        t.setSlope([slope_r, slope_g, slope_b])
-        t.setOffset([offset_r, offset_g, offset_b])
-        t.setPower([power_r, power_g, power_b])
-        t.setSat(saturation)
-        t.setDirection(OCIO.TRANSFORM_DIR_FORWARD if direction == "forward" else OCIO.TRANSFORM_DIR_INVERSE)
-        return (_blend(image, _apply_processor(image, cfg.getProcessor(t)), mix),)
+        cfg, cfg_key = _resolve_config_keyed("")
+        if cfg is None:
+            cfg, cfg_key = OCIO.Config.CreateRaw(), ("raw",)
+        tf_key = ("cdl", slope_r, slope_g, slope_b, offset_r, offset_g, offset_b,
+                  power_r, power_g, power_b, saturation, direction)
+
+        def build():
+            t = OCIO.CDLTransform()
+            t.setSlope([slope_r, slope_g, slope_b])
+            t.setOffset([offset_r, offset_g, offset_b])
+            t.setPower([power_r, power_g, power_b])
+            t.setSat(saturation)
+            t.setDirection(OCIO.TRANSFORM_DIR_FORWARD if direction == "forward" else OCIO.TRANSFORM_DIR_INVERSE)
+            return cfg.getProcessor(t)
+
+        cpu = _cached_cpu_processor(cfg_key, tf_key, build)
+        return (_blend(image, _apply_processor(image, cpu), mix),)
 
 
 class OCIOFileTransform:
@@ -538,6 +641,7 @@ class OCIOFileTransform:
 
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("image",)
+    OUTPUT_TOOLTIPS = ("Image with the LUT / CCC / CDL file transform applied.",)
     FUNCTION = "run"
     CATEGORY = "OCIO"
 
@@ -548,10 +652,19 @@ class OCIOFileTransform:
             raise RuntimeError(f"LUT file not found: {file_path}")
         interp = {"linear": OCIO.INTERP_LINEAR, "nearest": OCIO.INTERP_NEAREST,
                   "tetrahedral": OCIO.INTERP_TETRAHEDRAL, "best": OCIO.INTERP_BEST}[interpolation]
-        t = OCIO.FileTransform(src=path, interpolation=interp)
-        t.setDirection(OCIO.TRANSFORM_DIR_FORWARD if direction == "forward" else OCIO.TRANSFORM_DIR_INVERSE)
-        cfg = _resolve_config("") or OCIO.Config.CreateRaw()
-        return (_blend(image, _apply_processor(image, cfg.getProcessor(t)), mix),)
+        cfg, cfg_key = _resolve_config_keyed("")
+        if cfg is None:
+            cfg, cfg_key = OCIO.Config.CreateRaw(), ("raw",)
+        st = os.stat(path)
+        tf_key = ("file", path, st.st_mtime_ns, st.st_size, interpolation, direction)
+
+        def build():
+            t = OCIO.FileTransform(src=path, interpolation=interp)
+            t.setDirection(OCIO.TRANSFORM_DIR_FORWARD if direction == "forward" else OCIO.TRANSFORM_DIR_INVERSE)
+            return cfg.getProcessor(t)
+
+        cpu = _cached_cpu_processor(cfg_key, tf_key, build)
+        return (_blend(image, _apply_processor(image, cpu), mix),)
 
 
 class OCIOLookTransform:
@@ -564,24 +677,32 @@ class OCIOLookTransform:
             "in_colorspace": _cs_input("ACES2065-1"),
             "out_colorspace": _cs_input("sRGB - Display"),
             "look": _looks_input(),
-            "invert_direction": ("BOOLEAN", {"default": False}),
+            "invert_direction": ("BOOLEAN", {"default": False,
+                      "label_on": "Inverse (out -> in)", "label_off": "Forward (in -> out)"}),
             "mix": _mix_input(),
         }, "optional": {"config_path": _config_input()}}
 
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("image",)
+    OUTPUT_TOOLTIPS = ("Image with the OCIO look applied (or inverted).",)
     FUNCTION = "run"
     CATEGORY = "OCIO"
 
     def run(self, image, in_colorspace, out_colorspace, look, invert_direction=False, mix=1.0, config_path=BUILTIN):
         _require_ocio()
-        cfg = _config_from_choice(config_path)
+        cfg, cfg_key = _config_from_choice_keyed(config_path)
         if cfg is None:
             raise RuntimeError("No OCIO config found.")
         looks = "" if (not look or look == "(none)") else look
-        t = OCIO.LookTransform(src=in_colorspace, dst=out_colorspace, looks=looks)
-        t.setDirection(OCIO.TRANSFORM_DIR_INVERSE if invert_direction else OCIO.TRANSFORM_DIR_FORWARD)
-        return (_blend(image, _apply_processor(image, cfg.getProcessor(t)), mix),)
+        tf_key = ("look", in_colorspace, out_colorspace, looks, invert_direction)
+
+        def build():
+            t = OCIO.LookTransform(src=in_colorspace, dst=out_colorspace, looks=looks)
+            t.setDirection(OCIO.TRANSFORM_DIR_INVERSE if invert_direction else OCIO.TRANSFORM_DIR_FORWARD)
+            return cfg.getProcessor(t)
+
+        cpu = _cached_cpu_processor(cfg_key, tf_key, build)
+        return (_blend(image, _apply_processor(image, cpu), mix),)
 
 
 NODE_CLASS_MAPPINGS = {

@@ -56,7 +56,9 @@ const CODEC_LABEL = {
     dnxhr_hq: "DNxHR HQ", h264: "H.264", hevc: "HEVC",
 };
 
-// hide / show a widget (type swap + zero height; survives older and newer ComfyUI)
+// hide / show a widget (type swap + zero height; survives older and newer ComfyUI). Used by OCIO Write only.
+// OCIO Read uses setVisibleWidgets below instead (widget.hidden + zeroed computeSize, no type swap) - see
+// that function for why (serialization, not just layout, is the reason the two nodes differ here).
 const OCIO_HIDDEN = "ocio-hidden";
 function showWidget(node, w, visible) {
     if (!w) return;
@@ -67,6 +69,42 @@ function showWidget(node, w, visible) {
         w._oType = w.type; w._oCompute = w.computeSize;
         w.type = OCIO_HIDDEN; w.computeSize = () => [0, -4]; w.hidden = true;
     }
+}
+
+// OCIO Read only: true collapse of hidden widgets, no blank row - WITHOUT removing them from node.widgets.
+//
+// IMPORTANT (confirmed against ComfyUI_frontend source, src/utils/executionUtil.ts graphToPrompt): Queue
+// Prompt serializes a node's inputs by iterating node.widgets LIVE, by widget name, at the moment the graph
+// is queued - there is no separate positional widgets_values cache that survives a widget being spliced out.
+// OCIORead declares every field ("required" in INPUT_TYPES, io_nodes.py) with no backend-side fallback for a
+// missing prompt key, so physically removing a widget from node.widgets (the first design tried here) would
+// drop that field from the /prompt payload and fail prompt validation the moment the hidden kind is queued -
+// confirmed as the wrong mechanism, not used.
+//
+// Instead this sets widget.hidden = true (litegraph's own visibility flag, not a fake type-swap) and a
+// zeroed computeSize, leaving the widget in node.widgets (so it keeps serializing) while excluding it from
+// layout. node._ocioAllWidgets is the full ordered widget list captured once, right after every
+// widget/button/DOM-widget is added in onNodeCreated - kept so the ORDER is stable across visibility changes
+// (node.widgets itself is never reordered, only each widget's hidden/computeSize is toggled in place).
+function setVisibleWidgets(node, isVisible) {
+    if (!node._ocioAllWidgets) return;
+    for (const w of node._ocioAllWidgets) {
+        const visible = isVisible(w);
+        if (!w.options) w.options = {};
+        if (visible) {
+            w.hidden = false;
+            w.options.hidden = false;                       // Vue-nodes read options.hidden; canvas reads .hidden
+            if (w._ocioCompute) { w.computeSize = w._ocioCompute; delete w._ocioCompute; }
+        } else {
+            w.hidden = true;
+            w.options.hidden = true;                        // dual-set so Vue drops the row (v-if), no blank gap
+            if (!w._ocioCompute) w._ocioCompute = w.computeSize;
+            w.computeSize = () => [0, 0];
+        }
+    }
+    pokeWidgets(node);                                  // Vue re-render (see pokeWidgets below)
+    node.setSize([node.size[0], node.computeSize()[1]]);
+    node.setDirtyCanvas(true, true);
 }
 
 // Vue-nodes frontends (ComfyUI 1.45+ new node UI) re-read the widget list only on a REAL array mutation:
@@ -132,6 +170,7 @@ function ensureReadPreview(node) {
     box.append(img, vid);
     const w = node.addDOMWidget("preview", "div", box, { serialize: false });
     w.computeSize = () => [0, 210];
+    w._ocioAlwaysVisible = true;                      // always shown, regardless of source kind
     node._ocioPrev = { img, vid };
     return node._ocioPrev;
 }
@@ -151,6 +190,44 @@ function updateReadPreview(node) {
         p.img.src = "/ocio/thumb?" + q.toString();
         p.img.style.display = "";
     }
+}
+
+// ---- read-only metadata panel (OCIO Read): a compact DOM widget under the preview, fed by /ocio/meta.
+// Small monospace "Label: value" lines - resolution, format, frame range + count, fps, the auto-detected
+// input colorspace, and alpha presence. Same update trigger as the preview (source change).
+const META_ROWS = [
+    ["resolution", "Resolution"], ["format", "Format"], ["range", "Frames"],
+    ["fps", "FPS"], ["input_colorspace", "Colorspace"], ["alpha", "Alpha"],
+];
+function ensureReadMeta(node) {
+    if (node._ocioMeta) return node._ocioMeta;
+    const box = document.createElement("div");
+    box.style.cssText = "width:100%;font:10px/1.4 monospace;color:#9cf;background:#1a1a1a;padding:4px 6px;box-sizing:border-box;overflow:hidden;white-space:nowrap;";
+    const w = node.addDOMWidget("meta", "div", box, { serialize: false });
+    w.computeSize = () => [0, 16 * META_ROWS.length + 8];
+    w._ocioAlwaysVisible = true;                      // always shown, regardless of source kind
+    node._ocioMeta = box;
+    return box;
+}
+function renderMeta(box, data) {
+    if (!data || data.error) { box.innerHTML = ""; return; }
+    const rangeTxt = data.kind === "still" ? "1" :
+        `${data.start}-${data.end} (${data.count})${data.missing ? ", missing " + data.missing : ""}`;
+    const alphaTxt = data.alpha === null || data.alpha === undefined ? "-" : (data.alpha ? "yes" : "no");
+    const values = { resolution: data.resolution || "-", format: (data.format || "-").toUpperCase(),
+        range: rangeTxt, fps: data.fps ? data.fps.toFixed(3) : "-", input_colorspace: data.input_colorspace || "-",
+        alpha: alphaTxt };
+    box.innerHTML = META_ROWS.map(([k, label]) => `<div>${label}: ${values[k]}</div>`).join("");
+}
+async function updateReadMeta(node) {
+    const box = ensureReadMeta(node);
+    const src = (W(node, "source")?.value || "").trim();
+    if (!src) { box.innerHTML = ""; return; }
+    try {
+        const r = await fetch("/ocio/meta?" + new URLSearchParams({ src }).toString());
+        const d = await r.json();
+        renderMeta(box, d);
+    } catch (e) { console.error("OCIO meta", e); box.innerHTML = ""; }
 }
 
 async function fillRange(node, source) {
@@ -175,16 +252,24 @@ async function fillRange(node, source) {
     } catch (e) { console.error("OCIO seq_range", e); }
 }
 
-// show only the frame controls that apply to the source kind (fps hidden for a still, etc.)
+// Per-kind visible widget NAMES (Nuke Read model: frame_mode only means anything for a sequence - it is the
+// auto/single/sequence grab-mode toggle; a video is always its whole clip, a still is always just itself).
+// Buttons and the preview/meta DOM widgets are tagged _ocioAlwaysVisible where they are created, so every
+// kind here only needs to list the value widgets that apply to it.
+const READ_VIS = {
+    still: ["source", "input_colorspace", "output_colorspace", "raw_data"],
+    sequence: ["source", "frame_mode", "input_colorspace", "output_colorspace", "raw_data",
+               "start_frame", "end_frame", "frame_shift", "missing_frames", "edge_mode", "fps"],
+    video: ["source", "input_colorspace", "output_colorspace", "raw_data", "start_frame", "end_frame", "fps"],
+};
+// show only the widgets that apply to the source kind (see setVisibleWidgets for the hide mechanism and why
+// it keeps every widget in node.widgets). A widget is "always visible" if it is marked _ocioAlwaysVisible
+// (buttons + the preview/meta DOM widgets, tagged where they are created) OR its name is in this kind's
+// value-widget list - not inferred from widget.type, which is not a stable marker for "is this a button"
+// across litegraph/Vue-nodes versions.
 function applyReadVis(node, kind) {
-    const still = !kind || kind === "still";
-    const seq = kind === "sequence";
-    for (const w of ["start_frame", "end_frame", "frame_shift", "fps"]) showWidget(node, W(node, w), !still);
-    showWidget(node, W(node, "missing_frames"), seq);   // gaps only exist in a frame sequence
-    showWidget(node, W(node, "edge_mode"), seq);
-    pokeWidgets(node);
-    node.setSize([node.size[0], node.computeSize()[1]]);
-    node.setDirtyCanvas(true, true);
+    const names = new Set(READ_VIS[kind] || READ_VIS.still);
+    setVisibleWidgets(node, (w) => w._ocioAlwaysVisible || names.has(w.name));
 }
 
 // ---- wire tracing: OCIO Write pulls its frame range + fps from the OCIO Read at the source end -------------
@@ -498,11 +583,20 @@ app.registerExtension({
             const onCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 const r = onCreated ? onCreated.apply(this, arguments) : undefined;
-                this.addWidget("button", "📁 browse source (disk)", null,
+                // browse: pick ANY path on disk straight into `source` (no copy - OCIORead reads it in place).
+                // upload: COPY a browser-picked file INTO ComfyUI's input folder, then point `source` at the
+                // copy (see uploadRead) - the two are not duplicates: browse needs no copy, upload is for a
+                // file that is not already inside the input folder.
+                const browseBtn = this.addWidget("button", "Browse disk...", null,
                     () => openBrowser(this, { widget: "source", pickFiles: true }), { serialize: false });
-                this.addWidget("button", "⬆ upload into input", null, () => uploadRead(this), { serialize: false });
+                const uploadBtn = this.addWidget("button", "Copy to input folder", null,
+                    () => uploadRead(this), { serialize: false });
+                browseBtn._ocioAlwaysVisible = true;
+                uploadBtn._ocioAlwaysVisible = true;
                 ensureReadPreview(this);                                          // instant preview at the bottom
-                onChange(this, "source", (v) => { setW(this, "input_colorspace", autoInCs(v)); fillRange(this, v); updateReadPreview(this); });
+                ensureReadMeta(this);                                             // metadata panel, under the preview
+                this._ocioAllWidgets = this.widgets.slice();                      // full ordered list, captured once
+                onChange(this, "source", (v) => { setW(this, "input_colorspace", autoInCs(v)); fillRange(this, v); updateReadPreview(this); updateReadMeta(this); });
                 for (const w of ["input_colorspace", "output_colorspace", "raw_data"]) {
                     onChange(this, w, () => updateReadPreview(this));  // colorspace change -> re-render the thumb
                 }
@@ -510,14 +604,22 @@ app.registerExtension({
                     onChange(this, w, () => resyncAllWrites());   // Read range/shift/fps -> downstream Writes
                 }
                 const node = this;
-                setTimeout(() => { fillRange(node, W(node, "source")?.value); updateReadPreview(node); }, 0);  // fresh node: detect the default
+                setTimeout(() => {                                                // fresh node: detect the default
+                    fillRange(node, W(node, "source")?.value);
+                    updateReadPreview(node);
+                    updateReadMeta(node);
+                }, 0);
                 return r;
             };
             const onConfig = nodeType.prototype.onConfigure;
             nodeType.prototype.onConfigure = function () {
                 const r = onConfig ? onConfig.apply(this, arguments) : undefined;
                 const node = this;
-                setTimeout(() => { fillRange(node, W(node, "source")?.value); updateReadPreview(node); }, 0);  // loaded workflow: re-detect
+                setTimeout(() => {                                                // loaded workflow: re-detect
+                    fillRange(node, W(node, "source")?.value);
+                    updateReadPreview(node);
+                    updateReadMeta(node);
+                }, 0);
                 return r;
             };
             // colorspace label (input -> output) in the title bar

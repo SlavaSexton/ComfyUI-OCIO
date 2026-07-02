@@ -187,6 +187,23 @@ try:
         return web.Response(body=buf.tobytes(), content_type="image/png",
                             headers={"Cache-Control": "no-store"})
 
+    @server.PromptServer.instance.routes.get("/ocio/meta")
+    async def _ocio_meta(request):
+        """Read-only metadata panel for OCIO Read: resolution, format, frame range + count, fps, the
+        auto-detected input colorspace, and alpha presence, for the current source (still / sequence / video).
+
+        SECURITY: reads any local path, same trust level as /ocio/thumb and /ocio/list_dirs (local
+        single-user tool) - no allowlist here on purpose, that would break the disk-browse UX.
+        """
+        from .io_nodes import read_meta
+        src = request.rel_url.query.get("src", "")
+        if not src:
+            return web.json_response({"error": "missing 'src'"}, status=400)
+        try:
+            return web.json_response(read_meta(src))
+        except Exception as e:
+            return web.json_response({"error": str(e)[:250]})
+
     @server.PromptServer.instance.routes.get("/ocio/stream")
     async def _ocio_stream(request):
         """Stream a local video file for the OCIO Read on-node player (FileResponse handles Range requests,

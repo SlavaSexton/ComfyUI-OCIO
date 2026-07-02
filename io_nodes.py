@@ -37,9 +37,9 @@ except Exception:
     tifffile = None
 from PIL import Image
 
-from .nodes import (_apply_processor, _colorspace_names, _combo_or_string,
-                    _input_dir, _logc3_to_lin, _logc4_to_lin, _require_ocio,
-                    _resolve_config, _scan_files)
+from .nodes import (_apply_processor, _cached_cpu_processor, _colorspace_names,
+                    _combo_or_string, _input_dir, _logc3_to_lin, _logc4_to_lin,
+                    _require_ocio, _resolve_config_keyed, _scan_files)
 
 try:
     import folder_paths
@@ -374,6 +374,85 @@ def _seq_range(source):
     return {"kind": "still", "start": 0, "end": 0, "count": 1, "fps": 0.0}
 
 
+def _still_shape_alpha(path):
+    """(H, W, has_alpha) for one still, WITHOUT the RGBA padding _read_still applies for the pixel pipeline -
+    the metadata panel needs to know whether the file itself carries an alpha channel, not whether one was
+    synthesized. Mirrors _read_still's decode path (same libs, same ext branches) but reads the real channel
+    count off the decoded array before any padding."""
+    ext = os.path.splitext(path)[1].lower()
+    a, bands = None, None
+    if ext in (".exr", ".hdr", ".dpx") and cv2 is not None:
+        a = cv2.imread(path, cv2.IMREAD_UNCHANGED | cv2.IMREAD_ANYDEPTH)
+    elif ext in (".tif", ".tiff") and tifffile is not None:
+        a = np.asarray(tifffile.imread(path))
+    if a is None:
+        im = Image.open(path)
+        bands = im.getbands()
+        a = np.asarray(im.convert("RGBA") if "A" in bands else im.convert("RGB"))
+    if a.ndim == 2:
+        return a.shape[0], a.shape[1], False
+    h, w, c = a.shape[0], a.shape[1], a.shape[2]
+    has_alpha = (bands is not None and "A" in bands) or (bands is None and c >= 4)
+    return h, w, has_alpha
+
+
+def read_meta(source):
+    """Read-only metadata panel data for the front-end (/ocio/meta): resolution, format, frame range + count,
+    fps, the auto-detected input colorspace, and whether the file carries an alpha channel. Reuses _seq_range
+    for the range/count/fps/kind (same detection the auto-fill uses) and adds the fields _seq_range does not
+    need: resolution, container/codec, and alpha presence. Never raises - callers get {"error": ...} instead,
+    matching /ocio/thumb's contract, since this backs a UI panel that must not 500 on a bad path."""
+    source = (source or "").rstrip("/")
+    if not source:
+        return {"error": "empty source"}
+    s = source if os.path.isabs(source) else os.path.join(_input_dir(), source)
+    ext = os.path.splitext(s)[1].lower()
+    try:
+        rng = _seq_range(source)   # inside the try too - it shells out to ffprobe for a video source
+        if ext in VIDEO_EXTS:
+            if not os.path.isfile(s):
+                return {"error": f"not found: {s}"}
+            pr = subprocess.run([_FFPROBE, "-v", "error", "-select_streams", "v:0", "-show_entries",
+                                 "stream=width,height,codec_name,pix_fmt,color_primaries,color_transfer,"
+                                 "color_space,nb_frames,r_frame_rate,avg_frame_rate",
+                                 "-of", "default=noprint_wrappers=1", s], capture_output=True, text=True)
+            info = dict(line.split("=", 1) for line in pr.stdout.strip().splitlines() if "=" in line)
+            w, h = int(info.get("width", 0) or 0), int(info.get("height", 0) or 0)
+            if not (w and h):
+                return {"error": f"ffprobe could not read {s}: {pr.stderr[:200]}"}
+            pix_fmt = info.get("pix_fmt", "") or ""
+            return {"kind": "video", "resolution": f"{w}x{h}", "format": ext.lstrip("."),
+                    "codec": info.get("codec_name", "") or "", "pix_fmt": pix_fmt,
+                    "start": rng.get("start", 0), "end": rng.get("end", 0), "count": rng.get("count", 0),
+                    "fps": rng.get("fps", 0.0), "input_colorspace": _auto_input_cs(s),
+                    "alpha": pix_fmt.endswith("a") or "argb" in pix_fmt or "rgba" in pix_fmt,
+                    "color_primaries": info.get("color_primaries", "") or "",
+                    "color_transfer": info.get("color_transfer", "") or ""}
+        # still / sequence: resolve the same first frame _seq_range/load_source would pick
+        files = _frame_files(s)
+        if not files and os.path.isfile(s):
+            sib = _sequence_siblings(s)
+            if len(sib) > 1:
+                files = sib
+        if files:
+            first = files[0]
+        elif os.path.isfile(s):
+            first = s
+        else:
+            return {"error": f"not found: {s}"}
+        h, w, has_alpha = _still_shape_alpha(first)      # real channel count - _read_still always pads to RGBA
+        kind = "sequence" if files else "still"
+        return {"kind": kind, "resolution": f"{w}x{h}", "format": os.path.splitext(first)[1].lstrip(".").lower(),
+                "start": rng.get("orig_start", rng.get("start", 0)) if kind == "sequence" else 0,
+                "end": rng.get("orig_end", rng.get("end", 0)) if kind == "sequence" else 0,
+                "count": rng.get("count", 1), "fps": rng.get("fps", 0.0),
+                "input_colorspace": _auto_input_cs(first),
+                "alpha": has_alpha,
+                "missing": rng.get("missing", ""), "missing_count": rng.get("missing_count", 0)}
+    except Exception as e:
+        return {"error": str(e)[:250]}
+
+
 def _fit_long_side(rgb, max_side):
     """Downscale (never upscale) so the long side is at most max_side, cv2 INTER_AREA (correct for shrinking).
     Done BEFORE the OCIO convert - cheaper to color-convert a small image than a full-res one."""
@@ -553,14 +632,20 @@ def _retime(image, src_fps, dst_fps):
 
 
 def _convert(image, in_cs, out_cs):
-    """OCIO convert between two colorspaces using the active (built-in ACES) config. Identity if equal."""
+    """OCIO convert between two colorspaces using the active (built-in ACES) config. Identity if equal.
+    Uses the same cached CPU processor as the color nodes: getProcessor returns a Processor, which has no
+    .apply - _apply_processor needs the CPUProcessor from getDefaultCPUProcessor (done inside
+    _cached_cpu_processor). This is the OCIORead / OCIOWrite conversion path AND the /ocio/thumb preview,
+    so both re-render correctly (and cheaply, LRU-cached) on a colorspace change."""
     if not in_cs or not out_cs or in_cs == out_cs:
         return image
     _require_ocio()
-    cfg = _resolve_config("")
+    cfg, cfg_key = _resolve_config_keyed("")
     if cfg is None:
         return image
-    return _apply_processor(image, cfg.getProcessor(in_cs, out_cs))
+    tf_key = ("colorspace", in_cs, out_cs)
+    cpu = _cached_cpu_processor(cfg_key, tf_key, lambda: cfg.getProcessor(in_cs, out_cs))
+    return _apply_processor(image, cpu)
 
 
 def _cs_combo(default):
@@ -643,11 +728,11 @@ class OCIORead:
                 "video": f"video: {label}, {n} frame(s), {res}, {out_fps:g} fps",
                 "still": f"single: {label}, {res}"}.get(kind, f"{n} frame(s), {res}")
         txt = f"{head}{shift_txt}{miss_txt}, {cs}"
-        return {"ui": {"images": self._preview(rgb[0])}, "result": (rgb, mask, out_fps, txt)}
-
-    def _preview(self, frame0):
-        """First loaded frame, shown in its (already-converted) output colorspace. Mirrors OCIOWrite._preview."""
-        return _save_preview_png(frame0, "ocio_read_preview.png")
+        # No "ui": {"images": ...} here - the front-end's own DOM-widget preview (ocio_io.js, /ocio/thumb) is
+        # the single on-node preview for Read. A ui.images entry would render a SECOND, stale-after-run
+        # thumbnail (ComfyUI paints it from node.imgs independently of the DOM widget). OCIOWrite keeps its
+        # ui.images preview - it has no live front-end thumb, so that is still its only preview.
+        return (rgb, mask, out_fps, txt)
 
 
 _STILL_EXT = {"exr": "exr", "tiff": "tif", "png": "png", "jpeg": "jpg"}

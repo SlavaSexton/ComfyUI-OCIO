@@ -245,6 +245,22 @@ decode to float precision. As with any EXR here, set `OPENCV_IO_ENABLE_OPENEXR=1
 
 ---
 
+## API video sources (Seedance and friends)
+
+Cloud video nodes (Seedance, Kling, Veo, and the like) emit a `VIDEO`, not an `IMAGE`. To color-manage one,
+let the API node save its clip (`SaveVideo`), then load that file with **OCIO Read** (it reads video) and pipe it
+into **OCIO Write**:
+
+```
+ByteDance2TextToVideoNode -> SaveVideo -> OCIO Read (the saved .mp4) -> OCIO Write
+```
+
+Seedance 4K is 10-bit and HDR-ready, but its exact color encoding (Rec.709 vs Rec.2020 / PQ) is not published, so
+set OCIO Read's `input_colorspace` to match your actual clip (check the file's tags with `ffprobe`). The
+`Seedance 4K 10-bit` profile on OCIO Write is a placeholder until that encoding is confirmed from a real sample.
+Verified that a 10-bit clip (both a Rec.709 and a Rec.2020 / PQ variant) loads through OCIO Read and writes back
+through OCIO Write with the frame count intact.
+
 ## Example workflow
 
 `example_workflows/OCIO_Nodes.json` shows all eight nodes on one image. To open it:

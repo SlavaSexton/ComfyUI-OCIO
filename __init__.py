@@ -204,6 +204,27 @@ try:
         except Exception as e:
             return web.json_response({"error": str(e)[:250]})
 
+    @server.PromptServer.instance.routes.get("/ocio/lut")
+    async def _ocio_lut(request):
+        """3D LUT (RGBA8, N^3, raw bytes) baking the input -> output colorspace, for the OCIO Read WebGL
+        video viewport. The <video> plays raw and the shader samples this LUT, so colorspace edits show on
+        moving video. Same trust level as /ocio/thumb (local single-user tool). X-Lut-Size header carries N.
+        """
+        from .io_nodes import _lut_rgba8
+        q = request.rel_url.query
+        in_cs, out_cs = q.get("in_cs", ""), q.get("out_cs", "")
+        raw = q.get("raw", "0") == "1"
+        try:
+            size = max(2, min(65, int(q.get("size", "33"))))
+        except (TypeError, ValueError):
+            size = 33
+        try:
+            n, data = _lut_rgba8(in_cs, out_cs, size, raw)
+        except Exception as e:
+            return web.json_response({"error": str(e)[:250]}, status=400)
+        return web.Response(body=data, content_type="application/octet-stream",
+                            headers={"X-Lut-Size": str(n), "Cache-Control": "no-store"})
+
     @server.PromptServer.instance.routes.get("/ocio/stream")
     async def _ocio_stream(request):
         """Stream a local video file for the OCIO Read on-node player (FileResponse handles Range requests,

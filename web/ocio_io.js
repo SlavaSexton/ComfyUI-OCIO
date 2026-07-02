@@ -154,12 +154,30 @@ function exampleName(node) {
 }
 
 // ---- instant on-node preview (OCIO Read): a DOM widget (addDOMWidget renders on Vue and legacy frontends
-// alike; node.imgs / canvas draws do not on Vue). Every source kind (still / sequence / video) is served by
-// /ocio/thumb (server-side render, so EXR works and the chosen input -> output colorspace is applied). A video
-// shows its FIRST FRAME, color-managed: the browser cannot apply OCIO to a raw <video> element, so streaming
-// the file unmanaged would look color-wrong next to a color node, and colorspace edits would not show on it.
-// Moving + color-accurate playback is the WebGL viewport (a separate build). Updates on source / colorspace /
-// raw_data change, WITHOUT queueing the graph.
+// alike; node.imgs / canvas draws do not on Vue). Still / sequence: an <img> from /ocio/thumb (server render,
+// so EXR works and the input -> output colorspace is applied). Video: a WebGL2 viewport - a hidden <video>
+// plays the raw file (/ocio/stream) and a <canvas> shader samples each frame through a 3D LUT baked from the
+// same input -> output transform (/ocio/lut), so a MOVING video reacts to a colorspace change. The browser
+// cannot apply OCIO to a <video> itself; the LUT is the bridge. Its input is the browser-decoded (display
+// 8-bit) frame, so the viewport is transform-accurate but input-approximate - the reference-exact path stays
+// the still /ocio/thumb. No WebGL2, or the stream / LUT failing, falls back to the static thumb frame.
+const _VP_VERT = `#version 300 es
+in vec2 p; out vec2 uv;
+void main(){ uv = vec2(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5); gl_Position = vec4(p, 0.0, 1.0); }`;
+const _VP_FRAG = `#version 300 es
+precision highp float; precision highp sampler3D;
+in vec2 uv; out vec4 o;
+uniform sampler2D uVid; uniform sampler3D uLut; uniform float uN; uniform float uOn;
+void main(){
+  vec3 c = texture(uVid, uv).rgb;
+  if (uOn > 0.5) { vec3 s = c * ((uN - 1.0) / uN) + 0.5 / uN; c = texture(uLut, s).rgb; }
+  o = vec4(c, 1.0);
+}`;
+function _vpCompile(gl, type, src) {
+    const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) { console.error("[OCIO] shader:", gl.getShaderInfoLog(s)); return null; }
+    return s;
+}
 function ensureReadPreview(node) {
     if (node._ocioPrev) return node._ocioPrev;
     const box = document.createElement("div");
@@ -167,22 +185,105 @@ function ensureReadPreview(node) {
     const img = document.createElement("img");
     img.style.cssText = "max-width:100%;max-height:200px;object-fit:contain;display:none;";
     img.onerror = () => { img.style.display = "none"; };
-    box.append(img);
+    const video = document.createElement("video");
+    video.muted = true; video.loop = true; video.playsInline = true; video.setAttribute("playsinline", "");
+    video.style.display = "none";
+    const canvas = document.createElement("canvas");
+    canvas.style.cssText = "max-width:100%;max-height:200px;object-fit:contain;display:none;";
+    box.append(img, video, canvas);
     const w = node.addDOMWidget("preview", "div", box, { serialize: false });
     w.computeSize = () => [0, 210];
     w._ocioAlwaysVisible = true;                      // always shown, regardless of source kind
-    node._ocioPrev = { img };
+    node._ocioPrev = { img, video, canvas, gl: null, lutN: 33, lutReady: false, raf: 0, streamUrl: "" };
+    node.onRemoved = (orig => function () { _stopViewport(node._ocioPrev); return orig && orig.apply(this, arguments); })(node.onRemoved);
     return node._ocioPrev;
+}
+function _vpInitGL(p) {
+    if (p.gl) return p.gl;
+    const gl = p.canvas.getContext("webgl2", { premultipliedAlpha: false, antialias: false, preserveDrawingBuffer: true });
+    if (!gl) return null;
+    const vs = _vpCompile(gl, gl.VERTEX_SHADER, _VP_VERT), fs = _vpCompile(gl, gl.FRAGMENT_SHADER, _VP_FRAG);
+    if (!vs || !fs) return null;
+    const prog = gl.createProgram(); gl.attachShader(prog, vs); gl.attachShader(prog, fs);
+    gl.bindAttribLocation(prog, 0, "p"); gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) { console.error("[OCIO] link:", gl.getProgramInfoLog(prog)); return null; }
+    const quad = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);   // one oversized tri
+    gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    const vidTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, vidTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const lutTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_3D, lutTex);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+    gl.useProgram(prog);
+    const locs = { uN: gl.getUniformLocation(prog, "uN"), uOn: gl.getUniformLocation(prog, "uOn") };
+    gl.uniform1i(gl.getUniformLocation(prog, "uVid"), 0); gl.uniform1i(gl.getUniformLocation(prog, "uLut"), 1);
+    p.gl = { gl, prog, locs, vidTex, lutTex };
+    return p.gl;
+}
+async function _refreshVideoLut(node, p) {
+    const g = p.gl; if (!g) return;
+    const q = new URLSearchParams({ in_cs: W(node, "input_colorspace")?.value || "", out_cs: W(node, "output_colorspace")?.value || "",
+        raw: W(node, "raw_data")?.value ? "1" : "0", size: "33" });
+    try {
+        const r = await fetch("/ocio/lut?" + q.toString()); if (!r.ok) throw new Error("lut " + r.status);
+        const n = parseInt(r.headers.get("X-Lut-Size") || "33", 10); const buf = new Uint8Array(await r.arrayBuffer());
+        const gl = g.gl; gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_3D, g.lutTex);
+        gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA8, n, n, n, 0, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+        p.lutN = n; p.lutReady = true;
+    } catch (e) { console.error("[OCIO] lut fetch:", e); p.lutReady = false; }
+}
+function _drawViewport(p) {
+    const g = p.gl; if (!g) return; const gl = g.gl, v = p.video;
+    if (!(v.videoWidth > 0) || v.readyState < 2) return;
+    if (p.canvas.width !== v.videoWidth || p.canvas.height !== v.videoHeight) { p.canvas.width = v.videoWidth; p.canvas.height = v.videoHeight; }
+    gl.viewport(0, 0, p.canvas.width, p.canvas.height);
+    gl.useProgram(g.prog);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, g.vidTex);
+    try { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, v); } catch (e) { return; }
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_3D, g.lutTex);
+    gl.uniform1f(g.locs.uN, p.lutN || 33); gl.uniform1f(g.locs.uOn, p.lutReady ? 1 : 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+function _startViewport(node, p, src) {
+    const streamUrl = "/ocio/stream?src=" + encodeURIComponent(src);
+    if (p.streamUrl !== streamUrl) {
+        p.streamUrl = streamUrl; p.video.src = streamUrl; p.video.play().catch(() => {});
+        p.video.onerror = () => { _stopViewport(p); p.img.src = "/ocio/thumb?" + _thumbQuery(node, src); p.img.style.display = ""; };
+    }
+    if (!_vpInitGL(p)) {                               // no WebGL2 -> static color-managed thumb fallback
+        p.canvas.style.display = "none"; p.video.style.display = "none";
+        p.img.src = "/ocio/thumb?" + _thumbQuery(node, src); p.img.style.display = ""; return;
+    }
+    p.img.style.display = "none"; p.video.style.display = "none"; p.canvas.style.display = "";
+    _refreshVideoLut(node, p);
+    if (!p.raf) {
+        const loop = () => { if (node._ocioPrev !== p) { p.raf = 0; return; } _drawViewport(p); p.raf = requestAnimationFrame(loop); };
+        p.raf = requestAnimationFrame(loop);
+    }
+}
+function _stopViewport(p) {
+    if (!p) return;
+    if (p.raf) { cancelAnimationFrame(p.raf); p.raf = 0; }
+    try { p.video.pause(); } catch (e) {}
+    p.canvas.style.display = "none"; p.video.style.display = "none"; p.streamUrl = "";
+}
+function _thumbQuery(node, src) {
+    return new URLSearchParams({ src, in_cs: W(node, "input_colorspace")?.value || "", out_cs: W(node, "output_colorspace")?.value || "",
+        raw: W(node, "raw_data")?.value ? "1" : "0", rand: String(Date.now()) }).toString();
 }
 function updateReadPreview(node) {
     const p = ensureReadPreview(node);
     const src = (W(node, "source")?.value || "").trim();
-    if (!src) { p.img.style.display = "none"; p.img.removeAttribute("src"); return; }
-    const q = new URLSearchParams({ src, in_cs: W(node, "input_colorspace")?.value || "",
-        out_cs: W(node, "output_colorspace")?.value || "",
-        raw: W(node, "raw_data")?.value ? "1" : "0", rand: String(Date.now()) });
-    p.img.src = "/ocio/thumb?" + q.toString();
-    p.img.style.display = "";
+    if (!src) { p.img.style.display = "none"; p.img.removeAttribute("src"); _stopViewport(p); return; }
+    if (/\.(mov|mp4|mkv|avi|webm|mxf|m4v)$/i.test(src)) {
+        _startViewport(node, p, src);
+    } else {
+        _stopViewport(p);
+        p.img.src = "/ocio/thumb?" + _thumbQuery(node, src); p.img.style.display = "";
+    }
 }
 
 // ---- read-only metadata panel (OCIO Read): a compact DOM widget under the preview, fed by /ocio/meta.

@@ -58,6 +58,23 @@ def main():
     assert rt < 1e-3, f"round-trip error too high: {rt}"
     print(f"[PASS] round-trip sRGB<->ACEScg max abs error {rt:.2e}")
 
+    # 5) _lut_rgba8: the 3D LUT baked for the WebGL video viewport. Identity ramp + axis order + non-identity.
+    n, data = io_nodes._lut_rgba8("sRGB - Display", "sRGB - Display", 33, False)
+    lut = np.frombuffer(data, np.uint8).reshape(n * n * n, 4)
+    assert n == 33 and lut.shape[0] == 33 ** 3, f"bad LUT size {n}"
+    assert (lut[:, 3] == 255).all(), "LUT alpha must be 255"
+    assert lut[0, :3].tolist() == [0, 0, 0], "identity black corner"
+    assert lut[-1, :3].tolist() == [255, 255, 255], "identity white corner"
+    # texImage3D layout: R (x) fastest, so index n-1 is pure-red max, index (n-1)*n is pure-green max
+    assert lut[n - 1, :3].tolist() == [255, 0, 0], f"axis order: pure-red texel wrong {lut[n - 1, :3].tolist()}"
+    assert lut[(n - 1) * n, :3].tolist() == [0, 255, 0], f"axis order: pure-green texel wrong {lut[(n - 1) * n, :3].tolist()}"
+    _, dconv = io_nodes._lut_rgba8("sRGB - Display", "ACEScg", 33, False)
+    lconv = np.frombuffer(dconv, np.uint8).reshape(-1, 4)
+    assert (lut[:, :3] != lconv[:, :3]).any(), "sRGB->ACEScg LUT must differ from identity"
+    _, draw = io_nodes._lut_rgba8("sRGB - Display", "ACEScg", 33, True)  # raw=True -> identity even if in!=out
+    assert (np.frombuffer(draw, np.uint8).reshape(-1, 4)[:, :3] == lut[:, :3]).all(), "raw=True must be identity"
+    print("[PASS] _lut_rgba8 identity ramp, axis order (R fastest), non-identity, raw passthrough")
+
     print("\nALL CHECKS PASSED - io_nodes._convert converts through a CPU processor")
 
 

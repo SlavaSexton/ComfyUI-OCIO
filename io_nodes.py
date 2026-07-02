@@ -648,6 +648,32 @@ def _convert(image, in_cs, out_cs):
     return _apply_processor(image, cpu)
 
 
+def _lut_rgba8(in_cs, out_cs, size=33, raw=False):
+    """Bake the in_cs -> out_cs transform into an N x N x N RGBA8 3D LUT for the OCIO Read WebGL video
+    viewport. The browser plays the raw <video> and the shader samples this LUT, so a moving video reacts
+    to a colorspace change (the browser cannot apply OCIO to a <video> itself). Domain is [0,1]^3 (browser
+    decode is display-referred 8-bit); output is clamped to [0,1] so the texture is 8-bit and always
+    linear-filterable (no float-texture extension needed). Data is laid out for WebGL texImage3D: R (x)
+    varies fastest, then G (y), then B (z). raw, in==out, or OCIO-unavailable returns the identity ramp.
+    Returns (n, bytes)."""
+    import numpy as np
+    n = int(size)
+    lin = np.linspace(0.0, 1.0, n, dtype=np.float32)
+    bb, gg, rr = np.meshgrid(lin, lin, lin, indexing="ij")   # C-order flatten -> index ((b*n+g)*n+r), r fastest
+    grid = np.stack([rr, gg, bb], axis=-1).reshape(-1, 3).astype(np.float32)   # [n^3, 3] identity rgb
+    if not raw and in_cs and out_cs and in_cs != out_cs:
+        try:
+            import torch
+            t = torch.from_numpy(np.ascontiguousarray(grid[None, :, None, :]))   # [1, n^3, 1, 3]
+            grid = _convert(t, in_cs, out_cs)[0, :, 0, :].contiguous().numpy()
+        except RuntimeError:
+            pass   # OCIO lib/config unavailable -> identity passthrough (same as _convert / _ocio_thumb)
+    rgba = np.empty((grid.shape[0], 4), np.uint8)
+    rgba[:, :3] = (np.clip(grid, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
+    rgba[:, 3] = 255
+    return n, rgba.tobytes()
+
+
 def _cs_combo(default):
     return _combo_or_string(_colorspace_names(), default, "Colorspace from the active OCIO (ACES) config.")
 

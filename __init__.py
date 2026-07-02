@@ -7,10 +7,17 @@ import os
 from .nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
 from .io_nodes import (NODE_CLASS_MAPPINGS as _IO_CLASSES,
                        NODE_DISPLAY_NAME_MAPPINGS as _IO_NAMES)
+from .grade_nodes import (NODE_CLASS_MAPPINGS as _GRADE_CLASSES,
+                          NODE_DISPLAY_NAME_MAPPINGS as _GRADE_NAMES)
 
 # Read / Write IO nodes live in io_nodes.py; merge their mappings in.
 NODE_CLASS_MAPPINGS.update(_IO_CLASSES)
 NODE_DISPLAY_NAME_MAPPINGS.update(_IO_NAMES)
+
+# Grade / Grade Match / Apply Grade nodes live in grade_nodes.py; merge their mappings in too, before
+# the version-suffix pass below so the Grade nodes' titles also get " - v<version>".
+NODE_CLASS_MAPPINGS.update(_GRADE_CLASSES)
+NODE_DISPLAY_NAME_MAPPINGS.update(_GRADE_NAMES)
 
 # Front-end assets: the 'swap' button, the 'upload' buttons, and the Read/Write IO helpers (auto-colorspace,
 # Render button, folder browse, colorspace label).

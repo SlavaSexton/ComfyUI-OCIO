@@ -178,7 +178,7 @@ function syncWriteFromUpstream(node) {
 }
 function resyncAllWrites() {
     for (const nd of (app.graph && app.graph._nodes) || []) {
-        if (nd.type === "OCIOWrite") { syncWriteFromUpstream(nd); applyAutoColorspace(nd); }
+        if (nd.type === "OCIOWrite") syncWriteFromUpstream(nd);
     }
 }
 // ---- auto colorspace: wired from LTX's HDR decode node -> set Linear Rec.709 -> ACEScg automatically ---------
@@ -441,7 +441,10 @@ function openFolderDialog(node) {   // Write output folder
     return openBrowser(node, { widget: "output_folder", forOutput: true });
 }
 
-// ---- version badge: every OCIO-category node gets a small "vX.Y.Z" in its bottom-right corner ------------
+// ---- version badge: every OCIO-category node gets a small "vX.Y.Z" in its top-right corner ----------------
+// (bottom-left is taken by OCIORead's range/missing-frames text and OCIOWrite's example filename/codec footer;
+// bottom-right is taken by OCIOWrite's "wrote N frame(s)"; top-right inside the node body is the free corner -
+// the colorspace label at y=-6 sits above the node box, not inside it, so there is no clash there either)
 let OCIO_VER = "";
 fetch("/ocio/version").then((r) => r.json()).then((d) => { OCIO_VER = "v" + d.version; }).catch(() => {});
 
@@ -455,7 +458,7 @@ app.registerExtension({
                 if ((this.flags && this.flags.collapsed) || !OCIO_VER) return;
                 ctx.save();
                 ctx.font = "9px sans-serif"; ctx.fillStyle = "rgba(255,255,255,0.35)"; ctx.textAlign = "right";
-                ctx.fillText(OCIO_VER, this.size[0] - 6, this.size[1] - 6);
+                ctx.fillText(OCIO_VER, this.size[0] - 6, 12);
                 ctx.restore();
             };
         }
@@ -518,16 +521,34 @@ app.registerExtension({
                         if (!BITS[fmt].includes(bw.value)) bw.value = BIT_DEF[fmt];
                     }
                 };
+                // compression only makes sense for EXR stills/sequences; container-change and still_format-change
+                // both need this same rule, so it lives in one place (DRY)
+                const applyCompressionVis = () => {
+                    const c = W(node, "container")?.value, isVideo = c === "video";
+                    showWidget(node, W(node, "compression"), !isVideo && W(node, "still_format")?.value === "exr");
+                };
                 const applyContainer = () => {
                     const c = W(node, "container")?.value, isVideo = c === "video", isStill = c === "still image";
+                    const isSeq = c === "sequence";
                     showWidget(node, W(node, "still_format"), !isVideo);
                     showWidget(node, W(node, "video_codec"), isVideo);
-                    showWidget(node, W(node, "bit_depth"), !isVideo);
-                    showWidget(node, W(node, "last_frame"), !isStill);        // still image writes one chosen frame
-                    showWidget(node, W(node, "start_number"), c === "sequence");
-                    showWidget(node, W(node, "source_start"), false);         // internal (set by the wire)
+                    showWidget(node, W(node, "bit_depth"), !isVideo);          // video's real depth is in the codec footer instead
+                    applyCompressionVis();
+                    showWidget(node, W(node, "auto_range"), !isStill);         // still image writes one chosen frame, no range
+                    showWidget(node, W(node, "first_frame"), true);            // always shown (relabelled below)
+                    showWidget(node, W(node, "last_frame"), !isStill);
+                    showWidget(node, W(node, "start_number"), isSeq);
+                    const fpsW = W(node, "fps");                                // optional input; only toggle if it renders as a widget
+                    if (fpsW) showWidget(node, fpsW, isVideo);
+                    showWidget(node, W(node, "source_start"), false);          // internal (set by the wire)
+                    showWidget(node, W(node, "auto_colorspace"), false);       // legacy LTX auto-detect, superseded by profile="auto"
                     const ff = W(node, "first_frame");                         // relabel the shared field
-                    if (ff) ff.label = isStill ? "which frame" : "first_frame";
+                    if (ff) {
+                        ff.label = isStill ? "frame to save" : "first_frame";
+                        ff.tooltip = isStill
+                            ? "which single frame to write, default 1"
+                            : "first frame number to write (auto-filled from the source when auto_range is ON)";
+                    }
                     applyFormat();
                     setW(node, "output_colorspace", autoOutCs(c, W(node, "still_format")?.value));
                     node.setSize([node.size[0], node.computeSize()[1]]);
@@ -536,12 +557,12 @@ app.registerExtension({
                 onChange(this, "container", applyContainer);
                 onChange(this, "still_format", () => {
                     applyFormat();
+                    applyCompressionVis();
                     setW(node, "output_colorspace", autoOutCs(W(node, "container")?.value, W(node, "still_format")?.value));
                 });
                 onChange(this, "video_codec", () => node.setDirtyCanvas(true, true));  // redraw the codec/bit-depth footer
                 // auto frame range / fps from the upstream OCIO Read
                 onChange(this, "auto_range", (v) => { if (v) syncWriteFromUpstream(node); });
-                onChange(this, "auto_colorspace", (v) => { if (v) applyAutoColorspace(node); });
                 for (const w of ["first_frame", "last_frame", "start_number"]) {
                     onChange(this, w, () => { const ar = W(node, "auto_range"); if (ar) ar.value = false; });  // manual edit -> auto OFF
                 }
@@ -555,23 +576,23 @@ app.registerExtension({
                         if (pw && pw.value !== "none") { pw.value = "none"; node.setDirtyCanvas(true, true); }
                     });
                 }
-                this.addWidget("button", "📁 browse output folder", null, () => openFolderDialog(this), { serialize: false });
+                this.addWidget("button", "📁 choose output folder", null, () => openFolderDialog(this), { serialize: false });
                 this.addWidget("button", "▶ Render", null, () => app.queuePrompt(0, 1), { serialize: false });
-                setTimeout(() => { applyContainer(); syncWriteFromUpstream(node); applyAutoColorspace(node); resolveAutoProfile(node); }, 0);
+                setTimeout(() => { applyContainer(); syncWriteFromUpstream(node); resolveAutoProfile(node); }, 0);
                 return r;
             };
             const onConn = nodeType.prototype.onConnectionsChange;
             nodeType.prototype.onConnectionsChange = function () {
                 const r = onConn ? onConn.apply(this, arguments) : undefined;
                 const node = this;
-                setTimeout(() => { syncWriteFromUpstream(node); applyAutoColorspace(node); resolveAutoProfile(node); }, 0);   // wire (re)connected -> pull range/fps + auto colorspace/profile
+                setTimeout(() => { syncWriteFromUpstream(node); resolveAutoProfile(node); }, 0);   // wire (re)connected -> pull range/fps + auto profile
                 return r;
             };
             const onConfigW = nodeType.prototype.onConfigure;
             nodeType.prototype.onConfigure = function () {
                 const r = onConfigW ? onConfigW.apply(this, arguments) : undefined;
                 const node = this;
-                setTimeout(() => { syncWriteFromUpstream(node); applyAutoColorspace(node); resolveAutoProfile(node); }, 0);   // loaded workflow -> re-detect
+                setTimeout(() => { syncWriteFromUpstream(node); resolveAutoProfile(node); }, 0);   // loaded workflow -> re-detect
                 return r;
             };
             const onDraw = nodeType.prototype.onDrawForeground;

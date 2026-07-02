@@ -19,6 +19,29 @@ WEB_DIRECTORY = "./web"
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
 
 
+def _pack_version():
+    """pyproject.toml [project] version is the single source of truth for the front-end badge."""
+    try:
+        import tomllib
+        with open(os.path.join(os.path.dirname(__file__), "pyproject.toml"), "rb") as f:
+            return tomllib.load(f)["project"]["version"]
+    except ImportError:
+        # tomllib is stdlib only on Python 3.11+; this pack targets >=3.9 (pyproject.toml), so fall back
+        # to a minimal regex parse of the version line rather than requiring a TOML dependency.
+        import re
+        try:
+            with open(os.path.join(os.path.dirname(__file__), "pyproject.toml"), "r", encoding="utf-8") as f:
+                m = re.search(r'^version\s*=\s*"([^"]+)"', f.read(), re.MULTILINE)
+            return m.group(1) if m else "0.0.0"
+        except Exception:
+            return "0.0.0"
+    except Exception:
+        return "0.0.0"
+
+
+__version__ = _pack_version()
+
+
 # --- server routes (only inside ComfyUI) --------------------------------------------------------------------
 try:
     import server
@@ -26,6 +49,11 @@ try:
     import folder_paths
 
     _OCIO_SUBDIR = "ocio_assets"
+
+    @server.PromptServer.instance.routes.get("/ocio/version")
+    async def _ocio_version(request):
+        """Report the installed pack version, for the front-end's per-node version badge."""
+        return web.json_response({"version": __version__})
 
     @server.PromptServer.instance.routes.post("/ocio/upload")
     async def _ocio_upload(request):

@@ -364,9 +364,25 @@ function openFolderDialog(node) {   // Write output folder
     return openBrowser(node, { widget: "output_folder", forOutput: true });
 }
 
+// ---- version badge: every OCIO-category node gets a small "vX.Y.Z" in its bottom-right corner ------------
+let OCIO_VER = "";
+fetch("/ocio/version").then((r) => r.json()).then((d) => { OCIO_VER = "v" + d.version; }).catch(() => {});
+
 app.registerExtension({
     name: "ComfyUI-OCIO.io",
     async beforeRegisterNodeDef(nodeType, nodeData) {
+        if (nodeData.category === "OCIO") {
+            const prevDraw = nodeType.prototype.onDrawForeground;
+            nodeType.prototype.onDrawForeground = function (ctx) {
+                prevDraw && prevDraw.apply(this, arguments);
+                if ((this.flags && this.flags.collapsed) || !OCIO_VER) return;
+                ctx.save();
+                ctx.font = "9px sans-serif"; ctx.fillStyle = "rgba(255,255,255,0.35)"; ctx.textAlign = "right";
+                ctx.fillText(OCIO_VER, this.size[0] - 6, this.size[1] - 6);
+                ctx.restore();
+            };
+        }
+
         if (nodeData.name === "OCIORead") {
             const onCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {

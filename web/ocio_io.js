@@ -115,6 +115,44 @@ function exampleName(node) {
     return `${name}${t}.${pad(s)}.${ext}, ${name}${t}.${pad(s + 1)}.${ext} ...`;
 }
 
+// ---- instant on-node preview (OCIO Read): a DOM widget (addDOMWidget renders on Vue and legacy frontends
+// alike; node.imgs / canvas draws do not on Vue). The <img> is served by /ocio/thumb (server-side render, so
+// EXR works and the chosen input -> output colorspace is applied); a video source gets a real <video> player
+// streaming /ocio/stream. Updates on source / colorspace / raw_data change - WITHOUT queueing the graph.
+function ensureReadPreview(node) {
+    if (node._ocioPrev) return node._ocioPrev;
+    const box = document.createElement("div");
+    box.style.cssText = "width:100%;height:100%;display:flex;justify-content:center;align-items:center;overflow:hidden;";
+    const img = document.createElement("img");
+    img.style.cssText = "max-width:100%;max-height:200px;object-fit:contain;display:none;";
+    img.onerror = () => { img.style.display = "none"; };
+    const vid = document.createElement("video");
+    vid.controls = true; vid.muted = true;
+    vid.style.cssText = "max-width:100%;max-height:200px;display:none;";
+    box.append(img, vid);
+    const w = node.addDOMWidget("preview", "div", box, { serialize: false });
+    w.computeSize = () => [0, 210];
+    node._ocioPrev = { img, vid };
+    return node._ocioPrev;
+}
+function updateReadPreview(node) {
+    const p = ensureReadPreview(node);
+    const src = (W(node, "source")?.value || "").trim();
+    if (!src) { p.img.style.display = "none"; p.vid.style.display = "none"; p.vid.removeAttribute("src"); return; }
+    if (/\.(mov|mp4|mkv|avi|webm|mxf|m4v)$/i.test(src)) {
+        p.img.style.display = "none";
+        p.vid.src = "/ocio/stream?src=" + encodeURIComponent(src);
+        p.vid.style.display = "";
+    } else {
+        p.vid.style.display = "none"; p.vid.removeAttribute("src");
+        const q = new URLSearchParams({ src, in_cs: W(node, "input_colorspace")?.value || "",
+            out_cs: W(node, "output_colorspace")?.value || "",
+            raw: W(node, "raw_data")?.value ? "1" : "0", rand: String(Date.now()) });
+        p.img.src = "/ocio/thumb?" + q.toString();
+        p.img.style.display = "";
+    }
+}
+
 async function fillRange(node, source) {
     if (!source) { applyReadVis(node); return; }   // empty source: hide the frame controls (still-image default)
     try {
@@ -463,19 +501,23 @@ app.registerExtension({
                 this.addWidget("button", "📁 browse source (disk)", null,
                     () => openBrowser(this, { widget: "source", pickFiles: true }), { serialize: false });
                 this.addWidget("button", "⬆ upload into input", null, () => uploadRead(this), { serialize: false });
-                onChange(this, "source", (v) => { setW(this, "input_colorspace", autoInCs(v)); fillRange(this, v); });
+                ensureReadPreview(this);                                          // instant preview at the bottom
+                onChange(this, "source", (v) => { setW(this, "input_colorspace", autoInCs(v)); fillRange(this, v); updateReadPreview(this); });
+                for (const w of ["input_colorspace", "output_colorspace", "raw_data"]) {
+                    onChange(this, w, () => updateReadPreview(this));  // colorspace change -> re-render the thumb
+                }
                 for (const w of ["frame_shift", "fps", "start_frame", "end_frame"]) {
                     onChange(this, w, () => resyncAllWrites());   // Read range/shift/fps -> downstream Writes
                 }
                 const node = this;
-                setTimeout(() => fillRange(node, W(node, "source")?.value), 0);  // fresh node: detect the default
+                setTimeout(() => { fillRange(node, W(node, "source")?.value); updateReadPreview(node); }, 0);  // fresh node: detect the default
                 return r;
             };
             const onConfig = nodeType.prototype.onConfigure;
             nodeType.prototype.onConfigure = function () {
                 const r = onConfig ? onConfig.apply(this, arguments) : undefined;
                 const node = this;
-                setTimeout(() => fillRange(node, W(node, "source")?.value), 0);  // loaded workflow: re-detect
+                setTimeout(() => { fillRange(node, W(node, "source")?.value); updateReadPreview(node); }, 0);  // loaded workflow: re-detect
                 return r;
             };
             // colorspace label (input -> output) in the title bar

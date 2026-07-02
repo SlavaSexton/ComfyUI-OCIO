@@ -271,6 +271,30 @@ def _read_video(path, frame_start, frame_count):
     return arr, info
 
 
+def _read_video_frame(path):
+    """Decode ONLY frame 1 of a video (for the thumb route - never pull the whole clip). Same probe + pipe
+    shape as _read_video, but '-frames:v 1' bounds the decode to a single frame. Returns float32 RGB [H,W,3]
+    (0..1)."""
+    _require_ffmpeg()
+    probe = subprocess.run([_FFPROBE, "-v", "error", "-select_streams", "v:0",
+                            "-show_entries", "stream=width,height",
+                            "-of", "default=noprint_wrappers=1", path], capture_output=True, text=True)
+    info = dict(line.split("=", 1) for line in probe.stdout.strip().splitlines() if "=" in line)
+    w, h = int(info.get("width", 0) or 0), int(info.get("height", 0) or 0)
+    if not (w and h):
+        raise RuntimeError(f"ffprobe could not read {path}: {probe.stderr[:200]}")
+    cmd = [_FFMPEG, "-v", "error", "-i", path, "-frames:v", "1",
+           "-f", "rawvideo", "-pix_fmt", "rgb48le", "-"]
+    proc = subprocess.run(cmd, capture_output=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffmpeg decode failed: {proc.stderr.decode('utf-8', 'ignore')[:300]}")
+    buf = np.frombuffer(proc.stdout, dtype="<u2")
+    n = buf.size // (w * h * 3)
+    if n == 0:
+        raise RuntimeError("ffmpeg returned no frames")
+    return buf[: w * h * 3].reshape(h, w, 3).astype(np.float32) / 65535.0
+
+
 def load_source(source, start_frame=0, end_frame=0, frame_mode="auto", missing_mode="black", edge_mode="hold"):
     """source -> (np [N,H,W,3] float32, info dict). Single still / folder / pattern / video.
 
@@ -348,6 +372,49 @@ def _seq_range(source):
                 "orig_start": lo, "orig_end": hi, "missing": _collapse_ranges(missing),
                 "missing_count": len(missing)}
     return {"kind": "still", "start": 0, "end": 0, "count": 1, "fps": 0.0}
+
+
+def _fit_long_side(rgb, max_side):
+    """Downscale (never upscale) so the long side is at most max_side, cv2 INTER_AREA (correct for shrinking).
+    Done BEFORE the OCIO convert - cheaper to color-convert a small image than a full-res one."""
+    h, w = rgb.shape[:2]
+    long_side = max(h, w)
+    if long_side <= max_side or cv2 is None:
+        return rgb
+    scale = max_side / float(long_side)
+    nw, nh = max(1, round(w * scale)), max(1, round(h * scale))
+    return cv2.resize(np.ascontiguousarray(rgb), (nw, nh), interpolation=cv2.INTER_AREA)
+
+
+def thumb_frame(src, max_side=512):
+    """Resolve `src` exactly like OCIORead (absolute, or relative to the ComfyUI input dir; a folder or a
+    numbered frame collapses to its sequence and picks frame 1; a video decodes ONLY its first frame via
+    ffmpeg). Returns float32 RGB [H,W,3] (0..1 for stills/video; EXR/HDR keep scene-linear range), already
+    downscaled to fit `max_side` on the long side. Colorspace conversion is the caller's job (via _convert) -
+    this only loads + resizes, so the /ocio/thumb route stays thin and cv2 does the expensive work once."""
+    source = (src or "").rstrip("/")
+    if not source:
+        raise ValueError("empty source")
+    s = source if os.path.isabs(source) else os.path.join(_input_dir(), source)
+    ext = os.path.splitext(s)[1].lower()
+    if ext in VIDEO_EXTS:
+        if not os.path.isfile(s):
+            raise FileNotFoundError(s)
+        rgb = _read_video_frame(s)
+        return _fit_long_side(rgb, max_side)
+    files = _frame_files(s)                        # an explicit folder or #### pattern -> its first frame
+    if not files and os.path.isfile(s):
+        sib = _sequence_siblings(s)
+        if len(sib) > 1:
+            files = sib
+    if files:
+        first = files[0]
+    elif os.path.isfile(s):
+        first = s
+    else:
+        raise FileNotFoundError(s)
+    rgba = _read_still(first)
+    return _fit_long_side(np.ascontiguousarray(rgba[..., :3]), max_side)
 
 
 # --------------------------------------------------------------------------- saving

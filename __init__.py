@@ -134,6 +134,62 @@ try:
         except Exception as e:
             return web.json_response({"kind": "still", "start": 0, "end": 0, "count": 0, "fps": 0.0,
                                       "error": str(e)[:200]})
+
+    @server.PromptServer.instance.routes.get("/ocio/thumb")
+    async def _ocio_thumb(request):
+        """Instant on-node preview: frame 1 of any source (still / sequence / video), in_cs -> out_cs, as an
+        8-bit PNG. Powers the front-end re-render on colorspace change WITHOUT queueing the graph - this is
+        exactly why EXR (the browser cannot decode it) needs a server-rendered thumb.
+
+        SECURITY: reads any local path, same trust level as /ocio/list_dirs and OCIORead itself (local
+        single-user tool) - no allowlist here on purpose, that would break the disk-browse UX.
+        """
+        import numpy as np
+        import torch
+        from .io_nodes import thumb_frame, _convert
+        try:
+            import cv2
+        except Exception:
+            return web.json_response({"error": "server is missing OpenCV (cv2), needed to encode the thumb"},
+                                      status=400)
+        src = request.rel_url.query.get("src", "")
+        in_cs = request.rel_url.query.get("in_cs", "")
+        out_cs = request.rel_url.query.get("out_cs", "")
+        raw = request.rel_url.query.get("raw", "0") == "1"
+        if not src:
+            return web.json_response({"error": "missing 'src'"}, status=400)
+        try:
+            rgb = thumb_frame(src, max_side=512)
+        except FileNotFoundError as e:
+            return web.json_response({"error": f"not found: {e}"}, status=404)
+        except Exception as e:
+            return web.json_response({"error": str(e)[:300]}, status=400)
+        try:
+            if not raw and in_cs and out_cs and in_cs != out_cs:
+                try:
+                    t = torch.from_numpy(np.ascontiguousarray(rgb.astype(np.float32)))[None]
+                    rgb = _convert(t, in_cs, out_cs)[0].numpy()
+                except RuntimeError:
+                    pass   # OCIO lib/config unavailable (_require_ocio) - pass the pixels through, same as raw=1
+            png8 = (np.clip(rgb, 0.0, 1.0) * 255.0).astype(np.uint8)
+            ok, buf = cv2.imencode(".png", png8[..., ::-1])   # RGB -> BGR for cv2
+            if not ok:
+                return web.json_response({"error": "png encode failed"}, status=400)
+        except Exception as e:
+            return web.json_response({"error": f"convert/encode failed: {str(e)[:250]}"}, status=400)
+        return web.Response(body=buf.tobytes(), content_type="image/png",
+                            headers={"Cache-Control": "no-store"})
+
+    @server.PromptServer.instance.routes.get("/ocio/stream")
+    async def _ocio_stream(request):
+        """Stream a local video file for the OCIO Read on-node player (FileResponse handles Range requests,
+        so the <video> element can seek). Same trust level as /ocio/thumb (local single-user tool)."""
+        from .io_nodes import _input_dir, VIDEO_EXTS
+        src = request.rel_url.query.get("src", "")
+        p = src if os.path.isabs(src) else os.path.join(_input_dir(), src)
+        if not (p and os.path.isfile(p) and os.path.splitext(p)[1].lower() in VIDEO_EXTS):
+            return web.json_response({"error": "not a video file"}, status=404)
+        return web.FileResponse(p)
 except Exception:
     # not inside ComfyUI (e.g. a standalone import) - the routes are simply unavailable.
     pass

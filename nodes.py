@@ -238,11 +238,36 @@ def _logc3_to_lin(y):
     return np.where(y >= cut_log, (10.0 ** ((y - _LC3_D) / _LC3_C) - _LC3_B) / _LC3_A,
                     (y - _LC3_F) / _LC3_E).astype(np.float32)
 
+# ARRI LogC4 - the wider-headroom successor to LogC3 (ALEXA 35 era): ceiling ~469.8 linear (~11.3 stops over
+# mid-gray, ~3 stops more highlight room than LogC3 EI800), the curve LumiPic's V10 *_logc4_* HDR LoRA family
+# targets. Published ARRI LogC4 constants (spec, 1 May 2022). Like logc3 this is the CURVE only: the plate
+# stays in Rec.709 primaries, so pair log_to_lin with a Rec.709 -> ACEScg colorspace step, NOT the config's
+# "ARRI LogC4" colorspace (that assumes ARRI Wide Gamut 4). Piecewise split at the spec point (encoded V=0,
+# linear toe below / log above), so the whole [0,1] LoRA range decodes through the log branch and round-trips
+# exactly; matches oumad ComfyUI_Gear's LogC4 Decode across the log region (V >= c: all mids/highlights/ceiling).
+_LC4_A = (2.0 ** 18 - 16) / 117.45          # 2231.8263...
+_LC4_B = (1023.0 - 95.0) / 1023.0           # 0.9071358...
+_LC4_C = 95.0 / 1023.0                       # 0.0928641...
+_LC4_S = (7.0 * np.log(2.0) * 2.0 ** (7.0 - 14.0 * _LC4_C / _LC4_B)) / (_LC4_A * _LC4_B)
+_LC4_T = (2.0 ** (14.0 * (-_LC4_C / _LC4_B) + 6.0) - 64.0) / _LC4_A   # -0.018060... (encoded 0 -> this linear)
+
+def _lin_to_logc4(x):
+    x = np.asarray(x, np.float64)
+    xc = np.maximum(x, _LC4_T)  # guard the discarded log branch from log2(<=0)
+    return np.where(x >= _LC4_T, (np.log2(_LC4_A * xc + 64.0) - 6.0) / 14.0 * _LC4_B + _LC4_C,
+                    (x - _LC4_T) / _LC4_S).astype(np.float32)
+
+def _logc4_to_lin(y):
+    y = np.asarray(y, np.float64)
+    return np.where(y >= 0.0, (2.0 ** (14.0 * (y - _LC4_C) / _LC4_B + 6.0) - 64.0) / _LC4_A,
+                    y * _LC4_S + _LC4_T).astype(np.float32)
+
 _CURVES = {
     "cineon": (_lin_to_cineon, _cineon_to_lin),
     "acescct": (_lin_to_acescct, _acescct_to_lin),
     "acescc": (_lin_to_acescc, _acescc_to_lin),
     "logc3": (_lin_to_logc3, _logc3_to_lin),
+    "logc4": (_lin_to_logc4, _logc4_to_lin),
 }
 
 
@@ -250,16 +275,17 @@ _CURVES = {
 
 class OCIOLogConvert:
     """Linear <-> log (Nuke: OCIOLogConvert). Default curve Cineon (Nuke's flat film log, black 0 -> 0.0928);
-    also ACEScct, ACEScc, and ARRI LogC3 EI800 (the curve LTX-2's HDR IC-LoRA uses - decode a LogC3 plate to
-    linear on OUR nodes without the config's ARRI gamut assumption). Dependency-free. 'swap direction' flips lin<->log."""
+    also ACEScct, ACEScc, ARRI LogC3 EI800 (the LTX-2 HDR IC-LoRA curve), and ARRI LogC4 (the wider-headroom
+    curve LumiPic's V10 *_logc4_* HDR LoRA targets, ceiling ~469.8 linear) - decode a LogC3/LogC4 plate to
+    linear on OUR nodes without the config's ARRI gamut assumption. Dependency-free. 'swap direction' flips lin<->log."""
 
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
             "image": ("IMAGE",),
             "operation": (["lin_to_log", "log_to_lin"], {"default": "lin_to_log"}),
-            "curve": (["cineon", "acescct", "acescc", "logc3"], {"default": "cineon",
-                      "tooltip": "cineon = Nuke flat film log (black 0.0928). acescct = ACES log with a toe (0.0729). acescc = pure ACES log. logc3 = ARRI LogC3 EI800, the LTX-2 HDR curve (log_to_lin decodes an LTX LogC3 plate to linear; keep Rec.709 primaries, then convert Rec.709 -> ACEScg)."}),
+            "curve": (["cineon", "acescct", "acescc", "logc3", "logc4"], {"default": "cineon",
+                      "tooltip": "cineon = Nuke flat film log (black 0.0928). acescct = ACES log with a toe (0.0729). acescc = pure ACES log. logc3 = ARRI LogC3 EI800, the LTX-2 HDR curve (ceiling ~55 linear). logc4 = ARRI LogC4, wider headroom (ceiling ~469.8 linear), the LumiPic V10 *_logc4_* curve. For logc3/logc4: log_to_lin decodes the plate to linear; keep Rec.709 primaries, then convert Rec.709 -> ACEScg."}),
             "mix": _mix_input(),
         }}
 

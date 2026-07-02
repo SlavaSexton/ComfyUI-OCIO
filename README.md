@@ -153,8 +153,12 @@ Linear <-> log (Nuke: *OCIOLogConvert*), **dependency-free** (no OCIO needed). *
 - **cineon** - Nuke's flat film log; black `0` lifts to `0.0928` (matches Nuke's default). *(default)*
 - **acescct** - ACES log with a toe (black `0.0729`, S-2016-001).
 - **acescc** - pure ACES log (S-2014-003).
+- **logc3** - ARRI LogC3 EI800; ceiling ~55 linear. The curve LTX-2's HDR IC-LoRA uses.
+- **logc4** - ARRI LogC4; wider headroom, ceiling ~469.8 linear. The curve LumiPic's V10 `*_logc4_*` HDR LoRA targets.
 
-The **swap** button flips the direction.
+The **swap** button flips the direction. For **logc3 / logc4**, `log_to_lin` decodes the plate to linear; keep
+the Rec.709 primaries, then convert Rec.709 -> ACEScg with **OCIO ColorSpace** (do not use a config "ARRI LogC3 /
+LogC4" colorspace - that assumes ARRI Wide Gamut and would shift the gamut).
 
 ### OCIO Display
 

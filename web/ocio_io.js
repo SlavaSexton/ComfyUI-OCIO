@@ -191,6 +191,70 @@ function applyAutoColorspace(node) {
     node.setDirtyCanvas(true, true);
 }
 
+// ---- profile widget: HDR source preset -> from/output colorspace + still_format/bit_depth (silent) ---------
+const PROFILE_CS = {
+    "LTX 2.3 HDR":               { from: "Linear Rec.709 (sRGB)", out: "ACEScg", fmt: "exr", bit: "16f" },
+    "LumiPic LogC3 (Flux/Qwen)": { from: "Linear Rec.709 (sRGB)", out: "ACEScg", fmt: "exr", bit: "16f" },
+    "LumiPic V10 LogC4":         { from: "Linear Rec.709 (sRGB)", out: "ACEScg", fmt: "exr", bit: "16f" },
+};
+// generic upstream tracer: walk input links back through N nodes until `test(node)` matches
+function findUpstream(node, test, seen) {
+    seen = seen || new Set();
+    if (!node || seen.has(node.id)) return null;
+    seen.add(node.id);
+    if (test(node)) return node;
+    for (const inp of (node.inputs || [])) {
+        if (inp.link == null) continue;
+        const link = app.graph.links[inp.link];
+        if (!link) continue;
+        const found = findUpstream(app.graph.getNodeById(link.origin_id), test, seen);
+        if (found) return found;
+    }
+    return null;
+}
+function applyProfile(node, profileName) {
+    const p = PROFILE_CS[profileName];
+    if (!p) return;                                    // "none" / "auto" (unresolved) / "Seedance ..." -> no-op here
+    node._ocioProfileSetting = true;                    // guard: the colorspace writes below are OURS, not a manual edit
+    setWSilent(node, "from_colorspace", p.from);
+    setWSilent(node, "output_colorspace", p.out);
+    setWSilent(node, "still_format", p.fmt);
+    setWSilent(node, "bit_depth", p.bit);
+    node._ocioProfileSetting = false;
+    node.setDirtyCanvas(true, true);
+}
+// best-effort upstream source detection for profile === "auto"
+function findUpstreamSource(node) {
+    const ltx = findUpstream(node, (n) => (n.type || "").includes("LTXVHDRDecodePostprocess"));
+    if (ltx) return "LTX 2.3 HDR";                      // reliable: a dedicated LTX HDR decode node
+    const lora = findUpstream(node, (n) => (n.type || "").includes("LoraLoader"));
+    if (lora) {
+        const fn = (W(lora, "lora_name")?.value || "").toLowerCase();
+        if (fn.includes("logc4")) {
+            console.log("OCIO Write: auto profile guessed 'LumiPic V10 LogC4' from LoRA filename", fn);
+            return "LumiPic V10 LogC4";
+        }
+        if (fn.includes("logc3") || fn.includes("hdr")) {
+            console.log("OCIO Write: auto profile guessed 'LumiPic LogC3 (Flux/Qwen)' from LoRA filename", fn);
+            return "LumiPic LogC3 (Flux/Qwen)";
+        }
+    }
+    // Seedance: no known distinct node type confirmed yet in this codebase - left as a placeholder, not faked.
+    const seedance = findUpstream(node, (n) => (n.type || "").toLowerCase().includes("seedance"));
+    if (seedance) {
+        console.log("OCIO Write: auto profile guessed 'Seedance 4K 10-bit' from upstream node type", seedance.type);
+        return "Seedance 4K 10-bit";
+    }
+    return null;                                        // leave as-is; nothing recognizable upstream
+}
+function resolveAutoProfile(node) {
+    if (W(node, "profile")?.value !== "auto") return;
+    const found = findUpstreamSource(node);
+    if (!found) return;                                 // no match -> leave on "auto", do not fake a guess
+    setWSilent(node, "profile", found);
+    applyProfile(node, found);
+}
+
 // wrap a widget's callback so we also run `after(value)`
 function onChange(node, name, after) {
     const w = W(node, name);
@@ -467,23 +531,33 @@ app.registerExtension({
                 for (const w of ["first_frame", "last_frame", "start_number"]) {
                     onChange(this, w, () => { const ar = W(node, "auto_range"); if (ar) ar.value = false; });  // manual edit -> auto OFF
                 }
+                // profile: a concrete HDR preset silently drives from/output colorspace + still_format/bit_depth;
+                // "auto" resolves via resolveAutoProfile (upstream trace); a manual colorspace edit flips back to "none"
+                onChange(this, "profile", (v) => { if (v !== "auto") applyProfile(node, v); });
+                for (const w of ["from_colorspace", "output_colorspace"]) {
+                    onChange(this, w, () => {
+                        if (node._ocioProfileSetting) return;               // our own silent write, not a user edit
+                        const pw = W(node, "profile");
+                        if (pw && pw.value !== "none") { pw.value = "none"; node.setDirtyCanvas(true, true); }
+                    });
+                }
                 this.addWidget("button", "📁 browse output folder", null, () => openFolderDialog(this), { serialize: false });
                 this.addWidget("button", "▶ Render", null, () => app.queuePrompt(0, 1), { serialize: false });
-                setTimeout(() => { applyContainer(); syncWriteFromUpstream(node); applyAutoColorspace(node); }, 0);
+                setTimeout(() => { applyContainer(); syncWriteFromUpstream(node); applyAutoColorspace(node); resolveAutoProfile(node); }, 0);
                 return r;
             };
             const onConn = nodeType.prototype.onConnectionsChange;
             nodeType.prototype.onConnectionsChange = function () {
                 const r = onConn ? onConn.apply(this, arguments) : undefined;
                 const node = this;
-                setTimeout(() => { syncWriteFromUpstream(node); applyAutoColorspace(node); }, 0);   // wire (re)connected -> pull range/fps + auto colorspace
+                setTimeout(() => { syncWriteFromUpstream(node); applyAutoColorspace(node); resolveAutoProfile(node); }, 0);   // wire (re)connected -> pull range/fps + auto colorspace/profile
                 return r;
             };
             const onConfigW = nodeType.prototype.onConfigure;
             nodeType.prototype.onConfigure = function () {
                 const r = onConfigW ? onConfigW.apply(this, arguments) : undefined;
                 const node = this;
-                setTimeout(() => { syncWriteFromUpstream(node); applyAutoColorspace(node); }, 0);   // loaded workflow -> re-detect
+                setTimeout(() => { syncWriteFromUpstream(node); applyAutoColorspace(node); resolveAutoProfile(node); }, 0);   // loaded workflow -> re-detect
                 return r;
             };
             const onDraw = nodeType.prototype.onDrawForeground;

@@ -38,7 +38,8 @@ except Exception:
 from PIL import Image
 
 from .nodes import (_apply_processor, _colorspace_names, _combo_or_string,
-                    _input_dir, _require_ocio, _resolve_config, _scan_files)
+                    _input_dir, _logc3_to_lin, _logc4_to_lin, _require_ocio,
+                    _resolve_config, _scan_files)
 
 try:
     import folder_paths
@@ -573,6 +574,10 @@ class OCIOWrite:
     def INPUT_TYPES(cls):
         return {"required": {
             "images": ("IMAGE",),
+            "profile": (["none", "auto", "LTX 2.3 HDR", "LumiPic LogC3 (Flux/Qwen)", "LumiPic V10 LogC4",
+                        "Seedance 4K 10-bit"],
+                        {"default": "none",
+                         "tooltip": "HDR source preset. Sets from/output colorspace, forces EXR 16f, and (LumiPic) decodes the log curve inside Write. 'auto' detects the upstream source in the front-end (LTX reliably; LumiPic best-effort). Manual colorspace edits still win. Seedance is a placeholder (pending)."}),
             "from_colorspace": _cs_combo(WORKING),
             "output_colorspace": _cs_combo("ACEScg"),
             "container": (["still image", "sequence", "video"], {"default": "sequence"}),
@@ -620,10 +625,25 @@ class OCIOWrite:
             return root
         return output_folder if os.path.isabs(output_folder) else os.path.join(root, output_folder)
 
-    def write(self, images, from_colorspace, output_colorspace, container, still_format, video_codec,
+    def write(self, images, profile, from_colorspace, output_colorspace, container, still_format, video_codec,
               bit_depth, auto_range, first_frame, last_frame, start_number, source_start, raw_data,
               output_folder, filename, colorspace_in_name=True, auto_colorspace=True, compression="zip",
               alpha=None, fps=24.0):
+        _LOG_PROFILES = {"LumiPic LogC3 (Flux/Qwen)": _logc3_to_lin, "LumiPic V10 LogC4": _logc4_to_lin}
+        if profile in _LOG_PROFILES and not raw_data:
+            arr_lin = images.detach().cpu().numpy().astype(np.float32).copy()
+            arr_lin[..., :3] = _LOG_PROFILES[profile](arr_lin[..., :3])   # log_to_lin, RGB only; alpha untouched
+            images = torch.from_numpy(arr_lin).to(images.device, images.dtype)
+            from_colorspace = "Linear Rec.709 (sRGB)"
+            output_colorspace = "ACEScg"
+        elif profile == "LTX 2.3 HDR" and not raw_data:
+            from_colorspace = "Linear Rec.709 (sRGB)"
+            output_colorspace = "ACEScg"
+        # "Seedance 4K 10-bit" and "none"/"auto": no backend mapping - auto is resolved front-end, Seedance is
+        # a pending placeholder (do not invent a colorspace mapping for it).
+        if profile in ("LTX 2.3 HDR", "LumiPic LogC3 (Flux/Qwen)", "LumiPic V10 LogC4") and not raw_data \
+                and container != "video":
+            still_format, bit_depth = "exr", "16f"                       # HDR presets always land as EXR 16f
         img = images if raw_data else _convert(images, from_colorspace, output_colorspace)
         arr = img.detach().cpu().numpy().astype(np.float32)
         a_arr = None

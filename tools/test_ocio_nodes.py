@@ -1,8 +1,8 @@
 """Runtime smoke test of the OpenColorIO-backed nodes. Needs `pip install opencolorio` (2.2+).
 Run from anywhere: python tools/test_ocio_nodes.py
-Exercises ColorSpace, CDLTransform, Display, and LogConvert(ocio_config) against the built-in ACES studio
-config on a synthetic image, and checks each returns a finite, same-shape result. FileTransform (needs a LUT
-file) and LookTransform (needs a config look) are reported as needing real assets."""
+Exercises ColorSpace, CDLTransform, and Display against the built-in ACES studio config, plus the
+dependency-free LogConvert curves, on a synthetic image; checks each returns a finite, same-shape result.
+FileTransform (needs a LUT file) and LookTransform (needs a config look) are reported as needing real assets."""
 import os, sys
 import numpy as np
 import torch
@@ -13,7 +13,7 @@ import nodes as N
 
 print("OCIO", OCIO.__version__, "| _HAS_OCIO:", N._HAS_OCIO)
 cfg = N._resolve_config("")
-spaces = N._colorspace_names("") or []
+spaces = N._colorspace_names() or []
 print("config resolved:", cfg is not None, "| colorspaces:", len(spaces))
 
 img = torch.rand(1, 8, 8, 3, dtype=torch.float32)
@@ -39,7 +39,7 @@ if len(spaces) >= 2:
     a = next((s for s in spaces if "ACES2065" in s or "Linear" in s), spaces[0])
     b = next((s for s in spaces if "sRGB" in s), spaces[1])
     trial(f"OCIOColorSpace [{a}]->[{b}]", lambda: N.OCIOColorSpace().convert(img, a, b))
-trial("OCIOLogConvert ocio_config", lambda: N.OCIOLogConvert().run(img, "lin_to_log", "ocio_config", "", ""))
+trial("OCIOLogConvert logc3", lambda: N.OCIOLogConvert().run(img, "log_to_lin", "logc3"))
 if cfg is not None and spaces:
     try:
         disp = cfg.getDefaultDisplay(); view = cfg.getDefaultView(disp)

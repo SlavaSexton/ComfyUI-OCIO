@@ -195,6 +195,8 @@ function ensureReadPreview(node) {
     w.computeSize = () => [0, 210];
     w._ocioAlwaysVisible = true;                      // always shown, regardless of source kind
     node._ocioPrev = { img, video, canvas, gl: null, lutN: 33, lutReady: false, raf: 0, streamUrl: "" };
+    node._ocioPrev.pb = { playing: false, dir: 1, mode: "loop", fps: 24, showTransport: false, lastT: 0 };
+    _ensureTransport(node, node._ocioPrev);           // transport bar widget (sits under the canvas, video only)
     node.onRemoved = (orig => function () { _stopViewport(node._ocioPrev); return orig && orig.apply(this, arguments); })(node.onRemoved);
     return node._ocioPrev;
 }
@@ -258,9 +260,12 @@ function _startViewport(node, p, src) {
         p.img.src = "/ocio/thumb?" + _thumbQuery(node, src); p.img.style.display = ""; return;
     }
     p.img.style.display = "none"; p.video.style.display = "none"; p.canvas.style.display = "";
+    p.pb.fps = parseFloat(W(node, "fps")?.value) || p.pb.fps || 24;
+    p.pb.showTransport = true; if (p.transport) p.transport.bar.style.display = "flex";
+    node.setSize([node.size[0], node.computeSize()[1]]);
     _refreshVideoLut(node, p);
     if (!p.raf) {
-        const loop = () => { if (node._ocioPrev !== p) { p.raf = 0; return; } _drawViewport(p); p.raf = requestAnimationFrame(loop); };
+        const loop = (now) => { if (node._ocioPrev !== p) { p.raf = 0; return; } _tickPlayback(p, now || 0); _drawViewport(p); _syncTransport(p); p.raf = requestAnimationFrame(loop); };
         p.raf = requestAnimationFrame(loop);
     }
 }
@@ -268,11 +273,106 @@ function _stopViewport(p) {
     if (!p) return;
     if (p.raf) { cancelAnimationFrame(p.raf); p.raf = 0; }
     try { p.video.pause(); } catch (e) {}
+    if (p.pb) { p.pb.playing = false; p.pb.showTransport = false; }
+    if (p.transport) p.transport.bar.style.display = "none";
     p.canvas.style.display = "none"; p.video.style.display = "none"; p.streamUrl = "";
 }
 function _thumbQuery(node, src) {
     return new URLSearchParams({ src, in_cs: W(node, "input_colorspace")?.value || "", out_cs: W(node, "output_colorspace")?.value || "",
         raw: W(node, "raw_data")?.value ? "1" : "0", rand: String(Date.now()) }).toString();
+}
+// ---- Nuke-style transport bar for the video viewport (client-side, drives the hidden <video>; the WebGL
+// loop renders whatever frame it lands on). Repeat / Bounce mode, jump to first/last, step one frame,
+// play reverse / stop / play forward / pause, a frame counter with step arrows, and a scrub timeline.
+// Shown only for a video source.
+const _SVG = {
+    first:   '<path d="M5 3v10M13 3l-6 5 6 5z"/>',
+    stepB:   '<path d="M6 3v10M13 4l-6 4 6 4z"/>',
+    playRev: '<path d="M12 3L4 8l8 5z"/>',
+    stop:    '<rect x="4" y="4" width="8" height="8"/>',
+    play:    '<path d="M4 3l8 5-8 5z"/>',
+    pause:   '<path d="M4 3h3v10H4zM9 3h3v10H9z"/>',
+    stepF:   '<path d="M10 3v10M3 4l6 4-6 4z"/>',
+    last:    '<path d="M11 3v10M3 3l6 5-6 5z"/>',
+    loop:    '<path fill="none" stroke="currentColor" stroke-width="1.5" d="M4.5 9a3.5 3.5 0 1 1 1 2.5"/><path d="M3 7.5l1.6 2.6 2.2-1.9z"/>',
+    bounce:  '<path d="M3 8l3-3v2h4V5l3 3-3 3v-2H6v2z"/>',
+};
+function _tBtn(icon, title) {
+    const b = document.createElement("button"); b.title = title;
+    b.style.cssText = "width:20px;height:18px;padding:0;margin:0 1px;border:0;border-radius:3px;background:#2a2a2a;color:#cfe;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;";
+    b.innerHTML = `<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">${icon}</svg>`;
+    b.onmouseenter = () => b.style.background = "#39395a"; b.onmouseleave = () => b.style.background = "#2a2a2a";
+    return b;
+}
+function _pbFrames(p) { return Math.max(1, Math.round((p.video.duration || 0) * (p.pb.fps || 24)) || 1); }
+function _pbCur(p) { return Math.round(p.video.currentTime * (p.pb.fps || 24)); }
+function _pbSeek(p, f) { const n = _pbFrames(p); f = Math.max(0, Math.min(n - 1, Math.round(f))); p.video.currentTime = (f + 0.001) / (p.pb.fps || 24); }
+function _pbSet(node, p, on, dir) {
+    p.pb.playing = on; p.pb.dir = dir || 1; p.pb.lastT = 0;
+    if (on && p.pb.dir > 0) { p.video.loop = (p.pb.mode === "loop"); p.video.playbackRate = 1; p.video.play().catch(() => {}); }
+    else { p.video.pause(); }
+    _syncTransport(p);
+}
+function _pbStop(node, p) { _pbSet(node, p, false, 1); _pbSeek(p, 0); }
+function _pbStep(node, p, d) { _pbSet(node, p, false, 1); _pbSeek(p, _pbCur(p) + d); }
+function _pbJump(node, p, end) { _pbSet(node, p, false, 1); _pbSeek(p, end ? _pbFrames(p) - 1 : 0); }
+function _pbMode(p, mode) { p.pb.mode = mode; if (p.pb.playing && p.pb.dir > 0) p.video.loop = (mode === "loop"); _syncTransport(p); }
+function _tickPlayback(p, now) {
+    const pb = p.pb, v = p.video; if (!pb) return;
+    const dt = Math.min(0.1, (now - (pb.lastT || now)) / 1000); pb.lastT = now;
+    if (!pb.playing || !(v.duration > 0)) return;
+    if (pb.dir > 0) {
+        if (pb.mode === "bounce" && v.currentTime >= v.duration - 0.05) { pb.dir = -1; v.pause(); }   // hit end -> reverse
+    } else {
+        let t = v.currentTime - dt * (v.playbackRate || 1);
+        if (t <= 0) {
+            if (pb.mode === "bounce") { pb.dir = 1; v.currentTime = 0; v.loop = false; v.play().catch(() => {}); }
+            else { v.currentTime = v.duration - 0.001; }                                                // loop back to end
+        } else { v.currentTime = t; }
+    }
+}
+function _syncTransport(p) {
+    const t = p.transport; if (!t) return;
+    const cur = _pbCur(p), n = _pbFrames(p);
+    if (document.activeElement !== t.slider) { t.slider.max = String(n - 1); t.slider.value = String(cur); }
+    if (document.activeElement !== t.frame) { t.frame.value = String(cur); }
+    t.total.textContent = "/ " + (n - 1);
+    const playing = p.pb.playing && p.pb.dir > 0;
+    t.play.innerHTML = `<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">${playing ? _SVG.pause : _SVG.play}</svg>`;
+    t.mode.title = p.pb.mode === "loop" ? "Repeat (loop)" : "Bounce (ping-pong)";
+    t.mode.innerHTML = `<svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">${p.pb.mode === "loop" ? _SVG.loop : _SVG.bounce}</svg>`;
+}
+function _ensureTransport(node, p) {
+    if (p.transport) return p.transport;
+    const bar = document.createElement("div");
+    bar.style.cssText = "width:100%;display:none;flex-direction:column;gap:3px;padding:3px 4px 4px;box-sizing:border-box;background:#181818;";
+    const slider = document.createElement("input");
+    slider.type = "range"; slider.min = "0"; slider.max = "1"; slider.value = "0"; slider.step = "1";
+    slider.style.cssText = "width:100%;margin:0;accent-color:#5cf;cursor:pointer;height:12px;";
+    slider.addEventListener("input", () => { const f = parseInt(slider.value, 10) || 0; _pbSet(node, p, false, 1); _pbSeek(p, f); });
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;align-items:center;justify-content:center;gap:1px;flex-wrap:nowrap;";
+    const mode = _tBtn(_SVG.loop, "Repeat (loop)");  mode.onclick = () => _pbMode(p, p.pb.mode === "loop" ? "bounce" : "loop");
+    const first = _tBtn(_SVG.first, "Go to first frame"); first.onclick = () => _pbJump(node, p, false);
+    const sb = _tBtn(_SVG.stepB, "Back one frame");  sb.onclick = () => _pbStep(node, p, -1);
+    const rev = _tBtn(_SVG.playRev, "Play reverse"); rev.onclick = () => _pbSet(node, p, !(p.pb.playing && p.pb.dir < 0), -1);
+    const stop = _tBtn(_SVG.stop, "Stop");           stop.onclick = () => _pbStop(node, p);
+    const play = _tBtn(_SVG.play, "Play / Pause");   play.onclick = () => _pbSet(node, p, !(p.pb.playing && p.pb.dir > 0), 1);
+    const sf = _tBtn(_SVG.stepF, "Forward one frame"); sf.onclick = () => _pbStep(node, p, 1);
+    const last = _tBtn(_SVG.last, "Go to last frame"); last.onclick = () => _pbJump(node, p, true);
+    const dec = _tBtn(_SVG.stepB, "Back one frame");  dec.onclick = () => _pbStep(node, p, -1);
+    const frame = document.createElement("input"); frame.type = "number"; frame.value = "0";
+    frame.style.cssText = "width:44px;height:15px;text-align:center;background:#101010;color:#cfe;border:1px solid #333;border-radius:3px;font:10px monospace;margin:0 1px;";
+    frame.addEventListener("change", () => { const f = parseInt(frame.value, 10) || 0; _pbSet(node, p, false, 1); _pbSeek(p, f); });
+    const inc = _tBtn(_SVG.stepF, "Forward one frame"); inc.onclick = () => _pbStep(node, p, 1);
+    const total = document.createElement("span"); total.style.cssText = "color:#789;font:10px monospace;margin-left:3px;min-width:34px;"; total.textContent = "/ 0";
+    row.append(mode, first, sb, rev, stop, play, sf, last, dec, frame, inc, total);
+    bar.append(slider, row);
+    const w = node.addDOMWidget("transport", "div", bar, { serialize: false });
+    w.computeSize = () => [0, p.pb && p.pb.showTransport ? 46 : 0];
+    w._ocioAlwaysVisible = true;
+    p.transport = { bar, slider, frame, total, play, mode };
+    return p.transport;
 }
 function updateReadPreview(node) {
     const p = ensureReadPreview(node);

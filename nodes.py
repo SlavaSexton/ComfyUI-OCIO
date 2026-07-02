@@ -213,7 +213,7 @@ def _acescct_to_lin(y):
 def _lin_to_acescc(x):
     x = np.asarray(x, np.float64)
     return np.where(x <= 0.0, (np.log2(2.0 ** -16) + 9.72) / 17.52,
-            np.where(x < 2.0 ** -15, (np.log2(2.0 ** -16 + x * 0.5) + 9.72) / 17.52,
+            np.where(x < 2.0 ** -15, (np.log2(np.maximum(2.0 ** -16 + x * 0.5, 2.0 ** -16)) + 9.72) / 17.52,
                      (np.log2(np.maximum(x, 2.0 ** -16)) + 9.72) / 17.52)).astype(np.float32)
 
 def _acescc_to_lin(y):
@@ -262,12 +262,138 @@ def _logc4_to_lin(y):
     return np.where(y >= 0.0, (2.0 ** (14.0 * (y - _LC4_C) / _LC4_B + 6.0) - 64.0) / _LC4_A,
                     y * _LC4_S + _LC4_T).astype(np.float32)
 
+# Sony S-Log3, the Sony native camera log curve (VENICE, F5/F55/F65, FX-series): tone curve only, pair with
+# S-Gamut3.Cine/S-Gamut3 -> ACEScg for the gamut. Constants confirmed from Sony's own primary spec: "Technical
+# Summary for S-Gamut3.Cine/S-Log3 and S-Gamut3/S-Log3" (Sony Corporation), Appendix "S-Log3 Formula". Linear
+# cut 0.01125, log branch offset 0.01, gain 261.5/1023, log-domain cut at code 171.2102946929/1023. Confirmed
+# anchors from the same doc's "S-Log3 10bit code values" table: 0% black -> CV 95 (0.0928...), 18% grey -> CV
+# 420 (0.41056...), 90% white -> CV ~598 (0.58445...); this code matches that table to 5 decimal places.
+_SL3_CUT_LIN = 0.01125000
+_SL3_B95, _SL3_B171 = 95.0, 171.2102946929
+_SL3_CUT_LOG = _SL3_B171 / 1023.0
+
+def _lin_to_slog3(x):
+    x = np.asarray(x, np.float64)
+    xc = np.maximum(x + 0.01, 1e-10)  # guard the discarded log branch from log10(<=0)
+    return np.where(x >= _SL3_CUT_LIN, (420.0 + np.log10(xc / 0.19) * 261.5) / 1023.0,
+                     (x * (_SL3_B171 - _SL3_B95) / _SL3_CUT_LIN + _SL3_B95) / 1023.0).astype(np.float32)
+
+def _slog3_to_lin(y):
+    y = np.asarray(y, np.float64)
+    return np.where(y >= _SL3_CUT_LOG, (10.0 ** ((y * 1023.0 - 420.0) / 261.5)) * 0.19 - 0.01,
+                     (y * 1023.0 - _SL3_B95) * _SL3_CUT_LIN / (_SL3_B171 - _SL3_B95)).astype(np.float32)
+
+# Panasonic V-Log, the VariCam/S1H/GH-series native camera log curve: tone curve only, pair with V-Gamut ->
+# ACEScg for the gamut. Constants confirmed from Panasonic's own primary spec: "V-Log/V-Gamut REFERENCE
+# MANUAL" (Panasonic Corporation, Rev.1.0, November 28 2014), section 3 "V-Log Formula". Linear cut 0.01,
+# b=0.00873, c=0.241514, d=0.598206; log-domain cut2=0.181 (= c*log10(cut1+b)+d, the encoded value at the
+# linear/log crossover). Confirmed anchors from the same doc's Fig.2.2 "V-Log Code Value" table (10bit code /
+# 1023): 0% black -> CV 128 (0.12512...), 18% grey -> CV 433 (0.42327...), 90% white -> CV 602 (0.58847...).
+_VLOG_B, _VLOG_C, _VLOG_D = 0.00873, 0.241514, 0.598206
+_VLOG_CUT1 = 0.01
+_VLOG_CUT2 = _VLOG_C * np.log10(_VLOG_CUT1 + _VLOG_B) + _VLOG_D  # 0.18098... (spec states 0.181)
+
+def _lin_to_vlog(x):
+    x = np.asarray(x, np.float64)
+    xc = np.maximum(x + _VLOG_B, 1e-10)  # guard the discarded log branch from log10(<=0)
+    return np.where(x >= _VLOG_CUT1, _VLOG_C * np.log10(xc) + _VLOG_D,
+                    5.6 * x + 0.125).astype(np.float32)
+
+def _vlog_to_lin(y):
+    y = np.asarray(y, np.float64)
+    return np.where(y >= _VLOG_CUT2, 10.0 ** ((y - _VLOG_D) / _VLOG_C) - _VLOG_B,
+                    (y - 0.125) / 5.6).astype(np.float32)
+
+# Canon Log 3, the Cinema EOS native camera log curve (C300 Mark II onward): tone curve only, pair with Cinema
+# Gamut -> ACEScg for the gamut. Constants confirmed from Canon's own primary spec: "Canon Log Gamma Curves"
+# white paper (Canon USA, November 1 2018), Appendix [3] "Canon Log 3 (Full %)". Three-piece curve: negative
+# log branch (x < -0.014), a linear mid segment (-0.014 <= x <= 0.014) that keeps the curve C1-continuous
+# across both breakpoints, and a positive log branch (x > 0.014). Anchor: this code's x is direct scene-linear
+# reflectance (0.18 = 18% grey, matching every other curve in this file); Canon's own table indexes by "Scene
+# Linear %" with reflection = Scene Linear * 0.9, so Canon's own tabulated "18% Grey" row (input 0.20 in their
+# convention) reads CV 351 / 0.343 - confirmed from the same doc's Appendix [4] table. At x=0.18 direct
+# (this code's convention) the value is ~0.3298, inferred consistent with the same formula, not separately
+# tabulated by Canon.
+_CL3_NEG_A, _CL3_NEG_S = 0.36726845, 14.98325
+_CL3_NEG_OFF = 0.12783901
+_CL3_MID_S, _CL3_MID_OFF = 1.9754798, 0.12512219
+_CL3_POS_A, _CL3_POS_S = 0.36726845, 14.98325
+_CL3_POS_OFF = 0.12240537
+_CL3_LO, _CL3_HI = -0.014, 0.014
+
+def _lin_to_canonlog3(x):
+    x = np.asarray(x, np.float64)
+    neg_arg = np.maximum(1.0 - _CL3_NEG_S * np.minimum(x, _CL3_LO), 1e-10)   # guard discarded branches
+    pos_arg = np.maximum(_CL3_POS_S * np.maximum(x, _CL3_HI) + 1.0, 1e-10)
+    neg = -_CL3_NEG_A * np.log10(neg_arg) + _CL3_NEG_OFF
+    mid = _CL3_MID_S * x + _CL3_MID_OFF
+    pos = _CL3_POS_A * np.log10(pos_arg) + _CL3_POS_OFF
+    return np.where(x < _CL3_LO, neg, np.where(x <= _CL3_HI, mid, pos)).astype(np.float32)
+
+# breakpoints in the encoded domain (Canon Log3 code values at x = -0.014 / +0.014)
+_CL3_Y_LO = _CL3_MID_S * _CL3_LO + _CL3_MID_OFF   # 0.097465...
+_CL3_Y_HI = _CL3_MID_S * _CL3_HI + _CL3_MID_OFF   # 0.152779...
+
+def _canonlog3_to_lin(y):
+    y = np.asarray(y, np.float64)
+    neg = -(10.0 ** ((_CL3_NEG_OFF - y) / _CL3_NEG_A) - 1.0) / _CL3_NEG_S
+    mid = (y - _CL3_MID_OFF) / _CL3_MID_S
+    pos = (10.0 ** ((y - _CL3_POS_OFF) / _CL3_POS_A) - 1.0) / _CL3_POS_S
+    return np.where(y < _CL3_Y_LO, neg, np.where(y <= _CL3_Y_HI, mid, pos)).astype(np.float32)
+
+# RED Log3G10, the REDWideGamutRGB native camera log curve (RED cameras, IPP2 pipeline): tone curve only,
+# pair with REDWideGamutRGB -> ACEScg for the gamut. Constants confirmed from RED's own primary spec: "White
+# Paper on REDWideGamutRGB and Log3G10" (RED Digital Cinema, Form 915-0187 Rev C, ECO 012644, 11/17),
+# section "Equations". a=0.224282, b=155.975327, c=0.01 (input offset), linear-toe gradient g=15.1927 for
+# x+c < 0. "3G10" name: 18% mid-gray encodes to 1/3, and 10 stops over mid-gray (0.18*2^10=184.32) reaches
+# encoded 1.0. Confirmed anchors from the same doc's "Log3G10 Mapping Values" table: linear -0.01 -> 0.0,
+# linear 0.0 -> 0.091551, linear 0.18 -> 0.333333, linear 1.0 -> 0.493449, linear 184.322 -> 1.0.
+_L3G10_A, _L3G10_B, _L3G10_C, _L3G10_G = 0.224282, 155.975327, 0.01, 15.1927
+
+def _lin_to_log3g10(x):
+    x = np.asarray(x, np.float64) + _L3G10_C
+    xc = np.maximum(x * _L3G10_B + 1.0, 1e-10)  # guard the discarded log branch from log10(<=0)
+    return np.where(x >= 0.0, _L3G10_A * np.log10(xc),
+                    x * _L3G10_G).astype(np.float32)
+
+def _log3g10_to_lin(y):
+    y = np.asarray(y, np.float64)
+    return np.where(y >= 0.0, (10.0 ** (y / _L3G10_A) - 1.0) / _L3G10_B - _L3G10_C,
+                    y / _L3G10_G - _L3G10_C).astype(np.float32)
+
+# Blackmagic DaVinci Intermediate, the DaVinci Wide Gamut Intermediate OETF (DaVinci Resolve 17+, "Wide Gamut"
+# color science): tone curve only, pair with DaVinci Wide Gamut -> ACEScg for the gamut. Constants confirmed
+# from Blackmagic's own primary spec: "DaVinci Resolve 17: Wide Gamut Intermediate" white paper (Blackmagic
+# Design, version 1.1, 31/07/2021), section "DaVinci Intermediate (OETF)". DI_A=0.0075, DI_B=7.0,
+# DI_C=0.07329248, DI_M=10.44426855, linear-domain cut DI_LIN_CUT=0.00262409, log-domain cut
+# DI_LOG_CUT=0.02740668 (values below DI_LIN_CUT / DI_LOG_CUT encode/decode through the linear branch of
+# gradient DI_M). Confirmed anchors from the same doc's "Mapping Values" table: linear 0.0 -> 0.0, linear
+# 0.18 (18% grey) -> 0.336043, linear 1.0 -> 0.513837, linear 10.0 -> 0.756599.
+_DI_A, _DI_B, _DI_C, _DI_M = 0.0075, 7.0, 0.07329248, 10.44426855
+_DI_LIN_CUT, _DI_LOG_CUT = 0.00262409, 0.02740668
+
+def _lin_to_davinci_intermediate(x):
+    x = np.asarray(x, np.float64)
+    xc = np.maximum(x + _DI_A, 1e-10)  # guard the discarded log branch from log2(<=0)
+    return np.where(x > _DI_LIN_CUT, (np.log2(xc) + _DI_B) * _DI_C,
+                    x * _DI_M).astype(np.float32)
+
+def _davinci_intermediate_to_lin(y):
+    y = np.asarray(y, np.float64)
+    return np.where(y > _DI_LOG_CUT, 2.0 ** (y / _DI_C - _DI_B) - _DI_A,
+                    y / _DI_M).astype(np.float32)
+
 _CURVES = {
     "cineon": (_lin_to_cineon, _cineon_to_lin),
     "acescct": (_lin_to_acescct, _acescct_to_lin),
     "acescc": (_lin_to_acescc, _acescc_to_lin),
     "logc3": (_lin_to_logc3, _logc3_to_lin),
     "logc4": (_lin_to_logc4, _logc4_to_lin),
+    "slog3": (_lin_to_slog3, _slog3_to_lin),
+    "vlog": (_lin_to_vlog, _vlog_to_lin),
+    "canonlog3": (_lin_to_canonlog3, _canonlog3_to_lin),
+    "log3g10": (_lin_to_log3g10, _log3g10_to_lin),
+    "davinci_intermediate": (_lin_to_davinci_intermediate, _davinci_intermediate_to_lin),
 }
 
 
@@ -275,17 +401,22 @@ _CURVES = {
 
 class OCIOLogConvert:
     """Linear <-> log (Nuke: OCIOLogConvert). Default curve Cineon (Nuke's flat film log, black 0 -> 0.0928);
-    also ACEScct, ACEScc, ARRI LogC3 EI800 (the LTX-2 HDR IC-LoRA curve), and ARRI LogC4 (the wider-headroom
-    curve LumiPic's V10 *_logc4_* HDR LoRA targets, ceiling ~469.8 linear) - decode a LogC3/LogC4 plate to
-    linear on OUR nodes without the config's ARRI gamut assumption. Dependency-free. 'swap direction' flips lin<->log."""
+    also ACEScct, ACEScc, ARRI LogC3 EI800 (the LTX-2 HDR IC-LoRA curve), ARRI LogC4 (the wider-headroom
+    curve LumiPic's V10 *_logc4_* HDR LoRA targets, ceiling ~469.8 linear), plus five more camera-native log
+    curves (Sony S-Log3, Panasonic V-Log, Canon Log 3, RED Log3G10, Blackmagic DaVinci Intermediate) - decode
+    a camera-log plate to linear on OUR nodes without the config's camera-gamut assumption. Every curve here
+    is the transfer CURVE only: the plate keeps its camera-native primaries, so pair log_to_lin with a
+    downstream gamut ColorSpace step (camera gamut -> ACEScg), not the config's same-named colorspace (that
+    assumes the camera's own wide gamut). Dependency-free. 'swap direction' flips lin<->log."""
 
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
             "image": ("IMAGE",),
             "operation": (["lin_to_log", "log_to_lin"], {"default": "lin_to_log"}),
-            "curve": (["cineon", "acescct", "acescc", "logc3", "logc4"], {"default": "cineon",
-                      "tooltip": "cineon = Nuke flat film log (black 0.0928). acescct = ACES log with a toe (0.0729). acescc = pure ACES log. logc3 = ARRI LogC3 EI800, the LTX-2 HDR curve (ceiling ~55 linear). logc4 = ARRI LogC4, wider headroom (ceiling ~469.8 linear), the LumiPic V10 *_logc4_* curve. For logc3/logc4: log_to_lin decodes the plate to linear; keep Rec.709 primaries, then convert Rec.709 -> ACEScg."}),
+            "curve": (["cineon", "acescct", "acescc", "logc3", "logc4", "slog3", "vlog", "canonlog3",
+                       "log3g10", "davinci_intermediate"], {"default": "cineon",
+                      "tooltip": "cineon = Nuke flat film log (black 0.0928). acescct = ACES log with a toe (0.0729). acescc = pure ACES log. logc3 = ARRI LogC3 EI800, the LTX-2 HDR curve (ceiling ~55 linear). logc4 = ARRI LogC4, wider headroom (ceiling ~469.8 linear), the LumiPic V10 *_logc4_* curve. slog3 = Sony S-Log3 (18% grey -> code 420/1023). vlog = Panasonic V-Log (18% grey -> code 433/1023). canonlog3 = Canon Log 3, three-piece curve with a linear mid segment around 0. log3g10 = RED Log3G10 (18% grey -> 1/3, 10 stops over grey -> 1.0). davinci_intermediate = Blackmagic DaVinci Intermediate OETF (18% grey -> 0.336043). All five are camera-native transfer curves only: log_to_lin decodes the plate to linear in the camera's own primaries; pair with a camera-gamut -> ACEScg ColorSpace step, not the config's same-named colorspace."}),
             "mix": _mix_input(),
         }}
 

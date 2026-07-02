@@ -69,6 +69,14 @@ function showWidget(node, w, visible) {
     }
 }
 
+// Vue-nodes frontends (ComfyUI 1.45+ new node UI) re-read the widget list only on a REAL array mutation:
+// property changes on the raw widget objects (type/label/hidden) are not reactive, and reassigning
+// node.widgets breaks the binding entirely. A pop+push of the same tail element is the minimal mutation
+// that forces the re-render which applies our type-swap hides and label changes. Verified live on 1.45.15.
+function pokeWidgets(node) {
+    if (node.widgets && node.widgets.length) { const d = node.widgets.pop(); node.widgets.push(d); }
+}
+
 // the "_colorspace" the Write node injects before the frame number (mirrors io_nodes.py _cs_tag)
 const CS_TAG_RULES = [
     ["acescct", "acescct"], ["acescc", "acescc"], ["acescg", "acescg"], ["aces2065", "aces2065"],
@@ -108,7 +116,7 @@ function exampleName(node) {
 }
 
 async function fillRange(node, source) {
-    if (!source) return;
+    if (!source) { applyReadVis(node); return; }   // empty source: hide the frame controls (still-image default)
     try {
         const r = await fetch("/ocio/seq_range", {
             method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source }),
@@ -136,6 +144,7 @@ function applyReadVis(node, kind) {
     for (const w of ["start_frame", "end_frame", "frame_shift", "fps"]) showWidget(node, W(node, w), !still);
     showWidget(node, W(node, "missing_frames"), seq);   // gaps only exist in a frame sequence
     showWidget(node, W(node, "edge_mode"), seq);
+    pokeWidgets(node);
     node.setSize([node.size[0], node.computeSize()[1]]);
     node.setDirtyCanvas(true, true);
 }
@@ -441,28 +450,12 @@ function openFolderDialog(node) {   // Write output folder
     return openBrowser(node, { widget: "output_folder", forOutput: true });
 }
 
-// ---- version badge: every OCIO-category node gets a small "vX.Y.Z" in its top-right corner ----------------
-// (bottom-left is taken by OCIORead's range/missing-frames text and OCIOWrite's example filename/codec footer;
-// bottom-right is taken by OCIOWrite's "wrote N frame(s)"; top-right inside the node body is the free corner -
-// the colorspace label at y=-6 sits above the node box, not inside it, so there is no clash there either)
-let OCIO_VER = "";
-fetch("/ocio/version").then((r) => r.json()).then((d) => { OCIO_VER = "v" + d.version; }).catch(() => {});
+// (The pack version is shown in every node's display name, set server-side in __init__.py: a canvas-corner
+// badge is invisible on Vue-nodes frontends, which do not draw onDrawForeground, so the title carries it.)
 
 app.registerExtension({
     name: "ComfyUI-OCIO.io",
     async beforeRegisterNodeDef(nodeType, nodeData) {
-        if (nodeData.category === "OCIO") {
-            const prevDraw = nodeType.prototype.onDrawForeground;
-            nodeType.prototype.onDrawForeground = function (ctx) {
-                prevDraw && prevDraw.apply(this, arguments);
-                if ((this.flags && this.flags.collapsed) || !OCIO_VER) return;
-                ctx.save();
-                ctx.font = "9px sans-serif"; ctx.fillStyle = "rgba(255,255,255,0.35)"; ctx.textAlign = "right";
-                ctx.fillText(OCIO_VER, this.size[0] - 6, 12);
-                ctx.restore();
-            };
-        }
-
         if (nodeData.name === "OCIORead") {
             const onCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
@@ -549,18 +542,28 @@ app.registerExtension({
                             ? "which single frame to write, default 1"
                             : "first frame number to write (auto-filled from the source when auto_range is ON)";
                     }
+                    applyCodecLabel();
                     applyFormat();
                     setW(node, "output_colorspace", autoOutCs(c, W(node, "still_format")?.value));
+                    pokeWidgets(node);                                          // Vue re-render (hides + labels)
                     node.setSize([node.size[0], node.computeSize()[1]]);
                     node.setDirtyCanvas(true, true);
+                };
+                // the codec's REAL depth + container extension live in the widget label (visible on every
+                // frontend; the canvas footer below only draws on legacy non-Vue frontends)
+                const applyCodecLabel = () => {
+                    const vc = W(node, "video_codec");
+                    const info = vc && CODEC_INFO[vc.value];
+                    if (vc) vc.label = info ? `video_codec (${info.bits}, ${info.ext})` : "video_codec";
                 };
                 onChange(this, "container", applyContainer);
                 onChange(this, "still_format", () => {
                     applyFormat();
                     applyCompressionVis();
                     setW(node, "output_colorspace", autoOutCs(W(node, "container")?.value, W(node, "still_format")?.value));
+                    pokeWidgets(node);
                 });
-                onChange(this, "video_codec", () => node.setDirtyCanvas(true, true));  // redraw the codec/bit-depth footer
+                onChange(this, "video_codec", () => { applyCodecLabel(); pokeWidgets(node); node.setDirtyCanvas(true, true); });
                 // auto frame range / fps from the upstream OCIO Read
                 onChange(this, "auto_range", (v) => { if (v) syncWriteFromUpstream(node); });
                 for (const w of ["first_frame", "last_frame", "start_number"]) {
@@ -624,7 +627,12 @@ app.registerExtension({
             nodeType.prototype.onExecuted = function (message) {
                 onExec && onExec.apply(this, arguments);
                 const c = message && message.count;
-                if (c) { this._ocioWrote = Array.isArray(c) ? c[0] : c; this.setDirtyCanvas(true, true); }
+                if (c) {
+                    this._ocioWrote = Array.isArray(c) ? c[0] : c; this.setDirtyCanvas(true, true);
+                    // Vue frontends do not draw the canvas "wrote N" corner text; a toast carries the count there
+                    app.extensionManager?.toast?.add?.({ severity: "success", summary: "OCIO Write",
+                        detail: `wrote ${this._ocioWrote} frame(s)`, life: 4000 });
+                }
             };
         }
     },

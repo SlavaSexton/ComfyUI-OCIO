@@ -41,6 +41,11 @@ def _pack_version():
 
 __version__ = _pack_version()
 
+# Show the pack version on every node, in the display name ("OCIO Write - v1.0.1"): a front-end corner badge
+# is invisible on Vue-nodes frontends (they do not draw onDrawForeground); the title renders everywhere.
+# The node TYPE (class key) stays stable, so saved workflows and node search are unaffected.
+NODE_DISPLAY_NAME_MAPPINGS = {k: f"{v} - v{__version__}" for k, v in NODE_DISPLAY_NAME_MAPPINGS.items()}
+
 
 # --- server routes (only inside ComfyUI) --------------------------------------------------------------------
 try:

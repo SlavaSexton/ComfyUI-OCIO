@@ -243,6 +243,43 @@ def _video_fps(info):
         return 0.0
 
 
+def _exr_fps(path):
+    """The OpenEXR `framesPerSecond` rational attribute as a float, or None if absent/unreadable. OpenEXR is
+    NOT a hard dependency of this pack (requirements ship cv2/tifffile/PIL for pixels; ffprobe does NOT read the
+    EXR fps attribute - it reports the image2 demuxer default 25). Import it lazily so a machine without the
+    module just falls back to the default fps instead of breaking sequence detection. Reads only the header, so
+    it is cheap even on a 50 MB EXR. Added 2026-07-03: sequence fps from EXR metadata (see _seq_fps)."""
+    if os.path.splitext(path)[1].lower() != ".exr":
+        return None
+    try:
+        import OpenEXR
+        r = OpenEXR.InputFile(path).header().get("framesPerSecond")
+    except Exception:
+        return None
+    if r is None:
+        return None
+    try:
+        n, d = getattr(r, "n", None), getattr(r, "d", None)   # Imath.Rational (e.g. 24000/1001 -> 23.976)
+        if n and d:
+            return round(float(n) / float(d), 3)
+        return round(float(r), 3)                             # some bindings hand back a plain number
+    except Exception:
+        return None
+
+
+_SEQ_FPS_DEFAULT = 23.976   # cinema base rate (24000/1001); the fallback when a sequence carries no fps metadata
+
+def _seq_fps(files):
+    """Sequence playback rate: the first frame's EXR `framesPerSecond` if it carries one (a comp / render EXR
+    usually does - Nuke stamps it), else the cinema default 23.976 (24000/1001). Non-EXR sequences (PNG / TIFF /
+    JPEG) have no fps attribute, so they take the default. Owner spec 2026-07-03: default is 23.976, not 24."""
+    if files:
+        fps = _exr_fps(files[0])
+        if fps and fps > 0:
+            return fps
+    return _SEQ_FPS_DEFAULT
+
+
 def _read_video(path, frame_start, frame_count):
     """Decode a video -> float32 RGB [N,H,W,3] (0..1) via ffmpeg piping 16-bit rgb48le."""
     _require_ffmpeg()
@@ -324,7 +361,7 @@ def load_source(source, start_frame=0, end_frame=0, frame_mode="auto", missing_m
         frames, meta = _assemble_sequence(files, start_frame, end_frame, missing_mode, edge_mode)
         h0, w0 = frames[0].shape[:2]
         frames = [f if f.shape[:2] == (h0, w0) else np.zeros((h0, w0, 4), np.float32) for f in frames]
-        return np.stack(frames, 0), {"kind": "sequence", "count": len(frames), "fps": 0.0,
+        return np.stack(frames, 0), {"kind": "sequence", "count": len(frames), "fps": _seq_fps(files),
                                      "format": os.path.splitext(files[0])[1].lstrip("."), "label": label,
                                      "orig_start": meta["orig_start"], "orig_end": meta["orig_end"],
                                      "missing": meta["missing"]}
@@ -368,9 +405,9 @@ def _seq_range(source):
         lo, hi = present[0], present[-1]
         pset = set(present)
         missing = [f for f in range(lo, hi + 1) if f not in pset]
-        return {"kind": "sequence", "start": lo, "end": hi, "count": len(files), "fps": 0.0,
+        return {"kind": "sequence", "start": lo, "end": hi, "count": len(files), "fps": _seq_fps(files),
                 "orig_start": lo, "orig_end": hi, "missing": _collapse_ranges(missing),
-                "missing_count": len(missing)}
+                "missing_count": len(missing), "input_cs": _auto_input_cs(files[0])}
     return {"kind": "still", "start": 0, "end": 0, "count": 1, "fps": 0.0}
 
 
@@ -465,12 +502,15 @@ def _fit_long_side(rgb, max_side):
     return cv2.resize(np.ascontiguousarray(rgb), (nw, nh), interpolation=cv2.INTER_AREA)
 
 
-def thumb_frame(src, max_side=512):
+def thumb_frame(src, max_side=512, frame=None):
     """Resolve `src` exactly like OCIORead (absolute, or relative to the ComfyUI input dir; a folder or a
     numbered frame collapses to its sequence and picks frame 1; a video decodes ONLY its first frame via
     ffmpeg). Returns float32 RGB [H,W,3] (0..1 for stills/video; EXR/HDR keep scene-linear range), already
     downscaled to fit `max_side` on the long side. Colorspace conversion is the caller's job (via _convert) -
-    this only loads + resizes, so the /ocio/thumb route stays thin and cv2 does the expensive work once."""
+    this only loads + resizes, so the /ocio/thumb route stays thin and cv2 does the expensive work once.
+    `frame` (a FRAME NUMBER, not an index) drives the sequence flipbook player (2026-07-03): when given and the
+    source is a sequence, return THAT frame instead of the first; a missing/out-of-range number falls back to
+    frame 1 so the player never 500s mid-scrub. Ignored for a lone still / video."""
     source = (src or "").rstrip("/")
     if not source:
         raise ValueError("empty source")
@@ -488,6 +528,8 @@ def thumb_frame(src, max_side=512):
             files = sib
     if files:
         first = files[0]
+        if frame is not None:                          # flipbook: exact frame NUMBER, fall back to frame 1 if absent
+            first = {_frame_num(f): f for f in files}.get(int(frame), first)
     elif os.path.isfile(s):
         first = s
     else:

@@ -197,7 +197,7 @@ function ensureReadPreview(node) {
     node._ocioPrev = { img, video, canvas, gl: null, lutN: 33, lutReady: false, raf: 0, streamUrl: "" };
     node._ocioPrev.pb = { playing: false, dir: 1, mode: "loop", fps: 24, showTransport: false, lastT: 0 };
     _ensureTransport(node, node._ocioPrev);           // transport bar widget (sits under the canvas, video only)
-    node.onRemoved = (orig => function () { _stopViewport(node._ocioPrev); return orig && orig.apply(this, arguments); })(node.onRemoved);
+    node.onRemoved = (orig => function () { const pp = node._ocioPrev; _stopViewport(pp); _stopSeq(pp); if (pp && pp.audio) { try { pp.audio.source.disconnect(); pp.audio.gain.disconnect(); pp.audio.splitter.disconnect(); } catch (e) {} } return orig && orig.apply(this, arguments); })(node.onRemoved);
     return node._ocioPrev;
 }
 function _vpInitGL(p) {
@@ -260,12 +260,29 @@ function _drawViewport(p) {
     gl.uniform1f(g.locs.uN, p.lutN || 33); gl.uniform1f(g.locs.uOn, p.lutReady ? 1 : 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
+function _ensureRaf(node, p) {                          // one rAF loop drives both the video viewport and the seq flipbook
+    if (p.raf) return;
+    const loop = (now) => {
+        if (node._ocioPrev !== p) { p.raf = 0; return; }
+        _tickPlayback(p, now || 0);
+        if (!p.pb.seqMode) _drawViewport(p);           // a sequence shows its color-managed thumb in <img> (no WebGL)
+        _syncTransport(p);
+        _drawAudioMeter(p);                            // stereo L/R level meter (video only; self-guards for seq)
+        p.raf = requestAnimationFrame(loop);
+    };
+    p.raf = requestAnimationFrame(loop);
+}
 function _startViewport(node, p, src) {
+    p.pb.seqMode = false;                              // leaving any image-sequence mode
     const streamUrl = "/ocio/stream?src=" + encodeURIComponent(src);
     if (p.streamUrl !== streamUrl) {
         p.streamUrl = streamUrl; p.video.loop = false; p.pb.playing = false; p.pb.dir = 1; p.pb.revAnchor = null;
         p.video.src = streamUrl;
-        p.video.onloadeddata = () => { try { p.video.pause(); p.video.currentTime = 0; } catch (e) {} };
+        p.video.onloadeddata = () => { if (!p.pb.playing) { try { p.video.pause(); p.video.currentTime = 0; } catch (e) {} } };   // load paused, but never fight an explicit play
+        // Reverse plays by seeking a PAUSED <video> backward frame by frame; the browser only paints a seeked frame
+        // once the seek settles, and the rAF _drawViewport skips while readyState dips mid-seek - so the viewport
+        // looked frozen while the playhead moved. Draw on every completed seek so reverse (and any scrub) updates.
+        p.video.onseeked = () => { if (!p.pb.seqMode) _drawViewport(p); };
         p.video.onerror = () => { _stopViewport(p); p.img.src = "/ocio/thumb?" + _thumbQuery(node, src); p.img.style.display = ""; };
     }
     if (!_vpInitGL(p)) {                               // no WebGL2 -> static color-managed thumb fallback
@@ -274,13 +291,98 @@ function _startViewport(node, p, src) {
     }
     p.img.style.display = "none"; p.video.style.display = "none"; p.canvas.style.display = "";
     p.pb.fps = parseFloat(W(node, "fps")?.value) || p.pb.fps || 24;
-    p.pb.showTransport = true; if (p.transport) p.transport.bar.style.display = "flex";
+    p.pb.showTransport = true; if (p.transport) { p.transport.bar.style.display = "flex"; p.transport.audioRow.style.display = "flex"; }   // audio meter: video only
     node.setSize([node.size[0], node.computeSize()[1]]);
     _refreshVideoLut(node, p);
-    if (!p.raf) {
-        const loop = (now) => { if (node._ocioPrev !== p) { p.raf = 0; return; } _tickPlayback(p, now || 0); _drawViewport(p); _syncTransport(p); p.raf = requestAnimationFrame(loop); };
-        p.raf = requestAnimationFrame(loop);
+    _ensureRaf(node, p);
+}
+// ---- Sequence flipbook player (image sequences: EXR / TIFF / PNG frames). No <video>; the transport bar drives a
+// frame-index clock, and each frame is the server's OCIO-correct /ocio/thumb (in_cs -> out_cs applied server-side),
+// so live colorspace changes are exact - the whole point of a color node. Heavy 4K EXR frames cannot decode in real
+// time from cold, so the [in,out] range is prefetched into a client blob cache (a Nuke/RV-style flipbook); playback
+// runs from that cache. Frame numbers <-> 0-based index via _seqBase (orig_start). Added 2026-07-03.
+function _seqCsSig(node) {
+    return (W(node, "input_colorspace")?.value || "") + "|" + (W(node, "output_colorspace")?.value || "") +
+           "|" + (W(node, "raw_data")?.value ? "1" : "0");
+}
+function _seqUrl(p, idx) {
+    const node = p.node, base = (p.seq.origStart | 0);
+    return "/ocio/thumb?" + new URLSearchParams({
+        src: p.seq.src, frame: String(base + (idx | 0)),
+        in_cs: W(node, "input_colorspace")?.value || "", out_cs: W(node, "output_colorspace")?.value || "",
+        raw: W(node, "raw_data")?.value ? "1" : "0",
+    }).toString();
+}
+function _seqClearCache(p) {
+    if (p.seqCache) { for (const u of p.seqCache.values()) { try { URL.revokeObjectURL(u); } catch (e) {} } p.seqCache.clear(); }
+    if (p.seqInflight) p.seqInflight.clear();
+}
+async function _seqFetch(p, idx, show) {
+    if (!p.seqCache) p.seqCache = new Map();
+    if (!p.seqInflight) p.seqInflight = new Set();
+    const last = _pbLast(p); idx = Math.max(0, Math.min(last, idx | 0));
+    if (p.seqCache.has(idx)) { if (show && (p.pb.seqFrame | 0) === idx) { const u = p.seqCache.get(idx); if (p.img.src !== u) p.img.src = u; } return; }
+    if (p.seqInflight.has(idx)) return;
+    p.seqInflight.add(idx);
+    try {
+        const r = await fetch(_seqUrl(p, idx));
+        if (!r.ok) throw new Error("thumb " + r.status);
+        const obj = URL.createObjectURL(await r.blob());
+        if (!p.seqCache) { URL.revokeObjectURL(obj); return; }       // viewport torn down mid-fetch
+        p.seqCache.set(idx, obj);
+        if (show && (p.pb.seqFrame | 0) === idx) { p.img.style.display = ""; p.img.src = obj; }   // still the current frame
+    } catch (e) { /* missing / failed frame: keep the previous image, do not blank */ }
+    finally { p.seqInflight.delete(idx); }
+}
+function _seqShow(p) { if (p.seq) _seqFetch(p, p.pb.seqFrame | 0, true); }
+function _seqPrefetch(p) {                                            // warm the [in,out] range into the blob cache
+    const inI = _pbIn(p), outI = _pbOut(p), CAP = 300;               // bound the burst + client blob memory (each thumb decodes a full EXR); range beyond CAP fetches on demand during playback
+    const hi = Math.min(outI, inI + CAP - 1);
+    if (outI - inI + 1 > CAP) console.warn(`[OCIO] sequence prefetch capped at ${CAP} frames (range ${inI}-${outI})`);
+    let i = inI;
+    const pump = () => { if (!p.pb.seqMode || i > hi) return; const idx = i++; _seqFetch(p, idx, false).then(pump, pump); };
+    pump(); pump();                                                  // 2 pumps; server decodes serially anyway
+}
+function _seqTick(p, now) {
+    const pb = p.pb; if (!pb.playing) return;
+    const inI = _pbIn(p), outI = _pbOut(p), span = Math.max(1, outI - inI + 1);
+    const fps = Math.max(1, parseFloat(W(p.node, "fps")?.value) || pb.fps || 24);
+    if (!pb.seqAnchor) pb.seqAnchor = { wall: now, frame: Math.max(inI, Math.min(outI, pb.seqFrame | 0)) };
+    const steps = Math.floor(((now - pb.seqAnchor.wall) / 1000) * fps) * (pb.dir < 0 ? -1 : 1);
+    const raw = pb.seqAnchor.frame + steps;
+    let idx;
+    if (pb.mode === "bounce") {
+        const period = Math.max(1, 2 * span - 2), ph = (((raw - inI) % period) + period) % period;
+        idx = inI + (ph < span ? ph : period - ph);
+    } else {
+        idx = inI + ((((raw - inI) % span) + span) % span);         // loop within [in,out]
     }
+    if (idx !== (pb.seqFrame | 0)) { pb.seqFrame = idx; _seqShow(p); }
+}
+function _stopSeq(p) {
+    if (!p || !p.pb) return;
+    p.pb.seqMode = false; p.pb.playing = false; p.pb.seqAnchor = null;
+    p.pb.showTransport = false; if (p.transport) p.transport.bar.style.display = "none";
+    _seqClearCache(p); p.seq = null;
+}
+function _startSeqViewport(node, p, src, seq) {
+    _stopViewport(p);                                                // ensure the video path is off (pauses <video>, cancels rAF)
+    const origStart = (seq.orig_start != null ? seq.orig_start : (seq.start != null ? seq.start : 0)) | 0;
+    const count = Math.max(1, seq.count | 0);
+    const csSig = _seqCsSig(node);
+    if (p.seq && (p.seq.src !== src || p.seqCsSig !== csSig)) _seqClearCache(p);   // source or colorspace changed -> stale cache
+    if (!p.seq || p.seq.src !== src) p.pb.seqFrame = 0;              // new clip starts at frame 0
+    p.seq = { src, origStart, count }; p.seqCsSig = csSig;
+    p.pb.seqMode = true; p.pb.playing = false; p.pb.dir = 1; p.pb.seqAnchor = null;
+    p.pb.fps = parseFloat(W(node, "fps")?.value) || p.pb.fps || 24;
+    p.pb.fileFrames = count;
+    p.pb.seqFrame = Math.max(0, Math.min(count - 1, p.pb.seqFrame | 0));
+    p.canvas.style.display = "none"; p.video.style.display = "none"; p.img.style.display = "";
+    p.pb.showTransport = true; if (p.transport) { p.transport.bar.style.display = "flex"; p.transport.audioRow.style.display = "none"; }   // sequences have no audio
+    node.setSize([node.size[0], node.computeSize()[1]]);
+    _seqShow(p);                                                     // current frame now
+    _seqPrefetch(p);                                                 // warm the rest of the range
+    _ensureRaf(node, p);
 }
 function _stopViewport(p) {
     if (!p) return;
@@ -317,6 +419,8 @@ const _SVG = {
     play:    '<path d="M4 3l9 5-9 5z"/>',                                                                         // >   play forward
     pause:   '<path d="M4 3h3v10H4zM9 3h3v10H9z"/>',
     stop:    '<rect x="4" y="4" width="8" height="8"/>',                                                          // stop (pause in place)
+    soundOff:'<path d="M2.5 6.2H5L8 3.5v9L5 9.8H2.5z"/><path fill="none" stroke="currentColor" stroke-width="1.3" d="M10.5 6.3l3.2 3.4M13.7 6.3l-3.2 3.4"/>',   // speaker + X (muted)
+    soundOn: '<path d="M2.5 6.2H5L8 3.5v9L5 9.8H2.5z"/><path fill="none" stroke="currentColor" stroke-width="1.2" d="M10.4 6a3 3 0 0 1 0 4M12.2 4.4a5 5 0 0 1 0 7.2"/>',   // speaker + waves (on)
 };
 function _tBtn(icon, title) {
     const b = document.createElement("button"); b.title = title; b.dataset.icon = "1";
@@ -331,19 +435,37 @@ function _setIcon(b, icon) { b.innerHTML = `<svg viewBox="0 0 16 16" width="11" 
 // uses a proportional map through video.duration, so it is correct even if the fps widget is off.
 function _pbFrames(p) { const n = p.pb && p.pb.fileFrames; return (n > 0 && isFinite(n)) ? Math.min(1e6, Math.round(n)) : 1; }
 function _pbLast(p) { return _pbFrames(p) - 1; }
-function _pbCur(p) { const v = p.video, d = v && v.duration, last = _pbLast(p); if (!(d > 0) || last < 1) return 0; return Math.max(0, Math.min(last, Math.round((v.currentTime / d) * last))); }
-function _pbSeek(p, f) { const v = p.video, d = v && v.duration, last = _pbLast(p); f = Math.max(0, Math.min(last, Math.round(f))); if (d > 0) v.currentTime = Math.max(0, Math.min(d - 0.001, (f / Math.max(1, last)) * d)); }
-// in / out range = the node's start_frame / end_frame widgets (single source of truth, bidirectional).
-function _pbIn(p) { const w = W(p.node, "start_frame"); return Math.max(0, Math.min(_pbLast(p), Math.round(w?.value ?? 0))); }
-function _pbOut(p) { const w = W(p.node, "end_frame"); const last = _pbLast(p); return Math.max(_pbIn(p), Math.min(last, Math.round(w?.value ?? last))); }
+// A sequence's start_frame / end_frame widgets hold FRAME NUMBERS (e.g. 86..97), but the timeline + playhead run
+// on a 0-based INDEX (0..count-1). _seqBase is the offset (orig_start) that maps between them; 0 for a video (its
+// widgets are already 0-based indices), so every formula below reduces to the old video behaviour when base = 0.
+function _seqBase(p) { return (p.pb && p.pb.seqMode && p.seq) ? (p.seq.origStart | 0) : 0; }
+function _pbCur(p) {
+    if (p.pb && p.pb.seqMode) return Math.max(0, Math.min(_pbLast(p), p.pb.seqFrame | 0));
+    const v = p.video, d = v && v.duration, last = _pbLast(p); if (!(d > 0) || last < 1) return 0;
+    return Math.max(0, Math.min(last, Math.round((v.currentTime / d) * last)));
+}
+function _pbSeek(p, f) {
+    const last = _pbLast(p); f = Math.max(0, Math.min(last, Math.round(f)));
+    if (p.pb && p.pb.seqMode) { p.pb.seqFrame = f; p.pb.seqAnchor = null; _seqShow(p); return; }
+    const v = p.video, d = v && v.duration; if (d > 0) v.currentTime = Math.max(0, Math.min(d - 0.001, (f / Math.max(1, last)) * d));
+}
+// in / out range = the node's start_frame / end_frame widgets (single source of truth, bidirectional). Widgets
+// store frame numbers; these convert to/from the 0-based index via _seqBase (base 0 = video, unchanged).
+function _pbIn(p) { const base = _seqBase(p), w = W(p.node, "start_frame"); return Math.max(0, Math.min(_pbLast(p), Math.round((w?.value ?? base)) - base)); }
+function _pbOut(p) { const base = _seqBase(p), last = _pbLast(p), w = W(p.node, "end_frame"); return Math.max(_pbIn(p), Math.min(last, Math.round((w?.value ?? (base + last))) - base)); }
 function _pbSetField(p, name, f) { const w = W(p.node, name); if (!w) return; w.value = f; try { w.callback && w.callback(f); } catch (e) {} p.node.setDirtyCanvas(true, true); }
-function _pbSetIn(p, f) { _pbSetField(p, "start_frame", Math.max(0, Math.min(_pbOut(p), Math.round(f)))); }
-function _pbSetOut(p, f) { _pbSetField(p, "end_frame", Math.max(_pbIn(p), Math.min(_pbLast(p), Math.round(f)))); }
-function _pbResetRange(p) { _pbSetField(p, "start_frame", 0); _pbSetField(p, "end_frame", _pbLast(p)); }
+function _pbSetIn(p, f) { const base = _seqBase(p); _pbSetField(p, "start_frame", base + Math.max(0, Math.min(_pbOut(p), Math.round(f)))); }
+function _pbSetOut(p, f) { const base = _seqBase(p); _pbSetField(p, "end_frame", base + Math.max(_pbIn(p), Math.min(_pbLast(p), Math.round(f)))); }
+function _pbResetRange(p) { const base = _seqBase(p); _pbSetField(p, "start_frame", base); _pbSetField(p, "end_frame", base + _pbLast(p)); }
 function _pbSet(node, p, on, dir) {
-    p.pb.playing = on; p.pb.dir = dir || 1; p.pb.revAnchor = null;   // re-anchor reverse on every state change
+    p.pb.playing = on; p.pb.dir = dir || 1; p.pb.revAnchor = null; p.pb.seqAnchor = null;   // re-anchor on every state change
     const inF = _pbIn(p), outF = _pbOut(p), cur = _pbCur(p);
-    if (on && p.pb.dir > 0) { if (cur >= outF) _pbSeek(p, inF); p.video.loop = false; p.video.playbackRate = 1; p.video.play().catch(() => {}); }
+    if (p.pb.seqMode) {                                              // sequence flipbook: _tickPlayback advances seqFrame
+        if (on && p.pb.dir > 0 && cur >= outF) _pbSeek(p, inF);      // at the out-point -> restart at in
+        else if (on && p.pb.dir < 0 && cur <= inF) _pbSeek(p, outF); // reverse from the in-point -> restart at out
+        _syncTransport(p); return;
+    }
+    if (on && p.pb.dir > 0) { _ensureAudio(p); if (cur >= outF) _pbSeek(p, inF); p.video.loop = false; p.video.playbackRate = 1; p.video.play().catch(() => {}); }   // build audio graph on the play gesture
     else if (on) { if (cur <= inF) _pbSeek(p, outF); p.video.pause(); }   // reverse is driven manually in _tickPlayback
     else { p.video.pause(); }
     _syncTransport(p);
@@ -356,6 +478,7 @@ function _pbStep(node, p, d) { _pbSet(node, p, false, 1); _pbSeek(p, _pbCur(p) +
 // has finished (v.seeking) - without that gate, a long clip floods the decoder with seeks and stalls.
 function _tickPlayback(p, now) {
     const pb = p.pb, v = p.video; if (!pb) return;
+    if (pb.seqMode) { _seqTick(p, now); return; }                 // image-sequence flipbook has no <video> clock
     if (!pb.playing || !(v.duration > 0)) return;
     const d = v.duration, last = Math.max(1, _pbLast(p));
     const inT = (_pbIn(p) / last) * d, outT = Math.min(d - 0.001, ((_pbOut(p) + 0.999) / last) * d);
@@ -373,10 +496,25 @@ function _niceStep(n, maxLabels) {
     for (const m of [1, 2, 5, 10]) if (pow * m >= raw) return pow * m;
     return pow * 10;
 }
+// The timeline + meter are raster <canvas> widgets: at a 1x backing store they blur on a HiDPI screen AND when the
+// graph is zoomed in (litegraph CSS-scales the DOM widget, so a 1x bitmap gets stretched - that is the pixelation
+// on the ruler numbers and handles). Size the backing store to devicePixelRatio x the on-screen scale and draw in
+// CSS-pixel coordinates, so they stay crisp like the vector (SVG) buttons. Added 2026-07-03.
+function _prepCanvas(cv, cssH) {
+    const rect = cv.getBoundingClientRect();
+    const cssW = cv.clientWidth || Math.round(rect.width) || 200;
+    const zoom = (cssW > 0 && rect.width > 0) ? rect.width / cssW : 1;      // litegraph graph-zoom (CSS transform scale)
+    const scale = Math.min(4, Math.max(1, (window.devicePixelRatio || 1) * zoom));   // cap so extreme zoom cannot blow up memory
+    const bw = Math.max(1, Math.round(cssW * scale)), bh = Math.max(1, Math.round(cssH * scale));
+    if (cv.width !== bw) cv.width = bw;
+    if (cv.height !== bh) cv.height = bh;
+    const g = cv.getContext("2d");
+    if (g) g.setTransform(scale, 0, 0, scale, 0, 0);                        // 1 unit = 1 CSS pixel -> crisp at DPR x zoom
+    return { g, W: cssW, H: cssH };
+}
 function _drawTimeline(p) {
     const t = p.transport; if (!t || !t.tl) return; const cv = t.tl;
-    const Wd = cv.clientWidth || 250; if (cv.width !== Wd) cv.width = Wd; const H = cv.height;
-    const g = cv.getContext("2d"); if (!g) return; const PAD = 8;
+    const { g, W: Wd, H } = _prepCanvas(cv, 26); if (!g) return; const PAD = 8;
     const last = _pbLast(p), cur = _pbCur(p), inF = _pbIn(p), outF = _pbOut(p);
     const X = f => PAD + (last > 0 ? f / last : 0) * (Wd - 2 * PAD);
     g.clearRect(0, 0, Wd, H); g.fillStyle = "#141414"; g.fillRect(0, 0, Wd, H);
@@ -386,7 +524,7 @@ function _drawTimeline(p) {
     g.fillStyle = "#7a8a99"; g.strokeStyle = "#3a3a3a"; g.font = "8px monospace"; g.textAlign = "center";
     for (let f = 0; f <= last; f += step) {
         const x = X(f); g.beginPath(); g.moveTo(x, H - 6); g.lineTo(x, H - 9); g.stroke();
-        g.fillText(String(f), Math.max(7, Math.min(Wd - 7, x)), H - 11);
+        g.fillText(String(f + _seqBase(p)), Math.max(7, Math.min(Wd - 7, x)), H - 11);   // real frame number for a sequence
     }
     g.strokeStyle = "#333"; g.beginPath(); g.moveTo(PAD, H - 6); g.lineTo(Wd - PAD, H - 6); g.stroke();
     const handle = (x, d) => { g.fillStyle = "#4cc3ff"; g.fillRect(x - 0.5, 2, 1, H - 6); g.beginPath(); g.moveTo(x, 2); g.lineTo(x + d * 5, 2); g.lineTo(x, 7); g.closePath(); g.fill(); };
@@ -397,9 +535,11 @@ function _drawTimeline(p) {
 function _syncTransport(p) {
     const t = p.transport; if (!t) return;
     const cur = _pbCur(p), pb = p.pb;
-    if (document.activeElement !== t.frame) t.frame.value = String(cur);
-    _setIcon(t.play, (pb.playing && pb.dir > 0) ? _SVG.pause : _SVG.play);
-    _setIcon(t.playR, (pb.playing && pb.dir < 0) ? _SVG.pause : _SVG.playR);
+    if (document.activeElement !== t.frame) t.frame.value = String(cur + _seqBase(p));   // display the real frame number
+    // Play buttons never turn into a pause (owner spec): the icon stays play / reverse; a green inset ring just
+    // shows which direction is currently running. Stop is the only pause.
+    t.play.style.boxShadow = (pb.playing && pb.dir > 0) ? "inset 0 0 0 2px #4caf50" : "";
+    t.playR.style.boxShadow = (pb.playing && pb.dir < 0) ? "inset 0 0 0 2px #4caf50" : "";
     _drawTimeline(p);
 }
 function _ensureTransport(node, p) {
@@ -417,18 +557,29 @@ function _ensureTransport(node, p) {
     const setIn = mkBtn(_SVG.setIn, "Set IN point to current frame", () => { _pbSetIn(p, _pbCur(p)); _drawTimeline(p); });
     const first = mkBtn(_SVG.first, "Go to first frame of range (in)", () => { _pbSet(node, p, false, 1); _pbSeek(p, _pbIn(p)); _drawTimeline(p); });
     const sb = mkBtn(_SVG.stepB, "Step back one frame", () => _pbStep(node, p, -1));
-    const playR = mkBtn(_SVG.playR, "Play reverse", () => _pbSet(node, p, !(p.pb.playing && p.pb.dir < 0), -1));
+    const playR = mkBtn(_SVG.playR, "Play reverse", () => _pbSet(node, p, true, -1));   // always play reverse (NOT a toggle); pause is the Stop button only
     const stop = mkBtn(_SVG.stop, "Stop (pause here)", () => _pbStop(node, p));
     const frame = document.createElement("input"); frame.type = "number"; frame.value = "0"; frame.title = "Current frame (type a number to jump)";
     frame.style.cssText = "width:44px;height:16px;text-align:center;background:#101010;color:#cfe;border:1px solid #333;border-radius:2px;font:11px monospace;margin:0 3px;";
-    frame.addEventListener("change", () => { const f = parseInt(frame.value, 10) || 0; _pbSet(node, p, false, 1); _pbSeek(p, f); _drawTimeline(p); });
-    const play = mkBtn(_SVG.play, "Play forward", () => _pbSet(node, p, !(p.pb.playing && p.pb.dir > 0), 1));
+    frame.addEventListener("change", () => { const f = (parseInt(frame.value, 10) || 0) - _seqBase(p); _pbSet(node, p, false, 1); _pbSeek(p, f); _drawTimeline(p); });   // user types a frame number -> index
+    const play = mkBtn(_SVG.play, "Play forward", () => _pbSet(node, p, true, 1));   // always play forward (NOT a toggle); pause is the Stop button only
     const sf = mkBtn(_SVG.stepF, "Step forward one frame", () => _pbStep(node, p, 1));
     const last = mkBtn(_SVG.last, "Go to last frame of range (out)", () => { _pbSet(node, p, false, 1); _pbSeek(p, _pbOut(p)); _drawTimeline(p); });
     const setOut = mkBtn(_SVG.setOut, "Set OUT point to current frame", () => { _pbSetOut(p, _pbCur(p)); _drawTimeline(p); });
     const sep = () => { const s = document.createElement("span"); s.style.cssText = "width:4px;display:inline-block;"; return s; };
     row.append(reset, sep(), setIn, first, sb, playR, stop, frame, play, sf, last, setOut);
-    bar.append(tl, row);
+    // audio strip (video only): mute toggle on the left + a stereo L/R level meter filling the rest, sitting
+    // between the transport buttons and the metadata panel. The meter reads the video's audio via Web Audio and
+    // moves even while muted (so you can see there IS sound before turning it on - Seedance etc. now emit audio).
+    const audioRow = document.createElement("div");
+    audioRow.style.cssText = "display:none;align-items:center;gap:5px;padding:5px 4px;box-sizing:border-box;";
+    const muteBtn = _tBtn(_SVG.soundOff, "Sound on / off (default off)");
+    muteBtn.style.opacity = "0.55";
+    muteBtn.onclick = () => _toggleMute(p, muteBtn);
+    const meter = document.createElement("canvas"); meter.height = 22;
+    meter.style.cssText = "flex:1 1 0;min-width:0;height:22px;display:block;";   // basis 0 + min-width:0: layout width is the flex share, NOT the (HiDPI-enlarged) backing store -> no runaway overflow
+    audioRow.append(muteBtn, meter);
+    bar.append(tl, row, audioRow);
     const w = node.addDOMWidget("transport", "div", bar, { serialize: false });
     w.computeSize = () => [0, p.pb && p.pb.showTransport ? 54 : 0];
     w._ocioAlwaysVisible = true;
@@ -444,17 +595,91 @@ function _ensureTransport(node, p) {
         const up = () => { document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); };
         document.addEventListener("mousemove", move); document.addEventListener("mouseup", up); e.preventDefault();
     });
-    p.transport = { bar, tl, frame, play, playR };
+    p.transport = { bar, tl, frame, play, playR, audioRow, muteBtn, meter };
     return p.transport;
+}
+// ---- audio: mute toggle + stereo L/R level meter (video only). Web Audio taps the <video> so the meter shows
+// levels even when the speakers are muted; the mute button just gates a GainNode. Created lazily on a user gesture
+// (play / mute click) so the AudioContext is allowed to start. One shared context for all nodes. Added 2026-07-03.
+let _ocioAudioCtx = null;
+function _ensureAudio(p) {
+    if (p.audio) { if (p.audio.ctx.state === "suspended") p.audio.ctx.resume(); return p.audio; }
+    if (p._audioFailed || !p.video) return null;
+    try {
+        if (!_ocioAudioCtx) _ocioAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const ctx = _ocioAudioCtx;
+        if (ctx.state === "suspended") ctx.resume();
+        p.video.muted = false;                                   // feed the graph; audibility is the gain node's job
+        const source = ctx.createMediaElementSource(p.video);    // one per element, for the element's lifetime
+        const splitter = ctx.createChannelSplitter(2);
+        source.connect(splitter);
+        const analyserL = ctx.createAnalyser(), analyserR = ctx.createAnalyser();
+        analyserL.fftSize = 256; analyserR.fftSize = 256;
+        splitter.connect(analyserL, 0); splitter.connect(analyserR, 1);
+        const gain = ctx.createGain(); gain.gain.value = 0;      // default: muted OUTPUT (meter still reads signal)
+        source.connect(gain); gain.connect(ctx.destination);
+        p.audio = { ctx, source, splitter, analyserL, analyserR, gain, muted: true,
+                    dataL: new Uint8Array(analyserL.fftSize), dataR: new Uint8Array(analyserR.fftSize),
+                    levelL: 0, levelR: 0 };
+    } catch (e) { console.warn("[OCIO] audio init failed:", e && e.message); p._audioFailed = true; p.audio = null; }
+    return p.audio;
+}
+function _toggleMute(p, btn) {
+    _ensureAudio(p);
+    if (!p.audio) { btn.title = "Audio unavailable for this clip"; return; }
+    p.audio.muted = !p.audio.muted;
+    p.audio.gain.gain.value = p.audio.muted ? 0 : 1;
+    _setIcon(btn, p.audio.muted ? _SVG.soundOff : _SVG.soundOn);
+    btn.style.opacity = p.audio.muted ? "0.55" : "1";
+    btn.style.color = p.audio.muted ? "#e0e8f0" : "#4caf50";
+}
+// Level zones are FIXED positions on the bar (NOT a whole-bar recolor): the fill just extends into green (0-75%),
+// then yellow (75-95%), then red (95-100%) as the level rises. Fast attack, slow decay so it reads like a VU.
+const _MTR_GY = 0.75, _MTR_YR = 0.95;
+// Map a linear peak (0..1) to a bar position via dBFS, so the meter reads like a real audio meter instead of raw
+// amplitude: 0 dBFS (full scale) fills the bar, and with a -48 dB floor the green/yellow (75%) and yellow/red (95%)
+// edges land at -12 dB / -2.4 dB. A -1 dBFS peak now shows ~98% (deep red), not ~a fifth of the bar. Added 2026-07-03.
+const _MTR_DB_FLOOR = -48;
+function _dbPos(lin) {
+    if (!(lin > 1e-4)) return 0;
+    const db = 20 * Math.log10(Math.min(1, lin));               // <= 0 dBFS
+    return Math.max(0, Math.min(1, 1 - db / _MTR_DB_FLOOR));
+}
+function _drawMeterBars(cv, lvL, lvR, active) {
+    const { g, W: Wd, H } = _prepCanvas(cv, 22); if (!g) return;
+    g.clearRect(0, 0, Wd, H);
+    const x0 = 11, barW = Math.max(2, Wd - x0 - 2), barH = 6, gap = 5;
+    g.font = "8px monospace"; g.textBaseline = "middle";
+    [["L", lvL, 3], ["R", lvR, 3 + barH + gap]].forEach(([label, raw, y]) => {
+        const lv = Math.max(0, Math.min(1, raw)), fx = f => x0 + f * barW;
+        g.fillStyle = active ? "#9cf" : "#5a6472"; g.textAlign = "left"; g.fillText(label, 1, y + barH / 2);
+        g.fillStyle = "#0d0d0d"; g.fillRect(x0, y, barW, barH);                                                 // track
+        if (lv > 0) { g.fillStyle = "#37c96a"; g.fillRect(x0, y, Math.min(lv, _MTR_GY) * barW, barH); }         // green
+        if (lv > _MTR_GY) { g.fillStyle = "#e6c02e"; g.fillRect(fx(_MTR_GY), y, (Math.min(lv, _MTR_YR) - _MTR_GY) * barW, barH); }   // yellow
+        if (lv > _MTR_YR) { g.fillStyle = "#e0432e"; g.fillRect(fx(_MTR_YR), y, (lv - _MTR_YR) * barW, barH); }  // red
+        g.fillStyle = "#000"; g.fillRect(fx(_MTR_GY), y, 1, barH); g.fillRect(fx(_MTR_YR), y, 1, barH);         // zone dividers
+    });
+}
+function _drawAudioMeter(p) {
+    const t = p.transport; if (!t || !t.meter || p.pb.seqMode || t.audioRow.style.display === "none") return;
+    const a = p.audio;
+    if (!a) { _drawMeterBars(t.meter, 0, 0, false); return; }
+    const peak = arr => { let m = 0; for (let i = 0; i < arr.length; i++) { const v = Math.abs(arr[i] - 128); if (v > m) m = v; } return m / 128; };
+    a.analyserL.getByteTimeDomainData(a.dataL); a.analyserR.getByteTimeDomainData(a.dataR);
+    a.levelL = Math.max(peak(a.dataL), a.levelL * 0.86); a.levelR = Math.max(peak(a.dataR), a.levelR * 0.86);
+    _drawMeterBars(t.meter, _dbPos(a.levelL), _dbPos(a.levelR), !a.muted);   // dBFS scale, not raw amplitude
 }
 function updateReadPreview(node) {
     const p = ensureReadPreview(node);
     const src = (W(node, "source")?.value || "").trim();
-    if (!src) { p.img.style.display = "none"; p.img.removeAttribute("src"); _stopViewport(p); return; }
+    if (!src) { _stopSeq(p); _stopViewport(p); p.img.style.display = "none"; p.img.removeAttribute("src"); return; }
+    const seq = node._ocioSeq;
     if (/\.(mov|mp4|mkv|avi|webm|mxf|m4v)$/i.test(src)) {
-        _startViewport(node, p, src);
+        _stopSeq(p); _startViewport(node, p, src);
+    } else if (seq && seq.kind === "sequence") {
+        _startSeqViewport(node, p, src, seq);              // EXR / image sequence -> flipbook player
     } else {
-        _stopViewport(p);
+        _stopSeq(p); _stopViewport(p);
         p.img.src = "/ocio/thumb?" + _thumbQuery(node, src); p.img.style.display = "";
     }
 }
@@ -498,7 +723,7 @@ async function updateReadMeta(node) {
 }
 
 async function fillRange(node, source) {
-    if (!source) { applyReadVis(node); return; }   // empty source: hide the frame controls (still-image default)
+    if (!source) { applyReadVis(node); updateReadPreview(node); return; }   // empty source: hide the frame controls (still-image default)
     try {
         const r = await fetch("/ocio/seq_range", {
             method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source }),
@@ -511,6 +736,7 @@ async function fillRange(node, source) {
             setWSilent(node, "end_frame", d.end | 0);
             setWSilent(node, "frame_shift", d.start | 0);      // default: first frame keeps its source number
             if (d.fps) setWSilent(node, "fps", Math.round(d.fps * 1000) / 1000);
+            if (d.input_cs) setWSilent(node, "input_colorspace", d.input_cs);   // folder path has no ext -> fix EXR auto-detect (sRGB -> ACEScg) from the resolved first frame
             // the transport ruler + in/out span the REAL file frame count (authoritative), not video.duration
             if (pv && pv.pb) pv.pb.fileFrames = Math.max(1, (d.count | 0) || ((d.end | 0) - (d.start | 0) + 1) || 1);
         } else {
@@ -520,6 +746,7 @@ async function fillRange(node, source) {
         }
         applyReadVis(node, d.kind);
         resyncAllWrites();                                     // push the detected range/fps to downstream Writes
+        updateReadPreview(node);                              // now that _ocioSeq is known, route to the right player (seq flipbook / video / thumb)
     } catch (e) { console.error("OCIO seq_range", e); }
 }
 
@@ -863,7 +1090,7 @@ app.registerExtension({
                 ensureReadPreview(this);                                          // instant preview at the bottom
                 ensureReadMeta(this);                                             // metadata panel, under the preview
                 this._ocioAllWidgets = this.widgets.slice();                      // full ordered list, captured once
-                onChange(this, "source", (v) => { setW(this, "input_colorspace", autoInCs(v)); fillRange(this, v); updateReadPreview(this); updateReadMeta(this); });
+                onChange(this, "source", (v) => { setW(this, "input_colorspace", autoInCs(v)); fillRange(this, v); updateReadMeta(this); });   // fillRange calls updateReadPreview once _ocioSeq is known
                 for (const w of ["input_colorspace", "output_colorspace", "raw_data"]) {
                     onChange(this, w, () => updateReadPreview(this));  // colorspace change -> re-render the thumb
                 }

@@ -163,10 +163,18 @@ try:
         in_cs = request.rel_url.query.get("in_cs", "")
         out_cs = request.rel_url.query.get("out_cs", "")
         raw = request.rel_url.query.get("raw", "0") == "1"
+        try:
+            frame = int(request.rel_url.query.get("frame", ""))   # sequence flipbook: a specific frame NUMBER
+        except (TypeError, ValueError):
+            frame = None                                          # no/blank frame -> first frame (still/video/seq)
         if not src:
             return web.json_response({"error": "missing 'src'"}, status=400)
         try:
-            rgb = thumb_frame(src, max_side=512)
+            # thumb_frame decodes a full frame (a 4K EXR is tens of MB); run it in the default thread pool so a
+            # sequence flipbook's rapid frame requests do NOT block the aiohttp event loop (which also serves
+            # /prompt, /system_stats). cv2 / ffmpeg release the GIL during the heavy read, so this parallelises.
+            import asyncio
+            rgb = await asyncio.get_event_loop().run_in_executor(None, thumb_frame, src, 512, frame)
         except FileNotFoundError as e:
             return web.json_response({"error": f"not found: {e}"}, status=404)
         except Exception as e:

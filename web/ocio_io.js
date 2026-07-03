@@ -240,11 +240,22 @@ async function _refreshVideoLut(node, p) {
 function _drawViewport(p) {
     const g = p.gl; if (!g) return; const gl = g.gl, v = p.video;
     if (!(v.videoWidth > 0) || v.readyState < 2) return;
-    if (p.canvas.width !== v.videoWidth || p.canvas.height !== v.videoHeight) { p.canvas.width = v.videoWidth; p.canvas.height = v.videoHeight; }
+    // PROXY (Nuke / Vimeo style): a 4K frame uploaded to a GPU texture every rAF stalls playback. Downscale
+    // the frame to <=720p on a 2D canvas first (drawImage is GPU-accelerated), so the per-frame upload is small.
+    let src = v, sw = v.videoWidth, sh = v.videoHeight;
+    const cap = 1280;
+    if (Math.max(sw, sh) > cap) {
+        const s = cap / Math.max(sw, sh), pw = Math.max(1, Math.round(sw * s)), ph = Math.max(1, Math.round(sh * s));
+        if (!p.proxy) { p.proxy = document.createElement("canvas"); p.proxyCtx = p.proxy.getContext("2d"); }
+        if (p.proxy.width !== pw || p.proxy.height !== ph) { p.proxy.width = pw; p.proxy.height = ph; }
+        try { p.proxyCtx.drawImage(v, 0, 0, pw, ph); } catch (e) { return; }
+        src = p.proxy; sw = pw; sh = ph;
+    }
+    if (p.canvas.width !== sw || p.canvas.height !== sh) { p.canvas.width = sw; p.canvas.height = sh; }
     gl.viewport(0, 0, p.canvas.width, p.canvas.height);
     gl.useProgram(g.prog);
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, g.vidTex);
-    try { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, v); } catch (e) { return; }
+    try { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src); } catch (e) { return; }
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_3D, g.lutTex);
     gl.uniform1f(g.locs.uN, p.lutN || 33); gl.uniform1f(g.locs.uOn, p.lutReady ? 1 : 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -252,7 +263,9 @@ function _drawViewport(p) {
 function _startViewport(node, p, src) {
     const streamUrl = "/ocio/stream?src=" + encodeURIComponent(src);
     if (p.streamUrl !== streamUrl) {
-        p.streamUrl = streamUrl; p.video.src = streamUrl; p.video.play().catch(() => {});
+        p.streamUrl = streamUrl; p.video.loop = false; p.pb.playing = false; p.pb.dir = 1; p.pb.revAnchor = null;
+        p.video.src = streamUrl;
+        p.video.onloadeddata = () => { try { p.video.pause(); p.video.currentTime = 0; } catch (e) {} };
         p.video.onerror = () => { _stopViewport(p); p.img.src = "/ocio/thumb?" + _thumbQuery(node, src); p.img.style.display = ""; };
     }
     if (!_vpInitGL(p)) {                               // no WebGL2 -> static color-managed thumb fallback

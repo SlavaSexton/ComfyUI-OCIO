@@ -1039,6 +1039,7 @@ class OCIOPlayer:
 
     RETURN_TYPES = ("IMAGE", "MASK", "FLOAT", "STRING")
     RETURN_NAMES = ("image/sequence/video", "alpha", "fps", "info")
+    OUTPUT_NODE = True   # 2026-07-03: always execute on queue (a viewer), so its Refresh/Render populates it even as a terminal node
     OUTPUT_TOOLTIPS = ("Batch converted input->output colorspace and trimmed to [start,end]. Exposure is view-only, NOT baked here.",
                        "Alpha for the trimmed range.", "fps (passed through).", "What the node did.")
     FUNCTION = "play"

@@ -1441,6 +1441,23 @@ function renderPlayerMeta(node, data) {
 app.registerExtension({
     name: "ComfyUI-OCIO.io",
     async beforeRegisterNodeDef(nodeType, nodeData) {
+        // Uniform slot labels on EVERY OCIO node: an IMAGE carries a still, a sequence, or a video, so show the
+        // short "img/seq/vid" on all IMAGE inputs (named image/images) and IMAGE outputs. Labels ONLY - the
+        // underlying slot names (run() param keys / RETURN_NAMES) are untouched, so connections still resolve.
+        // Runs for the color/grade nodes too, which have no other front-end onNodeCreated. Owner spec 2026-07-03.
+        if (nodeData.category === "OCIO" || String(nodeData.name || "").startsWith("OCIO")) {
+            const _ocLabel = nodeType.prototype.onNodeCreated;
+            nodeType.prototype.onNodeCreated = function () {
+                const rr = _ocLabel ? _ocLabel.apply(this, arguments) : undefined;
+                const relabel = () => {
+                    for (const s of (this.inputs || [])) if (s.type === "IMAGE" && (s.name === "image" || s.name === "images")) s.label = "img/seq/vid";
+                    for (const s of (this.outputs || [])) if (s.type === "IMAGE") s.label = "img/seq/vid";
+                    this.setDirtyCanvas(true, true);
+                };
+                relabel(); setTimeout(relabel, 0);                 // now + after slots finish populating
+                return rr;
+            };
+        }
         if (nodeData.name === "OCIORead") {
             const onCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
@@ -1646,6 +1663,7 @@ app.registerExtension({
             const onCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 const r = onCreated ? onCreated.apply(this, arguments) : undefined;
+                this.addWidget("button", "🔄 Refresh (render this node)", null, () => app.queuePrompt(0, 1), { serialize: false });   // == Queue: OCIOPlayer is OUTPUT_NODE, so it renders + repopulates the viewport with whatever is fed in (through any upstream OCIO node)
                 ensurePlayer(this);                                           // float WebGL viewport + exposure slider
                 ensurePlayerMeta(this);                                       // metadata panel under it
                 renderPlayerMeta(this, null);                                 // empty until a render arrives

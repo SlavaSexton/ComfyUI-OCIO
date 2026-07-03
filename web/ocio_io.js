@@ -1345,7 +1345,7 @@ function ensurePlayer(node) {
     refreshBtn.style.cssText = "padding:5px 12px;border:0;border-radius:4px;background:#2b2b40;color:#cde;cursor:pointer;font:12px sans-serif;";
     refreshBtn.onmouseenter = () => refreshBtn.style.background = "#39395a";
     refreshBtn.onmouseleave = () => refreshBtn.style.background = "#2b2b40";
-    refreshBtn.onclick = () => { if (node._ocioPlayer && node._ocioPlayer.player) _playerShow(node._ocioPlayer); };
+    refreshBtn.onclick = () => app.queuePrompt(0, 1);   // == Queue: OCIOPlayer is OUTPUT_NODE, so this renders the graph + repopulates the viewport (owner: no duplicate button - this in-viewport Refresh IS the render)
     empty.append(emptyMsg, refreshBtn);
     // Exposure control now lives HORIZONTALLY in the transport strip (between the viewport and the timeline), built
     // in _ensureTransport when p.isPlayer is set. No slider inside the viewport anymore. Owner spec 2026-07-03 (Task C).
@@ -1663,7 +1663,6 @@ app.registerExtension({
             const onCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 const r = onCreated ? onCreated.apply(this, arguments) : undefined;
-                this.addWidget("button", "🔄 Refresh (render this node)", null, () => app.queuePrompt(0, 1), { serialize: false });   // == Queue: OCIOPlayer is OUTPUT_NODE, so it renders + repopulates the viewport with whatever is fed in (through any upstream OCIO node)
                 ensurePlayer(this);                                           // float WebGL viewport + exposure slider
                 ensurePlayerMeta(this);                                       // metadata panel under it
                 renderPlayerMeta(this, null);                                 // empty until a render arrives

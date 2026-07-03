@@ -974,5 +974,99 @@ class OCIOWrite:
         return _save_preview_png(frame0, "ocio_write_preview.png")
 
 
-NODE_CLASS_MAPPINGS = {"OCIORead": OCIORead, "OCIOWrite": OCIOWrite}
-NODE_DISPLAY_NAME_MAPPINGS = {"OCIORead": "OCIO Read", "OCIOWrite": "OCIO Write"}
+# --------------------------------------------------------------------------- OCIO Player (in-graph float viewer)
+_PLAYER_FRAME_CAP = 240   # cap CACHED viewer frames per node (full-res half-float is heavy); the OUTPUT is uncapped
+
+
+def _player_cache(unique_id, images, alpha):
+    """Write the incoming batch as full-res HALF-float RGBA frames to a temp dir the on-node float viewport reads.
+    NOT a proxy: full resolution, HDR-preserving half float (the EXR-half display standard), so the viewer shows
+    the material 'as is' with exposure. This node's previous cache is cleared first; capped to _PLAYER_FRAME_CAP.
+    Returns (dir, total_frames, cached_frames, h, w). Added 2026-07-03 for the OCIO Player node."""
+    root = folder_paths.get_temp_directory() if folder_paths is not None else os.path.join(os.path.expanduser("~"), ".ocio_tmp")
+    d = os.path.join(root, "ocio_player", f"n{unique_id}")
+    if os.path.isdir(d):
+        for f in os.listdir(d):
+            try:
+                os.remove(os.path.join(d, f))
+            except Exception:
+                pass
+    os.makedirs(d, exist_ok=True)
+    arr = images.detach().cpu().numpy().astype(np.float32)             # [N,H,W,3]
+    a = alpha.detach().cpu().numpy().astype(np.float32) if alpha is not None else None
+    n, h, w = int(arr.shape[0]), int(arr.shape[1]), int(arr.shape[2])
+    cap = min(n, _PLAYER_FRAME_CAP)
+    for i in range(cap):
+        rgb = arr[i]
+        if a is not None:
+            av = a[min(i, a.shape[0] - 1)]
+            al = av if (av.ndim == 2 and av.shape[:2] == rgb.shape[:2]) else np.ones(rgb.shape[:2], np.float32)
+        else:
+            al = np.ones(rgb.shape[:2], np.float32)
+        rgba = np.dstack([rgb, al]).astype(np.float16)                # HALF float: HDR-preserving, half the temp + texture
+        np.save(os.path.join(d, f"f.{i:05d}.npy"), np.ascontiguousarray(rgba))
+    return d, n, cap, h, w
+
+
+class OCIOPlayer:
+    """In-graph float viewer + color / range pass-through (a Nuke 'Viewer' analog, OCIO-managed). Feed it an
+    IMAGE batch from LoadImage / a video loader / OCIO Read / anything: the on-node float WebGL viewport shows
+    it AS IS (full resolution, HDR) with a VIEW-ONLY exposure control and live colorspace + metadata, and the
+    node OUTPUTS the batch converted input_colorspace -> output_colorspace and trimmed to [start_frame,
+    end_frame]. Exposure is a viewing tool only - it never touches the output. A still is N=1, a sequence /
+    video is N>1; the viewer scales to the frame size either way."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        cs = _colorspace_names()
+        return {
+            "required": {
+                "images": ("IMAGE", {"tooltip": "Any IMAGE batch - still (N=1), sequence or video (N>1)."}),
+                "input_colorspace": _combo_or_string(cs, WORKING, "The colorspace the incoming batch is in (front-end auto-guesses ACEScg for HDR / >1 data, else sRGB - Display)."),
+                "output_colorspace": _combo_or_string(cs, WORKING, "The colorspace to convert the OUTPUT to."),
+                "raw_data": ("BOOLEAN", {"default": False, "label_on": "raw (no convert)", "label_off": "color-managed",
+                                         "tooltip": "Pass pixels through untouched (no colorspace convert on the output)."}),
+                "start_frame": ("INT", {"default": 0, "min": 0, "max": 100000000,
+                                        "tooltip": "First batch index to OUTPUT (0-based). The viewer always shows the whole input."}),
+                "end_frame": ("INT", {"default": 0, "min": 0, "max": 100000000,
+                                      "tooltip": "Last batch index to output (0 = through the end)."}),
+                "fps": ("FLOAT", {"default": 24.0, "min": 0.0, "max": 1000.0, "step": 0.001,
+                                  "tooltip": "Playback rate for the viewer + the fps output."}),
+            },
+            "optional": {"alpha": ("MASK", {"tooltip": "Optional alpha to view / carry through."})},
+            "hidden": {"unique_id": "UNIQUE_ID"},
+        }
+
+    RETURN_TYPES = ("IMAGE", "MASK", "FLOAT", "STRING")
+    RETURN_NAMES = ("image", "alpha", "fps", "info")
+    OUTPUT_TOOLTIPS = ("Batch converted input->output colorspace and trimmed to [start,end]. Exposure is view-only, NOT baked here.",
+                       "Alpha for the trimmed range.", "fps (passed through).", "What the node did.")
+    FUNCTION = "play"
+    CATEGORY = "OCIO"
+
+    def play(self, images, input_colorspace, output_colorspace, raw_data, start_frame, end_frame, fps,
+             alpha=None, unique_id="0"):
+        n = int(images.shape[0])
+        cache_dir, total, cached, h, w = _player_cache(unique_id, images, alpha)
+        s = max(0, min(int(start_frame), n - 1))
+        e = int(end_frame) if (end_frame and int(end_frame) >= s) else n - 1
+        e = max(s, min(e, n - 1))
+        sub = images[s:e + 1].contiguous()
+        out = sub if raw_data else _convert(sub, input_colorspace, output_colorspace)
+        if alpha is not None:
+            a = alpha[None] if alpha.ndim == 2 else alpha
+            mask = a[min(s, a.shape[0] - 1):min(e + 1, a.shape[0])].contiguous()
+            if mask.shape[0] != out.shape[0]:
+                mask = torch.ones((out.shape[0], out.shape[1], out.shape[2]), dtype=torch.float32)
+        else:
+            mask = torch.ones((out.shape[0], out.shape[1], out.shape[2]), dtype=torch.float32)
+        cs = "raw" if raw_data else f"{input_colorspace} -> {output_colorspace}"
+        cap_note = f", viewer capped at {cached}" if cached < total else ""
+        info = f"player: {total} frame(s) in{cap_note}; out [{s}-{e}] = {out.shape[0]} frame(s), {w}x{h}, {cs}"
+        return {"ui": {"player_dir": [cache_dir], "player_total": [str(total)], "player_cached": [str(cached)],
+                       "resolution": [f"{w}x{h}"], "fps": [str(float(fps))], "input_cs": [input_colorspace]},
+                "result": (out, mask, float(fps), info)}
+
+
+NODE_CLASS_MAPPINGS = {"OCIORead": OCIORead, "OCIOWrite": OCIOWrite, "OCIOPlayer": OCIOPlayer}
+NODE_DISPLAY_NAME_MAPPINGS = {"OCIORead": "OCIO Read", "OCIOWrite": "OCIO Write", "OCIOPlayer": "OCIO Player"}

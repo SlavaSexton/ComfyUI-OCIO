@@ -243,6 +243,30 @@ try:
         if not (p and os.path.isfile(p) and os.path.splitext(p)[1].lower() in VIDEO_EXTS):
             return web.json_response({"error": "not a video file"}, status=404)
         return web.FileResponse(p)
+
+    @server.PromptServer.instance.routes.get("/ocio/floatframe")
+    async def _ocio_floatframe(request):
+        """One cached HALF-float RGBA frame for the OCIO Player's WebGL float viewport: raw half-float bytes +
+        dims in headers, NO color applied (the shader does exposure + the OCIO display transform). Local
+        single-user trust, same as /ocio/thumb. Added 2026-07-03."""
+        import numpy as np
+        q = request.rel_url.query
+        d = q.get("dir", "")
+        try:
+            frame = int(q.get("frame", "0"))
+        except (TypeError, ValueError):
+            frame = 0
+        p = os.path.join(d, f"f.{frame:05d}.npy") if d else ""
+        if not (p and os.path.isfile(p)):
+            return web.json_response({"error": "frame not found"}, status=404)
+        try:
+            arr = np.ascontiguousarray(np.load(p))                # float16 [H,W,4]
+            h, w = int(arr.shape[0]), int(arr.shape[1])
+            return web.Response(body=arr.tobytes(), content_type="application/octet-stream",
+                                headers={"X-Width": str(w), "X-Height": str(h), "X-Type": "float16",
+                                         "Cache-Control": "no-store"})
+        except Exception as e:
+            return web.json_response({"error": str(e)[:200]}, status=400)
 except Exception:
     # not inside ComfyUI (e.g. a standalone import) - the routes are simply unavailable.
     pass

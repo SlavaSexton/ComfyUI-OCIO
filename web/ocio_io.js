@@ -334,7 +334,13 @@ async function _seqFetch(p, idx, show) {
     } catch (e) { /* missing / failed frame: keep the previous image, do not blank */ }
     finally { p.seqInflight.delete(idx); }
 }
-function _seqShow(p) { if (p.seq) _seqFetch(p, p.pb.seqFrame | 0, true); }
+// SHARED (OCIO Read + OCIO Player). The transport's seek/scrub/step all route through _pbSeek -> _seqShow.
+// OCIO Read's state has p.seq (an <img> flipbook); OCIO Player's has p.player (a float WebGL frame) and no p.seq.
+// Delegate to the float uploader when this is a Player - OCIO Read's p never has .player, so its path is unchanged.
+function _seqShow(p) {
+    if (p.player) { _playerShow(p); return; }        // OCIO Player: upload the float frame to the GPU
+    if (p.seq) _seqFetch(p, p.pb.seqFrame | 0, true);
+}
 function _seqPrefetch(p) {                                            // warm the [in,out] range into the blob cache
     const inI = _pbIn(p), outI = _pbOut(p), CAP = 300;               // bound the burst + client blob memory (each thumb decodes a full EXR); range beyond CAP fetches on demand during playback
     const hi = Math.min(outI, inI + CAP - 1);
@@ -1074,6 +1080,310 @@ function openFolderDialog(node) {   // Write output folder
 // (The pack version is shown in every node's display name, set server-side in __init__.py: a canvas-corner
 // badge is invisible on Vue-nodes frontends, which do not draw onDrawForeground, so the title carries it.)
 
+// ============================================================================================================
+// OCIO Player: on-node WebGL2 FLOAT viewport. Added 2026-07-03.
+//
+// Unlike OCIO Read (which plays a <video> or an <img> flipbook of server-color-managed 8-bit thumbs), the
+// Player keeps the material in FLOAT the whole way: the backend cached the incoming batch as full-res HALF-float
+// RGBA .npy frames (io_nodes._player_cache), the /ocio/floatframe route serves each as raw float16 bytes, and
+// this viewport uploads them into an RGBA16F texture. The shader then does, IN ORDER:
+//   sample RGBA16F -> multiply RGB by 2^exposure (VIEW-ONLY gain) -> OCIO in_cs->out_cs 3D LUT (/ocio/lut) -> screen
+// So exposure and the display transform are done on the GPU on the real HDR values, not a pre-baked 8-bit image.
+//
+// Exposure is applied in the INPUT (pre-display-LUT) space. For scene-linear input (ACEScg, Linear Rec.709) that
+// is the physically-correct "stops of light" exposure. For a display-encoded input (sRGB - Display etc.) it is an
+// APPROXIMATE viewer gain (multiplying an already display-encoded signal is not a true stop), noted honestly here.
+// It is VIEW-ONLY: never sent to the node, never affects the node's output (the backend bakes NO exposure).
+//
+// The transport bar, HiDPI canvas prep (_prepCanvas), and metadata panel are the SAME shared helpers OCIO Read
+// uses (_ensureTransport / _pbIn / _pbOut / _pbSeek / _syncTransport, and a metadata DOM widget). Playback runs
+// on a float flipbook clock (_playerTick, modeled on _seqTick) that drives /ocio/floatframe -> GPU instead of an
+// <img>. start_frame / end_frame are the node's own 0-based OUTPUT indices (io_nodes.py), so the in/out handles
+// map 1:1 to cached frames with base 0 - no _seqBase offset (that stays a video/sequence-only concept).
+
+// Exposure shader: RGBA16F float texture -> 2^exposure gain (input space) -> optional OCIO 3D LUT -> screen.
+const _PLAYER_FRAG = `#version 300 es
+precision highp float; precision highp sampler3D;
+in vec2 uv; out vec4 o;
+uniform sampler2D uImg; uniform sampler3D uLut; uniform float uN; uniform float uOn; uniform float uExposure;
+void main(){
+  vec4 src = texture(uImg, uv);
+  vec3 c = src.rgb * exp2(uExposure);                 // VIEW-ONLY exposure, in the INPUT colorspace (see header note)
+  if (uOn > 0.5) {                                     // OCIO display LUT expects [0,1]; clamp for the sample fetch only
+    vec3 s = clamp(c, 0.0, 1.0) * ((uN - 1.0) / uN) + 0.5 / uN;
+    c = texture(uLut, s).rgb;
+  }
+  o = vec4(c, 1.0);
+}`;
+function _playerInitGL(p) {
+    if (p.gl) return p.gl;
+    const gl = p.canvas.getContext("webgl2", { premultipliedAlpha: false, antialias: false, preserveDrawingBuffer: true });
+    if (!gl) { console.warn("[OCIO Player] no WebGL2"); return null; }
+    if (!gl.getExtension("EXT_color_buffer_half_float") && !gl.getExtension("EXT_color_buffer_float")) {
+        // RGBA16F as a SAMPLED texture is core in WebGL2; this ext gates render-TO-float only (we don't need it).
+        // We still upload/sample RGBA16F fine without it - so this is a warning, not a hard fail.
+        console.warn("[OCIO Player] no float color-buffer ext (sampling RGBA16F is still core WebGL2)");
+    }
+    const vs = _vpCompile(gl, gl.VERTEX_SHADER, _VP_VERT), fs = _vpCompile(gl, gl.FRAGMENT_SHADER, _PLAYER_FRAG);
+    if (!vs || !fs) return null;
+    const prog = gl.createProgram(); gl.attachShader(prog, vs); gl.attachShader(prog, fs);
+    gl.bindAttribLocation(prog, 0, "p"); gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) { console.error("[OCIO Player] link:", gl.getProgramInfoLog(prog)); return null; }
+    const quad = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);   // one oversized tri
+    gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    const imgTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, imgTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const lutTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_3D, lutTex);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+    gl.useProgram(prog);
+    const locs = { uN: gl.getUniformLocation(prog, "uN"), uOn: gl.getUniformLocation(prog, "uOn"),
+                   uExposure: gl.getUniformLocation(prog, "uExposure") };
+    gl.uniform1i(gl.getUniformLocation(prog, "uImg"), 0); gl.uniform1i(gl.getUniformLocation(prog, "uLut"), 1);
+    p.gl = { gl, prog, locs, imgTex, lutTex };
+    return p.gl;
+}
+async function _playerRefreshLut(node, p) {
+    const g = p.gl; if (!g) return;
+    const q = new URLSearchParams({ in_cs: W(node, "input_colorspace")?.value || "", out_cs: W(node, "output_colorspace")?.value || "",
+        raw: W(node, "raw_data")?.value ? "1" : "0", size: "33" });
+    try {
+        const r = await fetch("/ocio/lut?" + q.toString()); if (!r.ok) throw new Error("lut " + r.status);
+        const n = parseInt(r.headers.get("X-Lut-Size") || "33", 10); const buf = new Uint8Array(await r.arrayBuffer());
+        const gl = g.gl; gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_3D, g.lutTex);
+        gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA8, n, n, n, 0, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+        p.lutN = n; p.lutReady = true; _playerDraw(p);
+    } catch (e) { console.error("[OCIO Player] lut fetch:", e); p.lutReady = false; }
+}
+// Draw the currently-uploaded frame texture with the current exposure + LUT. Cheap: no fetch, no re-upload; used
+// for a one-shot redraw after exposure / colorspace / LUT changes (works even in a background tab where rAF is throttled).
+function _playerDraw(p) {
+    const g = p.gl; if (!g || !p.texW) return; const gl = g.gl;
+    if (p.canvas.width !== p.texW || p.canvas.height !== p.texH) { p.canvas.width = p.texW; p.canvas.height = p.texH; }
+    gl.viewport(0, 0, p.canvas.width, p.canvas.height);
+    gl.useProgram(g.prog);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, g.imgTex);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_3D, g.lutTex);
+    gl.uniform1f(g.locs.uN, p.lutN || 33); gl.uniform1f(g.locs.uOn, p.lutReady ? 1 : 0);
+    gl.uniform1f(g.locs.uExposure, p.exposure || 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+// Fetch one float16 RGBA frame -> upload into the RGBA16F texture -> draw. The body is raw float16 bytes
+// (X-Width * X-Height * 4 * 2), loaded as a Uint16Array (the HALF_FLOAT texture path takes the raw 16-bit words).
+async function _playerFetch(p, idx, show) {
+    const node = p.node, dir = p.player && p.player.dir; if (!dir || !p.gl) return;
+    const last = _pbLast(p); idx = Math.max(0, Math.min(last, idx | 0));
+    if (!p.playerInflight) p.playerInflight = new Set();
+    const key = idx;
+    if (p.playerInflight.has(key)) return;
+    p.playerInflight.add(key);
+    try {
+        const r = await fetch("/ocio/floatframe?" + new URLSearchParams({ dir, frame: String(idx) }).toString());
+        if (!r.ok) throw new Error("floatframe " + r.status);
+        const w = parseInt(r.headers.get("X-Width") || "0", 10), h = parseInt(r.headers.get("X-Height") || "0", 10);
+        const buf = await r.arrayBuffer();
+        if (!(w > 0 && h > 0) || buf.byteLength < w * h * 4 * 2) throw new Error("bad float frame dims " + w + "x" + h + " len " + buf.byteLength);
+        if (node._ocioPlayer !== p) return;                          // viewport torn down mid-fetch
+        // AUTO input colorspace (heuristic, honest - not from metadata): on the FIRST frame, if any RGB value > 1.0
+        // (HDR), default input_colorspace to ACEScg; else leave the sRGB - Display default. User override wins, so
+        // only do this once and only if the user hasn't already touched it.
+        if (!p.autoCsChecked) {
+            p.autoCsChecked = true;
+            const half = new Uint16Array(buf, 0, Math.min(w * h * 4, (buf.byteLength / 2) | 0));
+            if (_halfAnyOverOne(half)) {
+                const w0 = W(node, "input_colorspace");
+                if (w0 && !p.userSetCs && String(w0.value || "").includes("sRGB")) {
+                    setW(node, "input_colorspace", CS_ACESCG); _playerRefreshLut(node, p);
+                }
+            }
+        }
+        const g = p.gl, gl = g.gl;
+        gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, g.imgTex);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, new Uint16Array(buf));
+        p.texW = w; p.texH = h;
+        if (show) _playerDraw(p);
+    } catch (e) { if (p._playerFirstErr == null) { p._playerFirstErr = String(e); console.error("[OCIO Player] frame:", e); } }
+    finally { p.playerInflight.delete(key); }
+}
+// Any RGB (ignore alpha, every 4th) half-float > 1.0? Decodes IEEE half from the raw 16-bit words.
+function _halfToFloat(h) {
+    const s = (h & 0x8000) >> 15, e = (h & 0x7c00) >> 10, f = h & 0x03ff;
+    if (e === 0) return (s ? -1 : 1) * Math.pow(2, -14) * (f / 1024);
+    if (e === 0x1f) return f ? NaN : (s ? -Infinity : Infinity);
+    return (s ? -1 : 1) * Math.pow(2, e - 15) * (1 + f / 1024);
+}
+function _halfAnyOverOne(half) {
+    for (let i = 0; i < half.length; i++) { if ((i & 3) === 3) continue; if (_halfToFloat(half[i]) > 1.001) return true; }
+    return false;
+}
+function _playerShow(p) { if (p.player) _playerFetch(p, p.pb.seqFrame | 0, true); }
+// Float-flipbook clock (modeled on _seqTick): advance seqFrame within [in,out] by wall-clock * fps, fetch+draw
+// each new frame. dir < 0 = reverse; mode "bounce" ping-pongs. Frames come from /ocio/floatframe (GPU float),
+// NOT /ocio/thumb. Only draws a NEW frame when the index changes.
+function _playerTick(p, now) {
+    const pb = p.pb; if (!pb.playing) return;
+    const inI = _pbIn(p), outI = _pbOut(p), span = Math.max(1, outI - inI + 1);
+    const fps = Math.max(1, parseFloat(W(p.node, "fps")?.value) || pb.fps || 24);
+    if (!pb.seqAnchor) pb.seqAnchor = { wall: now, frame: Math.max(inI, Math.min(outI, pb.seqFrame | 0)) };
+    const steps = Math.floor(((now - pb.seqAnchor.wall) / 1000) * fps) * (pb.dir < 0 ? -1 : 1);
+    const raw = pb.seqAnchor.frame + steps;
+    let idx;
+    if (pb.mode === "bounce") {
+        const period = Math.max(1, 2 * span - 2), ph = (((raw - inI) % period) + period) % period;
+        idx = inI + (ph < span ? ph : period - ph);
+    } else {
+        idx = inI + ((((raw - inI) % span) + span) % span);
+    }
+    if (idx !== (pb.seqFrame | 0)) { pb.seqFrame = idx; _playerShow(p); }
+}
+function _playerEnsureRaf(node, p) {
+    if (p.raf) return;
+    const loop = (now) => {
+        if (node._ocioPlayer !== p) { p.raf = 0; return; }
+        _playerTick(p, now || 0);
+        _syncTransport(p);
+        p.raf = requestAnimationFrame(loop);
+    };
+    p.raf = requestAnimationFrame(loop);
+}
+function _playerStop(p) {
+    if (!p) return;
+    if (p.raf) { cancelAnimationFrame(p.raf); p.raf = 0; }
+    if (p.pb) { p.pb.playing = false; }
+}
+
+// The Player's preview-state object `p` mirrors the shape the shared transport helpers read (p.node, p.pb, p.gl,
+// p.canvas, p.transport, p.exposure). pb.seqMode is TRUE so _pbCur / _pbSeek use the frame-index path (there is
+// no <video>), but _seqBase stays 0 (p.seq === null) so start_frame/end_frame are read as plain 0-based indices.
+function ensurePlayer(node) {
+    if (node._ocioPlayer) return node._ocioPlayer;
+    const box = document.createElement("div");
+    box.style.cssText = "width:100%;position:relative;display:flex;justify-content:center;align-items:center;overflow:hidden;background:#111;";
+    const canvas = document.createElement("canvas");
+    canvas.style.cssText = "max-width:calc(100% - 40px);max-height:240px;object-fit:contain;display:none;";
+    // "No media" placeholder + a Refresh affordance (the float data only exists after the graph runs -> onExecuted)
+    const empty = document.createElement("div");
+    empty.style.cssText = "display:flex;flex-direction:column;align-items:center;gap:8px;color:#889;font:12px sans-serif;padding:24px;";
+    const emptyMsg = document.createElement("div"); emptyMsg.textContent = "No media - Render to view";
+    const refreshBtn = document.createElement("button");
+    refreshBtn.textContent = "↻ Refresh";
+    refreshBtn.style.cssText = "padding:5px 12px;border:0;border-radius:4px;background:#2b2b40;color:#cde;cursor:pointer;font:12px sans-serif;";
+    refreshBtn.onmouseenter = () => refreshBtn.style.background = "#39395a";
+    refreshBtn.onmouseleave = () => refreshBtn.style.background = "#2b2b40";
+    refreshBtn.onclick = () => { if (node._ocioPlayer && node._ocioPlayer.player) _playerShow(node._ocioPlayer); };
+    empty.append(emptyMsg, refreshBtn);
+    // --- VERTICAL exposure slider on the RIGHT of the viewport, with a stops readout ABOVE it ---
+    const expWrap = document.createElement("div");
+    expWrap.style.cssText = "position:absolute;top:6px;right:4px;bottom:6px;width:34px;display:flex;flex-direction:column;align-items:center;gap:4px;";
+    const expRead = document.createElement("div");
+    expRead.style.cssText = "font:10px monospace;color:#cde;background:rgba(0,0,0,0.45);border-radius:3px;padding:1px 3px;min-width:30px;text-align:center;";
+    expRead.textContent = "+0.0";
+    const exp = document.createElement("input");
+    exp.type = "range"; exp.min = "-16"; exp.max = "16"; exp.step = "0.1"; exp.value = "0";
+    exp.title = "Exposure (stops) - VIEW ONLY, never baked. Double-click to reset.";
+    // vertical slider: rotate a horizontal range (writing-mode is inconsistent across browsers). Its length tracks
+    // the viewport height (re-sized in _playerLayout on node resize).
+    exp.style.cssText = "-webkit-appearance:slider-vertical;appearance:slider-vertical;width:22px;flex:1 1 auto;cursor:ns-resize;";
+    exp.oninput = () => {
+        const p = node._ocioPlayer; if (!p) return;
+        p.exposure = parseFloat(exp.value) || 0;
+        expRead.textContent = (p.exposure >= 0 ? "+" : "") + p.exposure.toFixed(1);
+        _playerDraw(p);                                  // one-shot redraw (no fetch): instant, works in a background tab
+    };
+    exp.ondblclick = () => { exp.value = "0"; exp.oninput(); };
+    expWrap.append(expRead, exp);
+    box.append(empty, canvas, expWrap);
+    const w = node.addDOMWidget("player", "div", box, { serialize: false });
+    w.computeSize = () => [0, (node._ocioPlayer && node._ocioPlayer.player) ? 250 : 90];
+    w._ocioAlwaysVisible = true;
+    const p = { node, box, canvas, empty, expWrap, expInput: exp, expRead, gl: null, lutN: 33, lutReady: false,
+                raf: 0, exposure: 0, texW: 0, texH: 0, player: null, autoCsChecked: false, userSetCs: false };
+    // pb: reuse the transport's playback-state shape. seqMode TRUE (frame-index clock, no <video>); seq stays null.
+    p.pb = { playing: false, dir: 1, mode: "loop", fps: 24, showTransport: false, seqMode: true, seqFrame: 0,
+             seqAnchor: null, fileFrames: 1 };
+    node._ocioPlayer = p;
+    _ensureTransport(node, p);                           // shared transport bar (drives seqFrame via _pbSeek/_playerShow)
+    node.onRemoved = (orig => function () { _playerStop(node._ocioPlayer); return orig && orig.apply(this, arguments); })(node.onRemoved);
+    return p;
+}
+// Fit the node to its content height (viewport + transport + meta), then redraw. Guarded against reentrancy:
+// on the Vue-nodes frontend node.setSize fires onResize, which calls this again -> without the guard that
+// recursed until "Maximum call stack size exceeded". The guard makes the inner setSize a no-op. The exposure
+// slider is absolutely positioned with flex:1, so it stretches with the node automatically - this just redraws.
+function _playerLayout(node) {
+    const p = node._ocioPlayer; if (!p) return;
+    if (!p._laying) {
+        p._laying = true;
+        try { node.setSize([node.size[0], node.computeSize()[1]]); } finally { p._laying = false; }
+    }
+    if (p.player) _playerDraw(p);
+}
+// onExecuted payload -> wire up the float viewport + metadata. Fields arrive as 1-element arrays (ComfyUI ui).
+function playerOnExecuted(node, message) {
+    const p = ensurePlayer(node);
+    const first = (v) => Array.isArray(v) ? v[0] : v;
+    const dir = first(message && message.player_dir);
+    const total = parseInt(first(message && message.player_total) || "0", 10);
+    const cached = parseInt(first(message && message.player_cached) || "0", 10);
+    const resolution = first(message && message.resolution) || "";
+    const fps = parseFloat(first(message && message.fps) || "") || 0;
+    const inputCs = first(message && message.input_cs) || "";
+    if (!dir || !(cached > 0)) { renderPlayerMeta(node, null); return; }
+    p.player = { dir, total, cached, resolution };
+    p.autoCsChecked = false;                             // re-evaluate HDR auto-cs for this fresh render
+    p._playerFirstErr = null;
+    p.pb.fileFrames = cached;                            // transport ruler spans the CACHED frames (0..cached-1)
+    p.pb.seqFrame = Math.max(0, Math.min(cached - 1, p.pb.seqFrame | 0));
+    if (fps) { p.pb.fps = fps; }
+    // show the viewport, hide the placeholder; show the transport bar
+    p.empty.style.display = "none"; p.canvas.style.display = "";
+    p.pb.showTransport = true; if (p.transport) { p.transport.bar.style.display = "flex"; if (p.transport.audioRow) p.transport.audioRow.style.display = "none"; }
+    if (!_playerInitGL(p)) {                             // no WebGL2 -> message, no viewport
+        p.canvas.style.display = "none"; p.empty.style.display = "flex";
+        p.empty.firstChild.textContent = "WebGL2 unavailable - cannot show float viewport";
+        renderPlayerMeta(node, { resolution, total, cached, fps, input_cs: inputCs });
+        return;
+    }
+    _playerLayout(node);
+    _playerRefreshLut(node, p);                          // bake in_cs->out_cs display LUT
+    _playerShow(p);                                      // upload + draw the current frame
+    _playerEnsureRaf(node, p);
+    renderPlayerMeta(node, { resolution, total, cached, fps, input_cs: inputCs });
+}
+
+// ---- Player metadata panel: resolution / frames / fps / colorspace, from the onExecuted payload + widgets.
+const PLAYER_META_ROWS = [
+    ["resolution", "Resolution"], ["frames", "Frames"], ["fps", "FPS"],
+    ["input_colorspace", "Input CS"], ["output_colorspace", "Output CS"],
+];
+function ensurePlayerMeta(node) {
+    if (node._ocioPlayerMeta) return node._ocioPlayerMeta;
+    const box = document.createElement("div");
+    box.style.cssText = "width:100%;font:10px/1.4 monospace;color:#9cf;background:#1a1a1a;padding:4px 6px;box-sizing:border-box;overflow:hidden;white-space:nowrap;";
+    const w = node.addDOMWidget("player_meta", "div", box, { serialize: false });
+    w.computeSize = () => [0, 16 * PLAYER_META_ROWS.length + 8];
+    w._ocioAlwaysVisible = true;
+    node._ocioPlayerMeta = box;
+    return box;
+}
+function renderPlayerMeta(node, data) {
+    const box = ensurePlayerMeta(node);
+    if (!data) { box.innerHTML = ""; return; }
+    const framesTxt = data.cached < data.total ? `${data.total} (viewer capped at ${data.cached})` : String(data.total);
+    const values = {
+        resolution: data.resolution || "-",
+        frames: framesTxt,
+        fps: data.fps ? data.fps.toFixed(3) : (parseFloat(W(node, "fps")?.value) || 0).toFixed(3),
+        input_colorspace: W(node, "input_colorspace")?.value || data.input_cs || "-",
+        output_colorspace: W(node, "output_colorspace")?.value || "-",
+    };
+    box.innerHTML = PLAYER_META_ROWS.map(([k, label]) => `<div>${label}: ${values[k]}</div>`).join("");
+}
+
 app.registerExtension({
     name: "ComfyUI-OCIO.io",
     async beforeRegisterNodeDef(nodeType, nodeData) {
@@ -1271,6 +1581,59 @@ app.registerExtension({
                     app.extensionManager?.toast?.add?.({ severity: "success", summary: "OCIO Write",
                         detail: `wrote ${this._ocioWrote} frame(s)`, life: 4000 });
                 }
+            };
+        }
+
+        if (nodeData.name === "OCIOPlayer") {
+            const onCreated = nodeType.prototype.onNodeCreated;
+            nodeType.prototype.onNodeCreated = function () {
+                const r = onCreated ? onCreated.apply(this, arguments) : undefined;
+                ensurePlayer(this);                                           // float WebGL viewport + exposure slider
+                ensurePlayerMeta(this);                                       // metadata panel under it
+                renderPlayerMeta(this, null);                                 // empty until a render arrives
+                // a manual colorspace edit wins over the HDR auto-guess; live colorspace change -> re-bake the LUT
+                for (const w of ["input_colorspace", "output_colorspace", "raw_data"]) {
+                    onChange(this, w, () => {
+                        const p = this._ocioPlayer; if (!p) return;
+                        if (w === "input_colorspace") p.userSetCs = true;     // user picked -> auto-cs must not override
+                        _playerRefreshLut(this, p);                          // re-bake display LUT + redraw
+                        renderPlayerMeta(this, p.player ? { resolution: p.player.resolution, total: p.player.total,
+                            cached: p.player.cached, fps: p.pb.fps } : null);
+                    });
+                }
+                // fps / range edits: keep the transport + meta in sync (transport reads the widgets live anyway)
+                for (const w of ["fps", "start_frame", "end_frame"]) {
+                    onChange(this, w, () => { const p = this._ocioPlayer; if (p) { _syncTransport(p); } });
+                }
+                this._ocioAllWidgets = this.widgets.slice();
+                return r;
+            };
+            // the node is resizable; on a live resize just REDRAW the viewport (the DOM widget + the flex:1 exposure
+            // slider already stretch with the node - so no setSize here, which would fight the user's drag and, on the
+            // Vue frontend, re-enter onResize). Content-fit setSize happens once in playerOnExecuted via _playerLayout.
+            const onResize = nodeType.prototype.onResize;
+            nodeType.prototype.onResize = function (size) {
+                const r = onResize ? onResize.apply(this, arguments) : undefined;
+                const p = this._ocioPlayer; if (p && p.player) _playerDraw(p);
+                return r;
+            };
+            // onExecuted delivers the ui payload (player_dir / player_total / player_cached / resolution / fps / input_cs)
+            const onExec = nodeType.prototype.onExecuted;
+            nodeType.prototype.onExecuted = function (message) {
+                onExec && onExec.apply(this, arguments);
+                try { playerOnExecuted(this, message); } catch (e) { console.error("[OCIO Player] onExecuted:", e); }
+            };
+            // colorspace label (input -> output) in the title bar, same as OCIO Read
+            const onDraw = nodeType.prototype.onDrawForeground;
+            nodeType.prototype.onDrawForeground = function (ctx) {
+                onDraw && onDraw.apply(this, arguments);
+                if (this.flags && this.flags.collapsed) return;
+                const a = W(this, "input_colorspace"), b = W(this, "output_colorspace");
+                if (!a || !b) return;
+                ctx.save();
+                ctx.font = "10px sans-serif"; ctx.fillStyle = "#9cf"; ctx.textAlign = "right";
+                ctx.fillText(`${shorten(a.value)} → ${shorten(b.value)}`, this.size[0] - 8, -6);
+                ctx.restore();
             };
         }
     },

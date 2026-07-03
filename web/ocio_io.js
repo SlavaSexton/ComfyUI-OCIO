@@ -178,23 +178,47 @@ function _vpCompile(gl, type, src) {
     if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) { console.error("[OCIO] shader:", gl.getShaderInfoLog(s)); return null; }
     return s;
 }
+// Known media extensions the OCIO Read viewport can actually decode (stills, sequence frames, video). A source
+// whose extension is not here (a .txt, a code file, an unknown container) is surfaced as "No media - unsupported
+// format" up front, instead of firing a 404/400 that blanks the box silently. Added 2026-07-03 (Task F).
+const READ_STILL_EXTS = new Set(["exr", "hdr", "tif", "tiff", "png", "jpg", "jpeg", "bmp", "dpx"]);
+const READ_VIDEO_EXTS = new Set(["mov", "mp4", "mkv", "avi", "webm", "mxf", "m4v"]);
+function isKnownMediaPath(src) {
+    const s = String(src || "").trim();
+    if (!s) return false;
+    if (/[\\/]$/.test(s)) return true;                 // a folder path (sequence dir) - the server resolves the frames
+    const e = extOf(s);
+    return READ_STILL_EXTS.has(e) || READ_VIDEO_EXTS.has(e);
+}
+// show / hide the "No media" placeholder in the Read preview box (hides the img/video/canvas while it is up).
+function _showReadMsg(p, text) {
+    if (!p || !p.msg) return;
+    p.msg.textContent = text || "No media - unsupported format";
+    p.msg.style.display = "";
+    p.img.style.display = "none"; p.video.style.display = "none"; p.canvas.style.display = "none";
+}
+function _hideReadMsg(p) { if (p && p.msg) p.msg.style.display = "none"; }
 function ensureReadPreview(node) {
     if (node._ocioPrev) return node._ocioPrev;
     const box = document.createElement("div");
     box.style.cssText = "width:100%;height:100%;display:flex;justify-content:center;align-items:center;overflow:hidden;";
     const img = document.createElement("img");
     img.style.cssText = "max-width:100%;max-height:200px;object-fit:contain;display:none;";
-    img.onerror = () => { img.style.display = "none"; };
+    // a still/frame that fails to decode (server 404/400, or a non-media path that got through) shows the readable
+    // "No media" message instead of a blank box. Added 2026-07-03 (Task F: format guard).
+    img.onerror = () => { img.style.display = "none"; _showReadMsg(node._ocioPrev, "No media - unsupported format"); };
     const video = document.createElement("video");
     video.muted = true; video.loop = true; video.playsInline = true; video.setAttribute("playsinline", "");
     video.style.display = "none";
     const canvas = document.createElement("canvas");
     canvas.style.cssText = "max-width:100%;max-height:200px;object-fit:contain;display:none;";
-    box.append(img, video, canvas);
+    const msg = document.createElement("div");   // "No media - unsupported format" placeholder (hidden by default)
+    msg.style.cssText = "display:none;color:#889;font:12px sans-serif;text-align:center;padding:24px;";
+    box.append(img, video, canvas, msg);
     const w = node.addDOMWidget("preview", "div", box, { serialize: false });
     w.computeSize = () => [0, 210];
     w._ocioAlwaysVisible = true;                      // always shown, regardless of source kind
-    node._ocioPrev = { img, video, canvas, gl: null, lutN: 33, lutReady: false, raf: 0, streamUrl: "" };
+    node._ocioPrev = { img, video, canvas, msg, gl: null, lutN: 33, lutReady: false, raf: 0, streamUrl: "" };
     node._ocioPrev.pb = { playing: false, dir: 1, mode: "loop", fps: 24, showTransport: false, lastT: 0 };
     _ensureTransport(node, node._ocioPrev);           // transport bar widget (sits under the canvas, video only)
     node.onRemoved = (orig => function () { const pp = node._ocioPrev; _stopViewport(pp); _stopSeq(pp); if (pp && pp.audio) { try { pp.audio.source.disconnect(); pp.audio.gain.disconnect(); pp.audio.splitter.disconnect(); } catch (e) {} } return orig && orig.apply(this, arguments); })(node.onRemoved);
@@ -283,7 +307,7 @@ function _startViewport(node, p, src) {
         // once the seek settles, and the rAF _drawViewport skips while readyState dips mid-seek - so the viewport
         // looked frozen while the playhead moved. Draw on every completed seek so reverse (and any scrub) updates.
         p.video.onseeked = () => { if (!p.pb.seqMode) _drawViewport(p); };
-        p.video.onerror = () => { _stopViewport(p); p.img.src = "/ocio/thumb?" + _thumbQuery(node, src); p.img.style.display = ""; };
+        p.video.onerror = () => { _stopViewport(p); _showReadMsg(p, "No media - unsupported format"); };   // decode failed: readable message, not a blank box (Task F)
     }
     if (!_vpInitGL(p)) {                               // no WebGL2 -> static color-managed thumb fallback
         p.canvas.style.display = "none"; p.video.style.display = "none";
@@ -585,9 +609,47 @@ function _ensureTransport(node, p) {
     const meter = document.createElement("canvas"); meter.height = 22;
     meter.style.cssText = "flex:1 1 0;min-width:0;height:22px;display:block;";   // basis 0 + min-width:0: layout width is the flex share, NOT the (HiDPI-enlarged) backing store -> no runaway overflow
     audioRow.append(muteBtn, meter);
-    bar.append(tl, row, audioRow);
+    // --- OCIO Player ONLY: HORIZONTAL exposure strip, sitting at the TOP of the transport bar - i.e. directly
+    // between the viewport image (the player DOM widget above) and the numbered timeline (tl, below). It replaces
+    // the old vertical-right slider. The number field is EDITABLE (type e.g. +2.5, Enter/blur applies, clamp
+    // -16..+16); the slider mirrors it. VIEW-ONLY: sets p.exposure -> shader uExposure via _playerDraw, never sent
+    // to the node / backend. Double-click the field or hit reset -> 0. Owner spec 2026-07-03 (Task C).
+    let expRow = null, expSlider = null, expNum = null;
+    if (p.isPlayer) {
+        const clampExp = (v) => Math.max(-16, Math.min(16, isFinite(v) ? v : 0));
+        const fmtExp = (x) => (x >= 0 ? "+" : "") + (Math.round(x * 100) / 100);   // signed, e.g. "+2.5" / "-3"
+        const applyExp = (v, fromNum) => {
+            const x = clampExp(v); p.exposure = x;
+            if (expSlider) expSlider.value = String(x);
+            if (expNum && !fromNum) expNum.value = fmtExp(x);   // don't clobber the field while the user is typing in it
+            _playerDraw(p);                              // one-shot redraw (no fetch): instant, works in a background tab
+        };
+        expRow = document.createElement("div");
+        expRow.style.cssText = "display:flex;align-items:center;gap:6px;padding:2px 2px 3px;box-sizing:border-box;";
+        const lbl = document.createElement("span");
+        lbl.textContent = "Exposure"; lbl.style.cssText = "font:10px sans-serif;color:#9cf;white-space:nowrap;flex:0 0 auto;";
+        expSlider = document.createElement("input");
+        expSlider.type = "range"; expSlider.min = "-16"; expSlider.max = "16"; expSlider.step = "0.1"; expSlider.value = "0";
+        expSlider.title = "Exposure (stops) - VIEW ONLY, never baked into the output";
+        expSlider.style.cssText = "flex:1 1 0;min-width:40px;height:14px;cursor:ew-resize;";
+        expSlider.oninput = () => applyExp(parseFloat(expSlider.value) || 0, false);
+        // type="text" (NOT number): a native number input REJECTS a leading "+" (".value" becomes "" for "+2.5"), so
+        // the owner's "+2.5" example would read as 0. Text + manual parse accepts +/-, shows the sign, and clamps.
+        expNum = document.createElement("input");
+        expNum.type = "text"; expNum.inputMode = "decimal"; expNum.value = fmtExp(0);
+        expNum.title = "Exposure in stops (-16..+16) - type a value (e.g. +2.5), Enter or blur to apply. Double-click to reset to 0. VIEW ONLY, never baked.";
+        expNum.style.cssText = "width:52px;height:16px;text-align:center;background:#101010;color:#cde;border:1px solid #333;border-radius:2px;font:11px monospace;flex:0 0 auto;";
+        const commitNum = () => { const raw = parseFloat(String(expNum.value).replace(/[^0-9.+-]/g, "")); applyExp(isFinite(raw) ? raw : 0, false); };
+        expNum.addEventListener("change", commitNum);        // blur / Enter (native change)
+        expNum.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); commitNum(); expNum.blur(); } });
+        expNum.addEventListener("dblclick", () => { applyExp(0, false); });   // reset to 0
+        const expReset = _tBtn(_SVG.reset, "Reset exposure to 0");
+        expReset.onclick = () => applyExp(0, false);
+        expRow.append(lbl, expSlider, expNum, expReset);
+    }
+    bar.append(...(expRow ? [expRow] : []), tl, row, audioRow);
     const w = node.addDOMWidget("transport", "div", bar, { serialize: false });
-    w.computeSize = () => [0, p.pb && p.pb.showTransport ? 54 : 0];
+    w.computeSize = () => [0, (p.pb && p.pb.showTransport) ? (54 + (p.isPlayer ? 22 : 0)) : 0];   // +22 for the exposure strip on the Player
     w._ocioAlwaysVisible = true;
     // timeline scrub + in/out drag
     tl.addEventListener("mousedown", (e) => {
@@ -601,7 +663,7 @@ function _ensureTransport(node, p) {
         const up = () => { document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); };
         document.addEventListener("mousemove", move); document.addEventListener("mouseup", up); e.preventDefault();
     });
-    p.transport = { bar, tl, frame, play, playR, audioRow, muteBtn, meter };
+    p.transport = { bar, tl, frame, play, playR, audioRow, muteBtn, meter, expRow, expSlider, expNum };
     return p.transport;
 }
 // ---- audio: mute toggle + stereo L/R level meter (video only). Web Audio taps the <video> so the meter shows
@@ -678,8 +740,17 @@ function _drawAudioMeter(p) {
 function updateReadPreview(node) {
     const p = ensureReadPreview(node);
     const src = (W(node, "source")?.value || "").trim();
-    if (!src) { _stopSeq(p); _stopViewport(p); p.img.style.display = "none"; p.img.removeAttribute("src"); return; }
+    if (!src) { _stopSeq(p); _stopViewport(p); _hideReadMsg(p); p.img.style.display = "none"; p.img.removeAttribute("src"); return; }
     const seq = node._ocioSeq;
+    // Format guard (Task F): a non-media / unsupported path (a .txt, code file, unknown container) never reaches
+    // the decode routes - it would 404/400 and blank the box. Surface a readable message and stop. A folder path
+    // (sequence dir) passes the guard; the server resolves its frames. A resolved sequence (seq.kind) is trusted.
+    if (!(seq && (seq.kind === "sequence" || seq.kind === "video")) && !isKnownMediaPath(src)) {
+        _stopSeq(p); _stopViewport(p); p.img.removeAttribute("src");
+        _showReadMsg(p, "No media - unsupported format");
+        return;
+    }
+    _hideReadMsg(p);
     if (/\.(mov|mp4|mkv|avi|webm|mxf|m4v)$/i.test(src)) {
         _stopSeq(p); _startViewport(node, p, src);
     } else if (seq && seq.kind === "sequence") {
@@ -1264,7 +1335,7 @@ function ensurePlayer(node) {
     const box = document.createElement("div");
     box.style.cssText = "width:100%;position:relative;display:flex;justify-content:center;align-items:center;overflow:hidden;background:#111;";
     const canvas = document.createElement("canvas");
-    canvas.style.cssText = "max-width:calc(100% - 40px);max-height:240px;object-fit:contain;display:none;";
+    canvas.style.cssText = "max-width:100%;max-height:240px;object-fit:contain;display:none;";   // full width: the exposure control moved out of the viewport into the transport strip
     // "No media" placeholder + a Refresh affordance (the float data only exists after the graph runs -> onExecuted)
     const empty = document.createElement("div");
     empty.style.cssText = "display:flex;flex-direction:column;align-items:center;gap:8px;color:#889;font:12px sans-serif;padding:24px;";
@@ -1276,44 +1347,27 @@ function ensurePlayer(node) {
     refreshBtn.onmouseleave = () => refreshBtn.style.background = "#2b2b40";
     refreshBtn.onclick = () => { if (node._ocioPlayer && node._ocioPlayer.player) _playerShow(node._ocioPlayer); };
     empty.append(emptyMsg, refreshBtn);
-    // --- VERTICAL exposure slider on the RIGHT of the viewport, with a stops readout ABOVE it ---
-    const expWrap = document.createElement("div");
-    expWrap.style.cssText = "position:absolute;top:6px;right:4px;bottom:6px;width:34px;display:flex;flex-direction:column;align-items:center;gap:4px;";
-    const expRead = document.createElement("div");
-    expRead.style.cssText = "font:10px monospace;color:#cde;background:rgba(0,0,0,0.45);border-radius:3px;padding:1px 3px;min-width:30px;text-align:center;";
-    expRead.textContent = "+0.0";
-    const exp = document.createElement("input");
-    exp.type = "range"; exp.min = "-16"; exp.max = "16"; exp.step = "0.1"; exp.value = "0";
-    exp.title = "Exposure (stops) - VIEW ONLY, never baked. Double-click to reset.";
-    // vertical slider: rotate a horizontal range (writing-mode is inconsistent across browsers). Its length tracks
-    // the viewport height (re-sized in _playerLayout on node resize).
-    exp.style.cssText = "-webkit-appearance:slider-vertical;appearance:slider-vertical;width:22px;flex:1 1 auto;cursor:ns-resize;";
-    exp.oninput = () => {
-        const p = node._ocioPlayer; if (!p) return;
-        p.exposure = parseFloat(exp.value) || 0;
-        expRead.textContent = (p.exposure >= 0 ? "+" : "") + p.exposure.toFixed(1);
-        _playerDraw(p);                                  // one-shot redraw (no fetch): instant, works in a background tab
-    };
-    exp.ondblclick = () => { exp.value = "0"; exp.oninput(); };
-    expWrap.append(expRead, exp);
-    box.append(empty, canvas, expWrap);
+    // Exposure control now lives HORIZONTALLY in the transport strip (between the viewport and the timeline), built
+    // in _ensureTransport when p.isPlayer is set. No slider inside the viewport anymore. Owner spec 2026-07-03 (Task C).
+    box.append(empty, canvas);
     const w = node.addDOMWidget("player", "div", box, { serialize: false });
     w.computeSize = () => [0, (node._ocioPlayer && node._ocioPlayer.player) ? 250 : 90];
     w._ocioAlwaysVisible = true;
-    const p = { node, box, canvas, empty, expWrap, expInput: exp, expRead, gl: null, lutN: 33, lutReady: false,
+    const p = { node, box, canvas, empty, isPlayer: true, gl: null, lutN: 33, lutReady: false,
                 raf: 0, exposure: 0, texW: 0, texH: 0, player: null, autoCsChecked: false, userSetCs: false };
     // pb: reuse the transport's playback-state shape. seqMode TRUE (frame-index clock, no <video>); seq stays null.
     p.pb = { playing: false, dir: 1, mode: "loop", fps: 24, showTransport: false, seqMode: true, seqFrame: 0,
              seqAnchor: null, fileFrames: 1 };
     node._ocioPlayer = p;
-    _ensureTransport(node, p);                           // shared transport bar (drives seqFrame via _pbSeek/_playerShow)
+    _ensureTransport(node, p);                           // shared transport bar (exposure strip + playback), drives seqFrame via _pbSeek/_playerShow
     node.onRemoved = (orig => function () { _playerStop(node._ocioPlayer); return orig && orig.apply(this, arguments); })(node.onRemoved);
     return p;
 }
 // Fit the node to its content height (viewport + transport + meta), then redraw. Guarded against reentrancy:
 // on the Vue-nodes frontend node.setSize fires onResize, which calls this again -> without the guard that
 // recursed until "Maximum call stack size exceeded". The guard makes the inner setSize a no-op. The exposure
-// slider is absolutely positioned with flex:1, so it stretches with the node automatically - this just redraws.
+// strip lives in the transport DOM widget (flex layout), so it stretches with the node width automatically -
+// this just refits the height and redraws.
 function _playerLayout(node) {
     const p = node._ocioPlayer; if (!p) return;
     if (!p._laying) {
@@ -1394,9 +1448,13 @@ app.registerExtension({
                 // one file picker: browse ANY path on disk straight into `source`. No copy - OCIORead reads it
                 // in place, which is what a local workflow wants (no duplicating big EXR sequences / video into
                 // the input folder). uploadRead() (copy-into-input) still exists if we ever want to re-expose it.
-                const browseBtn = this.addWidget("button", "Browse disk...", null,
+                const browseBtn = this.addWidget("button", "Open Files", null,
                     () => openBrowser(this, { widget: "source", pickFiles: true }), { serialize: false });
                 browseBtn._ocioAlwaysVisible = true;
+                // The `source` STRING widget IS the editable path (type a file / sequence / video, or fill it via
+                // Open Files). Tooltip clarifies it is not a duplicate of the button. Added 2026-07-03.
+                const srcW = W(this, "source");
+                if (srcW) srcW.tooltip = "Path to a file / sequence / video - type it here, or use Open Files. This is the source; the button just fills it.";
                 ensureReadPreview(this);                                          // instant preview at the bottom
                 ensureReadMeta(this);                                             // metadata panel, under the preview
                 this._ocioAllWidgets = this.widgets.slice();                      // full ordered list, captured once

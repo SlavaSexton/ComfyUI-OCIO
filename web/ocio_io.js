@@ -281,36 +281,45 @@ function _thumbQuery(node, src) {
     return new URLSearchParams({ src, in_cs: W(node, "input_colorspace")?.value || "", out_cs: W(node, "output_colorspace")?.value || "",
         raw: W(node, "raw_data")?.value ? "1" : "0", rand: String(Date.now()) }).toString();
 }
-// ---- Nuke-style transport bar for the video viewport (client-side, drives the hidden <video>; the WebGL
-// loop renders whatever frame it lands on). A numbered timeline ruler with a draggable playhead and in / out
-// range handles, Repeat / Bounce, go to first / last, play reverse / forward, step one frame, step by N, a
-// frame field, and a range-reset. The in / out handles ARE the node's start_frame / end_frame widgets (single
-// source of truth): dragging a handle edits the field, editing the field moves the handle, and playback loops
-// or bounces inside [in, out]. Shown only for a video source.
+// ---- Nuke-style transport bar for the video viewport (client-side, drives the hidden <video>; the WebGL loop
+// renders whatever frame it lands on). A numbered timeline ruler (0..fileFrames-1) with a draggable playhead and
+// draggable in / out handles, plus: Repeat / Bounce, set-in (I) / set-out (O) to the current frame, go to first /
+// last, play reverse / forward (single triangles), step one frame (triangle + bar), stop, and a frame field. The
+// in / out handles ARE the node's start_frame / end_frame widgets (single source of truth): dragging a handle or
+// clicking I / O edits the field, editing the field moves the handle, and playback loops or bounces inside
+// [in, out]. The frame count is the REAL file's (from seq_range), so it always matches the loaded clip. Video
+// source only.
+// Every glyph uses ONLY fillable shapes (triangles as closed paths, bars as <rect>): the svg has
+// fill=currentColor and no stroke, so a zero-width line bar renders NOTHING - that is why the bars were
+// invisible and every button looked like a plain triangle. Stroked glyphs (reset / I / O) set their own stroke.
 const _SVG = {
-    first:   '<path d="M4 3v10M13 3l-7 5 7 5z"/>',                 // |<  to first / in
-    last:    '<path d="M12 3v10M3 3l7 5-7 5z"/>',                  // >|  to last / out
-    playRev: '<path d="M13 3l-6 5 6 5zM7 3l-5 5 5 5z"/>',          // <<  play reverse
-    playFwd: '<path d="M3 3l6 5-6 5zM9 3l5 5-5 5z"/>',             // >>  play forward
-    stepB:   '<path d="M11 3l-7 5 7 5z"/>',                        // <   step back one
-    stepF:   '<path d="M5 3l7 5-7 5z"/>',                          // >   step forward one
+    reset:   '<path fill="none" stroke="currentColor" stroke-width="1.4" d="M12.4 6.2A4.2 4.2 0 1 0 13 9.6"/><path d="M13 2.4v3.4h-3.4z"/>',  // reset range to full clip
+    setIn:   '<path fill="none" stroke="currentColor" stroke-width="1.7" d="M4 3.5h5M4 12.5h5M6.5 3.5v9"/>',   // I  set in point
+    setOut:  '<circle cx="8" cy="8" r="4.2" fill="none" stroke="currentColor" stroke-width="1.7"/>',           // O  set out point
+    first:   '<rect x="2.4" y="3" width="1.8" height="10"/><path d="M14 3l-4.7 5 4.7 5zM9.2 3l-4.7 5 4.7 5z"/>',   // |<< go to first (bar + 2 tri)
+    last:    '<path d="M2 3l4.7 5-4.7 5zM6.8 3l4.7 5-4.7 5z"/><rect x="11.8" y="3" width="1.8" height="10"/>',     // >>| go to last
+    stepB:   '<path d="M10 3l-6.5 5 6.5 5z"/><rect x="11" y="3" width="1.8" height="10"/>',                       // <|  step back one (1 tri + bar)
+    stepF:   '<path d="M6 3l6.5 5-6.5 5z"/><rect x="3.2" y="3" width="1.8" height="10"/>',                        // |>  step forward one
+    playR:   '<path d="M12 3l-9 5 9 5z"/>',                                                                       // <   play reverse
+    play:    '<path d="M4 3l9 5-9 5z"/>',                                                                         // >   play forward
     pause:   '<path d="M4 3h3v10H4zM9 3h3v10H9z"/>',
-    loop:    '<path fill="none" stroke="currentColor" stroke-width="1.5" d="M4.5 9a3.5 3.5 0 1 1 1 2.5"/><path d="M3 7.5l1.6 2.6 2.2-1.9z"/>',
-    bounce:  '<path d="M3 8l3-3v2h4V5l3 3-3 3v-2H6v2z"/>',
-    reset:   '<path fill="none" stroke="currentColor" stroke-width="1.4" d="M12 6.5A4 4 0 1 0 12.6 10"/><path d="M12.6 2.5v3.2h-3.2z"/>',
+    stop:    '<rect x="4" y="4" width="8" height="8"/>',                                                          // stop (pause in place)
 };
 function _tBtn(icon, title) {
     const b = document.createElement("button"); b.title = title; b.dataset.icon = "1";
-    b.style.cssText = "width:19px;height:17px;padding:0;margin:0;border:0;border-radius:2px;background:#2a2a2a;color:#dbe6f0;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;";
+    b.style.cssText = "width:17px;height:16px;padding:0;margin:0;border:0;border-radius:2px;background:#2b2b30;color:#e0e8f0;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;";
     b.innerHTML = `<svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor">${icon}</svg>`;
     b.onmouseenter = () => b.style.background = "#39395a"; b.onmouseleave = () => b.style.background = "#2a2a2a";
     return b;
 }
 function _setIcon(b, icon) { b.innerHTML = `<svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor">${icon}</svg>`; }
-function _pbFrames(p) { const d = p.video && p.video.duration; if (!(d > 0) || !isFinite(d)) return 1; return Math.max(1, Math.min(1e6, Math.round(d * (p.pb.fps || 24)) || 1)); }
+// frame count is the REAL file's frame count (from /ocio/seq_range, set on p.pb.fileFrames), NOT
+// video.duration * fps - the latter drifts (a clip reported "3009" when the file was 0..409). Frame <-> time
+// uses a proportional map through video.duration, so it is correct even if the fps widget is off.
+function _pbFrames(p) { const n = p.pb && p.pb.fileFrames; return (n > 0 && isFinite(n)) ? Math.min(1e6, Math.round(n)) : 1; }
 function _pbLast(p) { return _pbFrames(p) - 1; }
-function _pbCur(p) { return Math.round(p.video.currentTime * (p.pb.fps || 24)); }
-function _pbSeek(p, f) { f = Math.max(0, Math.min(_pbLast(p), Math.round(f))); p.video.currentTime = (f + 0.001) / (p.pb.fps || 24); }
+function _pbCur(p) { const v = p.video, d = v && v.duration, last = _pbLast(p); if (!(d > 0) || last < 1) return 0; return Math.max(0, Math.min(last, Math.round((v.currentTime / d) * last))); }
+function _pbSeek(p, f) { const v = p.video, d = v && v.duration, last = _pbLast(p); f = Math.max(0, Math.min(last, Math.round(f))); if (d > 0) v.currentTime = Math.max(0, Math.min(d - 0.001, (f / Math.max(1, last)) * d)); }
 // in / out range = the node's start_frame / end_frame widgets (single source of truth, bidirectional).
 function _pbIn(p) { const w = W(p.node, "start_frame"); return Math.max(0, Math.min(_pbLast(p), Math.round(w?.value ?? 0))); }
 function _pbOut(p) { const w = W(p.node, "end_frame"); const last = _pbLast(p); return Math.max(_pbIn(p), Math.min(last, Math.round(w?.value ?? last))); }
@@ -319,33 +328,31 @@ function _pbSetIn(p, f) { _pbSetField(p, "start_frame", Math.max(0, Math.min(_pb
 function _pbSetOut(p, f) { _pbSetField(p, "end_frame", Math.max(_pbIn(p), Math.min(_pbLast(p), Math.round(f)))); }
 function _pbResetRange(p) { _pbSetField(p, "start_frame", 0); _pbSetField(p, "end_frame", _pbLast(p)); }
 function _pbSet(node, p, on, dir) {
-    p.pb.playing = on; p.pb.dir = dir || 1; p.pb.lastT = 0;
+    p.pb.playing = on; p.pb.dir = dir || 1; p.pb.revAnchor = null;   // re-anchor reverse on every state change
     const inF = _pbIn(p), outF = _pbOut(p), cur = _pbCur(p);
     if (on && p.pb.dir > 0) { if (cur >= outF) _pbSeek(p, inF); p.video.loop = false; p.video.playbackRate = 1; p.video.play().catch(() => {}); }
     else if (on) { if (cur <= inF) _pbSeek(p, outF); p.video.pause(); }   // reverse is driven manually in _tickPlayback
     else { p.video.pause(); }
     _syncTransport(p);
 }
-function _pbStop(node, p) { _pbSet(node, p, false, 1); _pbSeek(p, _pbIn(p)); }
+function _pbStop(node, p) { _pbSet(node, p, false, 1); }                  // stop = pause in place (leave the playhead put)
 function _pbStep(node, p, d) { _pbSet(node, p, false, 1); _pbSeek(p, _pbCur(p) + d); }
-function _pbJump(node, p, end) { _pbSet(node, p, false, 1); _pbSeek(p, end ? _pbOut(p) : _pbIn(p)); }
-function _pbMode(p, mode) { p.pb.mode = mode; _syncTransport(p); }
+// The playback clock. Forward uses native <video> play (smooth) and loops back to the in-point at the out-point.
+// Reverse cannot use native play (browsers ignore a negative rate), so it walks currentTime backwards on a
+// WALL-CLOCK anchor (time-accurate regardless of seek latency) and issues a new seek only when the previous one
+// has finished (v.seeking) - without that gate, a long clip floods the decoder with seeks and stalls.
 function _tickPlayback(p, now) {
     const pb = p.pb, v = p.video; if (!pb) return;
-    const dt = Math.min(0.1, (now - (pb.lastT || now)) / 1000); pb.lastT = now;
     if (!pb.playing || !(v.duration > 0)) return;
-    const fps = pb.fps || 24, inT = _pbIn(p) / fps, outT = Math.min(v.duration - 0.001, (_pbOut(p) + 0.999) / fps);
+    const d = v.duration, last = Math.max(1, _pbLast(p));
+    const inT = (_pbIn(p) / last) * d, outT = Math.min(d - 0.001, ((_pbOut(p) + 0.999) / last) * d);
     if (pb.dir > 0) {
-        if (v.currentTime >= outT || v.ended) {
-            if (pb.mode === "bounce") { pb.dir = -1; if (!v.paused) v.pause(); v.currentTime = outT; }
-            else { v.currentTime = inT; if (v.paused) v.play().catch(() => {}); }                        // loop within [in,out]
-        }
+        if (v.currentTime >= outT || v.ended) { v.currentTime = inT; if (v.paused) v.play().catch(() => {}); }   // loop within [in,out]
     } else {
-        let t = v.currentTime - dt * (v.playbackRate || 1);
-        if (t <= inT) {
-            if (pb.mode === "bounce") { pb.dir = 1; v.currentTime = inT; v.loop = false; v.play().catch(() => {}); }
-            else { v.currentTime = outT; }                                                               // reverse-loop to out
-        } else { v.currentTime = t; }
+        if (!pb.revAnchor) pb.revAnchor = { wall: now, time: Math.min(v.currentTime, outT) };
+        let target = pb.revAnchor.time - ((now - pb.revAnchor.wall) / 1000) * (pb.speed || 1);
+        if (target <= inT) { pb.revAnchor = { wall: now, time: outT }; target = outT; }                          // reverse-loop to out
+        if (!v.seeking) v.currentTime = Math.max(0, Math.min(d - 0.001, target));
     }
 }
 function _niceStep(n, maxLabels) {
@@ -376,13 +383,10 @@ function _drawTimeline(p) {
 }
 function _syncTransport(p) {
     const t = p.transport; if (!t) return;
-    const cur = _pbCur(p), n = _pbFrames(p), pb = p.pb;
+    const cur = _pbCur(p), pb = p.pb;
     if (document.activeElement !== t.frame) t.frame.value = String(cur);
-    t.total.textContent = "/ " + (n - 1);
-    _setIcon(t.playFwd, (pb.playing && pb.dir > 0) ? _SVG.pause : _SVG.playFwd);
-    _setIcon(t.playRev, (pb.playing && pb.dir < 0) ? _SVG.pause : _SVG.playRev);
-    t.mode.title = pb.mode === "loop" ? "Repeat (loop)" : "Bounce (ping-pong)";
-    _setIcon(t.mode, pb.mode === "loop" ? _SVG.loop : _SVG.bounce);
+    _setIcon(t.play, (pb.playing && pb.dir > 0) ? _SVG.pause : _SVG.play);
+    _setIcon(t.playR, (pb.playing && pb.dir < 0) ? _SVG.pause : _SVG.playR);
     _drawTimeline(p);
 }
 function _ensureTransport(node, p) {
@@ -394,24 +398,23 @@ function _ensureTransport(node, p) {
     tl.style.cssText = "width:100%;height:26px;display:block;cursor:pointer;";
     const row = document.createElement("div");
     row.style.cssText = "display:flex;align-items:center;justify-content:center;gap:1px;flex-wrap:nowrap;";
-    const mode = _tBtn(_SVG.loop, "Repeat (loop)");   mode.onclick = () => _pbMode(p, p.pb.mode === "loop" ? "bounce" : "loop");
-    const first = _tBtn(_SVG.first, "Go to in point"); first.onclick = () => _pbJump(node, p, false);
-    const playRev = _tBtn(_SVG.playRev, "Play reverse"); playRev.onclick = () => _pbSet(node, p, !(p.pb.playing && p.pb.dir < 0), -1);
-    const sb = _tBtn(_SVG.stepB, "Back one frame");   sb.onclick = () => _pbStep(node, p, -1);
-    const frame = document.createElement("input"); frame.type = "number"; frame.value = "0";
-    frame.style.cssText = "width:40px;height:15px;text-align:center;background:#101010;color:#cfe;border:1px solid #333;border-radius:2px;font:10px monospace;margin:0 2px;";
-    frame.addEventListener("change", () => { const f = parseInt(frame.value, 10) || 0; _pbSet(node, p, false, 1); _pbSeek(p, f); });
-    const total = document.createElement("span"); total.style.cssText = "color:#789;font:9px monospace;margin:0 3px 0 1px;min-width:26px;"; total.textContent = "/ 0";
-    const sf = _tBtn(_SVG.stepF, "Forward one frame"); sf.onclick = () => _pbStep(node, p, 1);
-    const playFwd = _tBtn(_SVG.playFwd, "Play forward"); playFwd.onclick = () => _pbSet(node, p, !(p.pb.playing && p.pb.dir > 0), 1);
-    const last = _tBtn(_SVG.last, "Go to out point");  last.onclick = () => _pbJump(node, p, true);
-    const reset = _tBtn(_SVG.reset, "Reset range (in / out to full clip)"); reset.onclick = () => { _pbResetRange(p); _drawTimeline(p); };
-    const nstep = document.createElement("input"); nstep.type = "number"; nstep.value = "10"; nstep.min = "1";
-    nstep.style.cssText = "width:28px;height:15px;text-align:center;background:#101010;color:#9ab;border:1px solid #333;border-radius:2px;font:9px monospace;margin:0 1px;";
-    const nsB = _tBtn(_SVG.playRev, "Back N frames");  nsB.onclick = () => _pbStep(node, p, -(parseInt(nstep.value, 10) || 10));
-    const nsF = _tBtn(_SVG.playFwd, "Forward N frames"); nsF.onclick = () => _pbStep(node, p, (parseInt(nstep.value, 10) || 10));
-    const sep = () => { const s = document.createElement("span"); s.style.cssText = "width:6px;display:inline-block;"; return s; };
-    row.append(mode, sep(), first, playRev, sb, frame, total, sf, playFwd, last, sep(), reset, sep(), nsB, nstep, nsF);
+    const mkBtn = (icon, title, fn) => { const b = _tBtn(icon, title); b.onclick = fn; return b; };
+    // left -> right: reset | set-in(I) | go-first | step-back | play-rev | STOP | FRAME | play-fwd | step-fwd | go-last | set-out(O)
+    const reset = mkBtn(_SVG.reset, "Reset range to the full clip", () => { _pbResetRange(p); _drawTimeline(p); });
+    const setIn = mkBtn(_SVG.setIn, "Set IN point to current frame", () => { _pbSetIn(p, _pbCur(p)); _drawTimeline(p); });
+    const first = mkBtn(_SVG.first, "Go to first frame of range (in)", () => { _pbSet(node, p, false, 1); _pbSeek(p, _pbIn(p)); _drawTimeline(p); });
+    const sb = mkBtn(_SVG.stepB, "Step back one frame", () => _pbStep(node, p, -1));
+    const playR = mkBtn(_SVG.playR, "Play reverse", () => _pbSet(node, p, !(p.pb.playing && p.pb.dir < 0), -1));
+    const stop = mkBtn(_SVG.stop, "Stop (pause here)", () => _pbStop(node, p));
+    const frame = document.createElement("input"); frame.type = "number"; frame.value = "0"; frame.title = "Current frame (type a number to jump)";
+    frame.style.cssText = "width:44px;height:16px;text-align:center;background:#101010;color:#cfe;border:1px solid #333;border-radius:2px;font:11px monospace;margin:0 3px;";
+    frame.addEventListener("change", () => { const f = parseInt(frame.value, 10) || 0; _pbSet(node, p, false, 1); _pbSeek(p, f); _drawTimeline(p); });
+    const play = mkBtn(_SVG.play, "Play forward", () => _pbSet(node, p, !(p.pb.playing && p.pb.dir > 0), 1));
+    const sf = mkBtn(_SVG.stepF, "Step forward one frame", () => _pbStep(node, p, 1));
+    const last = mkBtn(_SVG.last, "Go to last frame of range (out)", () => { _pbSet(node, p, false, 1); _pbSeek(p, _pbOut(p)); _drawTimeline(p); });
+    const setOut = mkBtn(_SVG.setOut, "Set OUT point to current frame", () => { _pbSetOut(p, _pbCur(p)); _drawTimeline(p); });
+    const sep = () => { const s = document.createElement("span"); s.style.cssText = "width:4px;display:inline-block;"; return s; };
+    row.append(reset, sep(), setIn, first, sb, playR, stop, frame, play, sf, last, setOut);
     bar.append(tl, row);
     const w = node.addDOMWidget("transport", "div", bar, { serialize: false });
     w.computeSize = () => [0, p.pb && p.pb.showTransport ? 54 : 0];
@@ -428,7 +431,7 @@ function _ensureTransport(node, p) {
         const up = () => { document.removeEventListener("mousemove", move); document.removeEventListener("mouseup", up); };
         document.addEventListener("mousemove", move); document.addEventListener("mouseup", up); e.preventDefault();
     });
-    p.transport = { bar, tl, frame, total, playFwd, playRev, mode };
+    p.transport = { bar, tl, frame, play, playR };
     return p.transport;
 }
 function updateReadPreview(node) {
@@ -489,14 +492,18 @@ async function fillRange(node, source) {
         });
         const d = await r.json();
         node._ocioSeq = d;
+        const pv = node._ocioPrev;
         if (d && (d.kind === "sequence" || d.kind === "video")) {
             setWSilent(node, "start_frame", d.start | 0);
             setWSilent(node, "end_frame", d.end | 0);
             setWSilent(node, "frame_shift", d.start | 0);      // default: first frame keeps its source number
             if (d.fps) setWSilent(node, "fps", Math.round(d.fps * 1000) / 1000);
+            // the transport ruler + in/out span the REAL file frame count (authoritative), not video.duration
+            if (pv && pv.pb) pv.pb.fileFrames = Math.max(1, (d.count | 0) || ((d.end | 0) - (d.start | 0) + 1) || 1);
         } else {
             setWSilent(node, "start_frame", 0);
             setWSilent(node, "end_frame", 0);
+            if (pv && pv.pb) pv.pb.fileFrames = 1;
         }
         applyReadVis(node, d.kind);
         resyncAllWrites();                                     // push the detected range/fps to downstream Writes
@@ -834,16 +841,12 @@ app.registerExtension({
             const onCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 const r = onCreated ? onCreated.apply(this, arguments) : undefined;
-                // browse: pick ANY path on disk straight into `source` (no copy - OCIORead reads it in place).
-                // upload: COPY a browser-picked file INTO ComfyUI's input folder, then point `source` at the
-                // copy (see uploadRead) - the two are not duplicates: browse needs no copy, upload is for a
-                // file that is not already inside the input folder.
+                // one file picker: browse ANY path on disk straight into `source`. No copy - OCIORead reads it
+                // in place, which is what a local workflow wants (no duplicating big EXR sequences / video into
+                // the input folder). uploadRead() (copy-into-input) still exists if we ever want to re-expose it.
                 const browseBtn = this.addWidget("button", "Browse disk...", null,
                     () => openBrowser(this, { widget: "source", pickFiles: true }), { serialize: false });
-                const uploadBtn = this.addWidget("button", "Copy to input folder", null,
-                    () => uploadRead(this), { serialize: false });
                 browseBtn._ocioAlwaysVisible = true;
-                uploadBtn._ocioAlwaysVisible = true;
                 ensureReadPreview(this);                                          // instant preview at the bottom
                 ensureReadMeta(this);                                             // metadata panel, under the preview
                 this._ocioAllWidgets = this.widgets.slice();                      // full ordered list, captured once

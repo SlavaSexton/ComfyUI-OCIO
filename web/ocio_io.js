@@ -548,8 +548,25 @@ function _drawTimeline(p) {
     const last = _pbLast(p), cur = _pbCur(p), inF = _pbIn(p), outF = _pbOut(p);
     const X = f => PAD + (last > 0 ? f / last : 0) * (Wd - 2 * PAD);
     g.clearRect(0, 0, Wd, H); g.fillStyle = "#141414"; g.fillRect(0, 0, Wd, H);
-    g.fillStyle = "#123039"; g.fillRect(X(inF), H - 5, X(outF) - X(inF), 3);                             // active-range band
+    g.fillStyle = "#123039"; g.fillRect(X(inF), H - 5, X(outF) - X(inF), 3);                             // active-range band (dim = to-be-cached track)
     g.fillStyle = "rgba(0,0,0,0.5)"; g.fillRect(0, 0, X(inF), H); g.fillRect(X(outF), 0, Wd - X(outF), H);
+    // cache / buffer progress: bright teal filling the bottom band left->right as frames warm into the client cache
+    // (GPU textures for OCIO Player, decoded blobs for OCIO Read's flipbook) - tells the user frames ARE caching,
+    // not stuck. Sequence / player only; native <video> buffers itself, so there is no frame cache to show.
+    if (p.pb && p.pb.seqMode) {
+        const cache = p.texCache || p.seqCache;
+        if (cache && cache.size) {
+            const idxs = [...cache.keys()].filter(i => i >= 0 && i <= last).sort((a, b) => a - b);
+            if (idxs.length) {
+                const fw = last > 0 ? (Wd - 2 * PAD) / last : (Wd - 2 * PAD);
+                g.fillStyle = "#25b3ac";                                                                 // bright teal = cached
+                const flush = (a, b) => g.fillRect(X(a), H - 5, Math.max(1.5, X(b) - X(a) + fw), 3);
+                let s = idxs[0], prev = idxs[0];
+                for (let k = 1; k < idxs.length; k++) { if (idxs[k] === prev + 1) { prev = idxs[k]; continue; } flush(s, prev); s = prev = idxs[k]; }
+                flush(s, prev);
+            }
+        }
+    }
     const maxLabels = Math.max(2, Math.floor((Wd - 2 * PAD) / 34)), step = Math.max(1, _niceStep(last + 1, maxLabels));
     g.fillStyle = "#7a8a99"; g.strokeStyle = "#3a3a3a"; g.font = "8px monospace"; g.textAlign = "center";
     for (let f = 0; f <= last; f += step) {
@@ -1236,21 +1253,58 @@ function _playerDraw(p) {
     if (p.canvas.width !== p.texW || p.canvas.height !== p.texH) { p.canvas.width = p.texW; p.canvas.height = p.texH; }
     gl.viewport(0, 0, p.canvas.width, p.canvas.height);
     gl.useProgram(g.prog);
-    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, g.imgTex);
+    const _ent = p.texCache && p.texCache.get(p.pb.seqFrame | 0);       // draw the current frame from the per-frame texture cache (falls back to imgTex before it is cached)
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, (_ent && _ent.tex) || g.imgTex);
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_3D, g.lutTex);
     gl.uniform1f(g.locs.uN, p.lutN || 33); gl.uniform1f(g.locs.uOn, p.lutReady ? 1 : 0);
     gl.uniform1f(g.locs.uExposure, p.exposure || 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
-// Fetch one float16 RGBA frame -> upload into the RGBA16F texture -> draw. The body is raw float16 bytes
-// (X-Width * X-Height * 4 * 2), loaded as a Uint16Array (the HALF_FLOAT texture path takes the raw 16-bit words).
+// ---- Player frame cache: each frame is its own RGBA16F GPU texture kept in a bounded LRU, so playback and scrub
+// read from VRAM instead of re-fetching ~100 MB per frame over HTTP (that on-demand refetch was the slowness the
+// owner saw vs OCIO Read's tiny 8-bit thumbs). Budget-capped: a 4K RGBA16F frame ~= 116 MB, so ~17 fit in ~2 GB;
+// shorter clips cache in full. Over budget, the least-recently-used non-current frame is evicted. State on p:
+//   p.texCache: Map<idx,{tex,w,h,bytes}>   p.texOrder: LRU list of idx (oldest first)   p.texBytes: total bytes.
+const _PLAYER_TEX_BUDGET = 2.0e9;                                        // ~2 GB of frame textures (tunable); knob for how many frames stay warm
+function _playerMkTex(gl) {
+    const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return t;
+}
+function _playerTouch(p, idx) {                                          // mark idx most-recently-used (moves it to the tail)
+    const o = p.texOrder; const i = o.indexOf(idx); if (i >= 0) o.splice(i, 1); o.push(idx);
+}
+function _playerEvict(p) {                                               // drop LRU frames until under budget, never the current frame
+    const gl = p.gl && p.gl.gl; if (!gl || !p.texCache) return;
+    const cur = p.pb.seqFrame | 0;
+    while (p.texBytes > _PLAYER_TEX_BUDGET && p.texOrder.length > 1) {
+        let k = -1; for (let i = 0; i < p.texOrder.length; i++) { if (p.texOrder[i] !== cur) { k = i; break; } }
+        if (k < 0) break;
+        const idx = p.texOrder.splice(k, 1)[0], e = p.texCache.get(idx);
+        if (e) { try { gl.deleteTexture(e.tex); } catch (x) {} p.texBytes -= e.bytes; p.texCache.delete(idx); }
+    }
+}
+function _playerClearTex(p) {                                            // free all frame textures (new render / teardown)
+    const gl = p.gl && p.gl.gl;
+    if (p.texCache) { if (gl) for (const e of p.texCache.values()) { try { gl.deleteTexture(e.tex); } catch (x) {} } p.texCache.clear(); }
+    p.texOrder = []; p.texBytes = 0;
+    if (p.playerInflight) p.playerInflight.clear();
+}
+// Fetch one float16 RGBA frame -> its own RGBA16F texture in the LRU cache (or reuse the cached one) -> draw if
+// it is still the current frame. Body is raw float16 bytes (X-Width * X-Height * 4 * 2), a Uint16Array of 16-bit words.
 async function _playerFetch(p, idx, show) {
     const node = p.node, dir = p.player && p.player.dir; if (!dir || !p.gl) return;
     const last = _pbLast(p); idx = Math.max(0, Math.min(last, idx | 0));
+    if (!p.texCache) { p.texCache = new Map(); p.texOrder = []; p.texBytes = 0; }
     if (!p.playerInflight) p.playerInflight = new Set();
-    const key = idx;
-    if (p.playerInflight.has(key)) return;
-    p.playerInflight.add(key);
+    if (p.texCache.has(idx)) {                                           // cache HIT: no fetch, draw straight from VRAM
+        _playerTouch(p, idx);
+        if (show && (p.pb.seqFrame | 0) === idx) { const e = p.texCache.get(idx); p.texW = e.w; p.texH = e.h; _playerDraw(p); }
+        return;
+    }
+    if (p.playerInflight.has(idx)) return;
+    p.playerInflight.add(idx);
     try {
         const r = await fetch("/ocio/floatframe?" + new URLSearchParams({ dir, frame: String(idx) }).toString());
         if (!r.ok) throw new Error("floatframe " + r.status);
@@ -1263,8 +1317,8 @@ async function _playerFetch(p, idx, show) {
         // only do this once and only if the user hasn't already touched it.
         if (!p.autoCsChecked) {
             p.autoCsChecked = true;
-            const half = new Uint16Array(buf, 0, Math.min(w * h * 4, (buf.byteLength / 2) | 0));
-            if (_halfAnyOverOne(half)) {
+            const half0 = new Uint16Array(buf, 0, Math.min(w * h * 4, (buf.byteLength / 2) | 0));
+            if (_halfAnyOverOne(half0)) {
                 const w0 = W(node, "input_colorspace");
                 if (w0 && !p.userSetCs && String(w0.value || "").includes("sRGB")) {
                     setW(node, "input_colorspace", CS_ACESCG); _playerRefreshLut(node, p);
@@ -1272,13 +1326,28 @@ async function _playerFetch(p, idx, show) {
             }
         }
         const g = p.gl, gl = g.gl;
-        gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, g.imgTex);
+        const tex = _playerMkTex(gl);
         gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, new Uint16Array(buf));
+        const bytes = w * h * 4 * 2;
+        if (!p.texCache.has(idx)) { p.texCache.set(idx, { tex, w, h, bytes }); p.texOrder.push(idx); p.texBytes += bytes; }
+        else { try { gl.deleteTexture(tex); } catch (x) {} }         // lost a race for this idx -> keep the existing entry
+        _playerTouch(p, idx); _playerEvict(p);
         p.texW = w; p.texH = h;
-        if (show) _playerDraw(p);
+        if (show && (p.pb.seqFrame | 0) === idx) _playerDraw(p);     // only draw if this is still the frame on screen
     } catch (e) { if (p._playerFirstErr == null) { p._playerFirstErr = String(e); console.error("[OCIO Player] frame:", e); } }
-    finally { p.playerInflight.delete(key); }
+    finally { p.playerInflight.delete(idx); }
+}
+// Warm [in,out] into the texture cache (bounded by the VRAM budget; frames beyond it fetch on demand during play).
+function _playerPrefetch(p) {
+    if (!p.player) return;
+    const inI = _pbIn(p), outI = _pbOut(p);
+    let i = inI;
+    const pump = () => {
+        if (!p.player || i > outI || p.texBytes > _PLAYER_TEX_BUDGET) return;   // stop at the out-point or when the budget is full
+        const idx = i++; _playerFetch(p, idx, false).then(pump, pump);
+    };
+    pump();                                                          // single pump: frames are large and the backend reads them serially
 }
 // Any RGB (ignore alpha, every 4th) half-float > 1.0? Decodes IEEE half from the raw 16-bit words.
 function _halfToFloat(h) {
@@ -1325,6 +1394,7 @@ function _playerStop(p) {
     if (!p) return;
     if (p.raf) { cancelAnimationFrame(p.raf); p.raf = 0; }
     if (p.pb) { p.pb.playing = false; }
+    _playerClearTex(p);                                  // free the frame textures from VRAM on teardown
 }
 
 // The Player's preview-state object `p` mirrors the shape the shared transport helpers read (p.node, p.pb, p.gl,
@@ -1388,6 +1458,7 @@ function playerOnExecuted(node, message) {
     const inputCs = first(message && message.input_cs) || "";
     if (!dir || !(cached > 0)) { renderPlayerMeta(node, null); return; }
     p.player = { dir, total, cached, resolution };
+    _playerClearTex(p);                                  // fresh render -> the old frame textures are stale, drop them
     p.autoCsChecked = false;                             // re-evaluate HDR auto-cs for this fresh render
     p._playerFirstErr = null;
     p.pb.fileFrames = cached;                            // transport ruler spans the CACHED frames (0..cached-1)
@@ -1405,6 +1476,7 @@ function playerOnExecuted(node, message) {
     _playerLayout(node);
     _playerRefreshLut(node, p);                          // bake in_cs->out_cs display LUT
     _playerShow(p);                                      // upload + draw the current frame
+    _playerPrefetch(p);                                  // warm the rest of [in,out] into the texture cache (teal bar shows progress)
     _playerEnsureRaf(node, p);
     renderPlayerMeta(node, { resolution, total, cached, fps, input_cs: inputCs });
 }

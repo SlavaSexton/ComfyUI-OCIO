@@ -274,8 +274,12 @@ def _require_ocio():
 _CINEON_OFF = 10.0 ** ((95.0 - 685.0) / 300.0)  # 0.0107977...
 
 def _lin_to_cineon(x):
-    x = np.maximum(np.asarray(x, np.float64), 0.0)
-    return ((685.0 + 300.0 * np.log10(x * (1.0 - _CINEON_OFF) + _CINEON_OFF)) / 1023.0).astype(np.float32)
+    # 2026-07-03: clamp the LOG ARGUMENT, not the input - below-black scene-linear survives wherever the log is
+    # still defined (arg > 0), instead of flooring every negative to the black code. Only floors where log10 is
+    # genuinely undefined (arg <= 0). Positive/mid/highlight range is unchanged (arg >> 1e-10 there).
+    x = np.asarray(x, np.float64)
+    arg = np.maximum(x * (1.0 - _CINEON_OFF) + _CINEON_OFF, 1e-10)
+    return ((685.0 + 300.0 * np.log10(arg)) / 1023.0).astype(np.float32)
 
 def _cineon_to_lin(y):
     y = np.asarray(y, np.float64)
@@ -309,8 +313,11 @@ _LC3_A, _LC3_B, _LC3_C, _LC3_D = 5.555556, 0.052272, 0.247190, 0.385537
 _LC3_E, _LC3_F, _LC3_CUT = 5.367655, 0.092809, 0.010591
 
 def _lin_to_logc3(x):
-    x = np.maximum(np.asarray(x, np.float64), 0.0)
-    return np.where(x >= _LC3_CUT, _LC3_C * np.log10(_LC3_A * x + _LC3_B) + _LC3_D,
+    # 2026-07-03: no maximum(x,0) clamp - the finite linear toe (_LC3_E*x+_LC3_F) preserves below-black
+    # scene-linear (HDR-safe, matches ARRI); the log branch only fires for x >= _LC3_CUT > 0, so no log of a
+    # negative. Prior clamp floored all negatives to the black code 0.0928, contradicting the pack's no-clip claim.
+    x = np.asarray(x, np.float64)
+    return np.where(x >= _LC3_CUT, _LC3_C * np.log10(_LC3_A * np.maximum(x, _LC3_CUT) + _LC3_B) + _LC3_D,
                     _LC3_E * x + _LC3_F).astype(np.float32)
 
 def _logc3_to_lin(y):

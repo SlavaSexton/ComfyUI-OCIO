@@ -98,7 +98,10 @@ def _read_still(path):
             raise RuntimeError(f"cv2 could not read {path} (set OPENCV_IO_ENABLE_OPENEXR=1 on the server).")
     elif ext in (".tif", ".tiff") and tifffile is not None:
         a = np.asarray(tifffile.imread(path))
-    if a is None:                                   # png / jpg / bmp / dpx fallback via PIL
+    elif ext in (".png", ".bmp") and cv2 is not None:
+        a = cv2.imread(path, cv2.IMREAD_UNCHANGED)   # 2026-07-03: cv2 reads TRUE 8/16-bit; PIL opens a 16-bit PNG as 8-bit (lost ~2 bits on in-graph read-back)
+        bgr = a is not None
+    if a is None:                                   # jpg / no-cv2 / cv2-failed fallback via PIL
         im = Image.open(path)
         im = im.convert("RGBA") if "A" in im.getbands() else im.convert("RGB")
         a = np.asarray(im)
@@ -577,10 +580,10 @@ def _save_still(path, rgb, fmt, bit_depth, alpha=None, colorspace=None, compress
     if fmt in ("tif", "tiff"):
         if bit_depth == "32f":
             data = with_a(rgb.astype(np.float32))
-        elif bit_depth == "8":
-            data = (np.clip(with_a(rgb), 0, 1) * 255).astype(np.uint8)
+        elif bit_depth == "8":                                              # 2026-07-03: round, not floor (kills the half-LSB bias)
+            data = np.round(np.clip(with_a(rgb), 0, 1) * 255).astype(np.uint8)
         else:
-            data = (np.clip(with_a(rgb), 0, 1) * 65535).astype(np.uint16)
+            data = np.round(np.clip(with_a(rgb), 0, 1) * 65535).astype(np.uint16)
         tifffile.imwrite(path, np.ascontiguousarray(data), description=desc)
         return
     if fmt == "png":
@@ -589,11 +592,11 @@ def _save_still(path, rgb, fmt, bit_depth, alpha=None, colorspace=None, compress
                 raise RuntimeError("16-bit PNG needs OpenCV (cv2).")
             bgr = np.clip(rgb, 0, 1)[..., ::-1]
             data = np.dstack([bgr, np.clip(alpha, 0, 1)]) if has_a else bgr
-            cv2.imwrite(path, np.ascontiguousarray((data * 65535).astype(np.uint16)))
+            cv2.imwrite(path, np.ascontiguousarray(np.round(data * 65535).astype(np.uint16)))   # 2026-07-03: round, not floor
             return
-        arr8 = (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
+        arr8 = np.round(np.clip(rgb, 0, 1) * 255).astype(np.uint8)
         if has_a:
-            im = Image.fromarray(np.dstack([arr8, (np.clip(alpha, 0, 1) * 255).astype(np.uint8)]), "RGBA")
+            im = Image.fromarray(np.dstack([arr8, np.round(np.clip(alpha, 0, 1) * 255).astype(np.uint8)]), "RGBA")
         else:
             im = Image.fromarray(arr8, "RGB")
         info = None
@@ -604,7 +607,7 @@ def _save_still(path, rgb, fmt, bit_depth, alpha=None, colorspace=None, compress
         im.save(path, pnginfo=info)
         return
     # jpeg / jpg - 8-bit, no alpha; colorspace goes in the JPEG comment
-    im = Image.fromarray((np.clip(rgb, 0, 1) * 255).astype(np.uint8), "RGB")
+    im = Image.fromarray(np.round(np.clip(rgb, 0, 1) * 255).astype(np.uint8), "RGB")   # 2026-07-03: round, not floor
     im.save(path, quality=95, **({"comment": colorspace.encode()} if colorspace else {}))
 
 

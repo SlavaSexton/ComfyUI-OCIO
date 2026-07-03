@@ -509,7 +509,7 @@ class OCIOLogConvert:
         }}
 
     RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("image",)
+    RETURN_NAMES = ("image/sequence/video",)
     OUTPUT_TOOLTIPS = ("Image with the lin<->log curve applied.",)
     FUNCTION = "run"
     CATEGORY = "OCIO"
@@ -536,7 +536,7 @@ class OCIOColorSpace:
         }, "optional": {"config_path": _config_input()}}
 
     RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("image",)
+    RETURN_NAMES = ("image/sequence/video",)
     OUTPUT_TOOLTIPS = ("Image converted from in_colorspace to out_colorspace.",)
     FUNCTION = "convert"
     CATEGORY = "OCIO"
@@ -568,7 +568,7 @@ class OCIODisplay:
         }, "optional": {"config_path": _config_input()}}
 
     RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("image",)
+    RETURN_NAMES = ("image/sequence/video",)
     OUTPUT_TOOLTIPS = ("Image with the display + view transform applied (or inverted).",)
     FUNCTION = "run"
     CATEGORY = "OCIO"
@@ -606,7 +606,7 @@ class OCIOCDLTransform:
         }}
 
     RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("image",)
+    RETURN_NAMES = ("image/sequence/video",)
     OUTPUT_TOOLTIPS = ("Image with the ASC CDL grade applied.",)
     FUNCTION = "run"
     CATEGORY = "OCIO"
@@ -647,7 +647,7 @@ class OCIOFileTransform:
         }}
 
     RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("image",)
+    RETURN_NAMES = ("image/sequence/video",)
     OUTPUT_TOOLTIPS = ("Image with the LUT / CCC / CDL file transform applied.",)
     FUNCTION = "run"
     CATEGORY = "OCIO"
@@ -690,7 +690,7 @@ class OCIOLookTransform:
         }, "optional": {"config_path": _config_input()}}
 
     RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("image",)
+    RETURN_NAMES = ("image/sequence/video",)
     OUTPUT_TOOLTIPS = ("Image with the OCIO look applied (or inverted).",)
     FUNCTION = "run"
     CATEGORY = "OCIO"

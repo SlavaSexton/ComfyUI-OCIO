@@ -387,7 +387,7 @@ class OCIOGrade:
         }}
 
     RETURN_TYPES = ("IMAGE", "STRING")
-    RETURN_NAMES = ("image", "grade_info")
+    RETURN_NAMES = ("image/sequence/video", "grade_info")
     OUTPUT_TOOLTIPS = ("Image with the lift/gamma/gain/offset grade applied.",
                        "JSON grade_info describing this grade - wire into OCIO Apply Grade to stamp the same grade elsewhere.")
     FUNCTION = "run"
@@ -421,7 +421,7 @@ class OCIOGradeMatch:
         }}
 
     RETURN_TYPES = ("IMAGE", "STRING", "STRING")
-    RETURN_NAMES = ("image", "grade_info", "matched")
+    RETURN_NAMES = ("image/sequence/video", "grade_info", "matched")
     OUTPUT_TOOLTIPS = ("Image color-matched toward the reference.",
                        "JSON grade_info for the computed correction - wire into OCIO Apply Grade to stamp the same match elsewhere.",
                        "Human-readable note on the match (Lab mean/std moved, per channel).")
@@ -461,7 +461,7 @@ class OCIOApplyGrade:
         }}
 
     RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("image",)
+    RETURN_NAMES = ("image/sequence/video",)
     OUTPUT_TOOLTIPS = ("Image with the parsed grade_info applied at the given strength.",)
     FUNCTION = "run"
     CATEGORY = CATEGORY

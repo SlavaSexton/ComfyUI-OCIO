@@ -771,7 +771,7 @@ class OCIORead:
         }}
 
     RETURN_TYPES = ("IMAGE", "MASK", "FLOAT", "STRING")
-    RETURN_NAMES = ("image/video", "alpha", "fps", "info")
+    RETURN_NAMES = ("image/sequence/video", "alpha", "fps", "info")
     FUNCTION = "read"
     CATEGORY = "OCIO"
 
@@ -1038,7 +1038,7 @@ class OCIOPlayer:
         }
 
     RETURN_TYPES = ("IMAGE", "MASK", "FLOAT", "STRING")
-    RETURN_NAMES = ("image", "alpha", "fps", "info")
+    RETURN_NAMES = ("image/sequence/video", "alpha", "fps", "info")
     OUTPUT_TOOLTIPS = ("Batch converted input->output colorspace and trimmed to [start,end]. Exposure is view-only, NOT baked here.",
                        "Alpha for the trimmed range.", "fps (passed through).", "What the node did.")
     FUNCTION = "play"

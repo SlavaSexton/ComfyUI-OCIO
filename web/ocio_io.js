@@ -30,6 +30,42 @@ function extOf(name) { return (String(name || "").toLowerCase().split(".").pop()
 function isExr(name) { const e = extOf(name); return e === "exr" || e === "hdr"; }
 function shorten(cs) { return String(cs || "").replace(" - Display", "").replace(" - Texture", ""); }
 
+// ---- "Processing…" busy overlay + CSS spinner (owner spec 2026-07-03) -----------------------------------------
+// A centered spinner + message painted OVER a preview viewport (OCIO Read + OCIO Player) while a refresh / queue /
+// proxy-build is in flight, so the user sees work is happening. Pure CSS spinner (no external gif, self-contained).
+// The overlay sits on the viewport box only (position:absolute inset:0), so the timeline + its cache/buffer bar
+// stay visible underneath it.
+(function _ocioInjectSpinnerCss() {
+    if (typeof document === "undefined" || document.getElementById("ocio-spinner-css")) return;
+    const s = document.createElement("style"); s.id = "ocio-spinner-css";
+    s.textContent = ".ocio-spinner{width:30px;height:30px;border:3px solid rgba(120,140,170,0.25);"
+        + "border-top-color:#4cc3ff;border-radius:50%;animation:ocio-spin .8s linear infinite}"
+        + "@keyframes ocio-spin{to{transform:rotate(360deg)}}";
+    (document.head || document.documentElement).appendChild(s);
+})();
+function _ocioBusy(box, on, text) {
+    if (!box) return;
+    let ov = box._ocioBusyEl;
+    if (on) {
+        if (!ov) {
+            ov = document.createElement("div");
+            ov.style.cssText = "position:absolute;inset:0;z-index:9;display:flex;flex-direction:column;"
+                + "align-items:center;justify-content:center;gap:10px;background:rgba(8,10,14,0.5);"
+                + "color:#dfe8f2;font:12px sans-serif;pointer-events:none;text-shadow:0 1px 3px rgba(0,0,0,0.8);";
+            const sp = document.createElement("div"); sp.className = "ocio-spinner";
+            const tx = document.createElement("div"); tx.className = "ocio-busy-txt";
+            ov.append(sp, tx); box.appendChild(ov); box._ocioBusyEl = ov;
+        }
+        ov.lastChild.textContent = text || "Processing…";
+        ov.style.display = "flex";
+    } else if (ov) {
+        ov.style.display = "none";
+    }
+}
+// the viewport box of either OCIO node (Player or Read), for the busy overlay
+function _ocioNodeBox(node) { return node && ((node._ocioPlayer && node._ocioPlayer.box) || (node._ocioPrev && node._ocioPrev.box)) || null; }
+function _ocioBusyNode(node, on, text) { _ocioBusy(_ocioNodeBox(node), on, text); }
+
 const CS_SRGB = "sRGB - Display";
 const CS_ACESCG = "ACEScg";
 function autoInCs(filename) { return isExr(filename) ? CS_ACESCG : CS_SRGB; }
@@ -250,12 +286,12 @@ function ensureReadPreview(node) {
     img.style.cssText = "max-width:100%;max-height:100%;object-fit:contain;display:none;";   // default INTRINSIC sizing so an empty / pending / broken src shows NOTHING (not a broken-image icon); onload switches to 100%/100% so a small proxy still upscales to fill the node
     // a still/frame that fails to decode (server 404/400, or a non-media path that got through) shows the readable
     // "No media" message instead of a blank box. Added 2026-07-03 (Task F: format guard).
-    img.onerror = () => { img.style.display = "none"; img.style.width = ""; img.style.height = ""; _showReadMsg(node._ocioPrev, "No media - unsupported format"); };   // reset to intrinsic sizing so a later empty state cannot show a broken-image icon
-    img.onload = () => { img.style.width = "100%"; img.style.height = "100%"; _adoptAspect(node, node._ocioPrev, img.naturalWidth, img.naturalHeight); };   // valid image loaded -> fill (upscale a small proxy) + learn aspect so the node refits
+    img.onerror = () => { _ocioBusy(node._ocioPrev && node._ocioPrev.box, false); img.style.display = "none"; img.style.width = ""; img.style.height = ""; _showReadMsg(node._ocioPrev, "No media - unsupported format"); };   // reset to intrinsic sizing so a later empty state cannot show a broken-image icon
+    img.onload = () => { _ocioBusy(node._ocioPrev && node._ocioPrev.box, false); img.style.width = "100%"; img.style.height = "100%"; _adoptAspect(node, node._ocioPrev, img.naturalWidth, img.naturalHeight); };   // valid image loaded -> fill (upscale a small proxy) + learn aspect so the node refits
     const video = document.createElement("video");
     video.muted = true; video.loop = true; video.playsInline = true; video.setAttribute("playsinline", "");
     video.style.display = "none";
-    video.addEventListener("loadedmetadata", () => _adoptAspect(node, node._ocioPrev, video.videoWidth, video.videoHeight));
+    video.addEventListener("loadedmetadata", () => { _ocioBusy(node._ocioPrev && node._ocioPrev.box, false); _adoptAspect(node, node._ocioPrev, video.videoWidth, video.videoHeight); });
     const canvas = document.createElement("canvas");
     canvas.style.cssText = "width:100%;height:100%;object-fit:contain;display:none;";   // FILL the box (see img note): scale the color-managed video to the node size
     const msg = document.createElement("div");   // "No media - unsupported format" placeholder (hidden by default)
@@ -633,6 +669,13 @@ function _drawTimeline(p) {
                 flush(s, prev);
             }
         }
+    } else if (p.video && p.video.buffered && p.video.duration > 0) {   // streamed video has no frame cache -> draw the browser's BUFFERED ranges as the teal bar, so the timeline still shows loading progress
+        const dur = p.video.duration, br = p.video.buffered;
+        g.fillStyle = "#25b3ac";
+        for (let i = 0; i < br.length; i++) {
+            const x0 = PAD + (br.start(i) / dur) * (Wd - 2 * PAD), x1 = PAD + (br.end(i) / dur) * (Wd - 2 * PAD);
+            g.fillRect(x0, H - 5, Math.max(1.5, x1 - x0), 3);
+        }
     }
     const maxLabels = Math.max(2, Math.floor((Wd - 2 * PAD) / 34)), step = Math.max(1, _niceStep(last + 1, maxLabels));
     g.fillStyle = "#7a8a99"; g.strokeStyle = "#3a3a3a"; g.font = "8px monospace"; g.textAlign = "center";
@@ -824,7 +867,7 @@ function _drawAudioMeter(p) {
 function updateReadPreview(node) {
     const p = ensureReadPreview(node);
     const src = (W(node, "source")?.value || "").trim();
-    if (!src) { _stopSeq(p); _stopViewport(p); _hideReadMsg(p); _blankReadImg(p); return; }
+    if (!src) { _stopSeq(p); _stopViewport(p); _hideReadMsg(p); _blankReadImg(p); _ocioBusy(p.box, false); return; }
     const seq = node._ocioSeq;
     // Format guard (Task F): a non-media / unsupported path (a .txt, code file, unknown container) never reaches
     // the decode routes - it would 404/400 and blank the box. Surface a readable message and stop. A folder path
@@ -832,9 +875,12 @@ function updateReadPreview(node) {
     if (!(seq && (seq.kind === "sequence" || seq.kind === "video")) && !isKnownMediaPath(src)) {
         _stopSeq(p); _stopViewport(p); _blankReadImg(p);
         _showReadMsg(p, "No media - unsupported format");
+        _ocioBusy(p.box, false);
         return;
     }
     _hideReadMsg(p);
+    _ocioBusy(p.box, true, "Processing…");                   // updating the preview (source / colorspace change, refresh) - cleared on img load / video ready
+    clearTimeout(p._busyTO); p._busyTO = setTimeout(() => _ocioBusy(p.box, false), 8000);   // safety: never leave the spinner stuck (the seq flipbook has no single "loaded" event)
     if (/\.(mov|mp4|mkv|avi|webm|mxf|m4v)$/i.test(src)) {
         _stopSeq(p); _startViewport(node, p, src);
     } else if (seq && seq.kind === "sequence") {
@@ -1574,7 +1620,8 @@ function _playerVideoRaf(node, p) {
 // av1) streams directly; a ProRes / DNxHR / MXF is transcoded ONCE to a cached H.264 proxy server-side (the front
 // end shows "Building…" and polls until ready). Sets p.video.src when resolved; bails if the source was switched.
 async function _resolveStreamSrc(node, p, path, meta) {
-    let url = "/ocio/stream?src=" + encodeURIComponent(path), building = false;
+    let url = "/ocio/stream?src=" + encodeURIComponent(path);
+    _ocioBusy(p.box, true, "Processing…");                   // spinner until the stream (or its transcoded proxy) is ready (cleared by playerVideoStart's onloadedmetadata)
     try {
         for (let i = 0; i < 900; i++) {                      // ~15 min ceiling (1 s poll); most proxies are a few seconds
             const r = await fetch("/ocio/proxy?src=" + encodeURIComponent(path));
@@ -1582,9 +1629,7 @@ async function _resolveStreamSrc(node, p, path, meta) {
             if (node._ocioPlayer !== p || p._vidPath !== path) return;   // source switched / node gone -> abandon
             if (d && d.ready && d.url) { url = d.url; break; }
             if (d && d.building) {
-                building = true;
-                p.canvas.style.display = "none"; p.empty.style.display = "flex";
-                if (p.empty.firstChild) p.empty.firstChild.textContent = "Building H.264 proxy (transcoding ProRes / DNxHR)…";
+                _ocioBusy(p.box, true, "Building H.264 proxy (transcoding ProRes / DNxHR)…");
                 await new Promise((res) => setTimeout(res, 1000));
                 continue;
             }
@@ -1593,7 +1638,7 @@ async function _resolveStreamSrc(node, p, path, meta) {
     } catch (e) { /* network error -> fall back to the direct URL */ }
     if (node._ocioPlayer !== p || p._vidPath !== path) return;
     p._vidUrl = url;
-    if (building) { p.empty.style.display = "none"; p.canvas.style.display = ""; }   // proxy ready -> back to the viewport
+    p.empty.style.display = "none"; p.canvas.style.display = "";   // ready -> show the viewport (the busy overlay clears on the <video> loadedmetadata)
     p.video.src = url;
 }
 function playerVideoStart(node, p, path, meta) {
@@ -1603,12 +1648,13 @@ function playerVideoStart(node, p, path, meta) {
         p._vidPath = path; p.video.loop = false; p.pb.playing = false; p.pb.dir = 1; p.pb.revAnchor = null;
         p.video.onseeked = () => { if (p.videoMode) _playerVideoDraw(p); };   // reverse / scrub: paint each settled seek
         p.video.onloadedmetadata = () => {
+            _ocioBusy(p.box, false);                         // stream ready -> clear the "Processing…" / "Building proxy…" overlay
             if (p.video.videoWidth) {
                 _adoptAspect(node, p, p.video.videoWidth, p.video.videoHeight);
                 renderPlayerMeta(node, { resolution: p.video.videoWidth + "x" + p.video.videoHeight, total: meta.frames || 0, cached: meta.frames || 0, fps: meta.fps || 24, input_cs: W(node, "input_colorspace")?.value });
             }
         };
-        p.video.onerror = () => { p.videoMode = false; p.canvas.style.display = "none"; p.empty.style.display = "flex"; p.empty.firstChild.textContent = "Video: browser cannot decode this codec (a ProRes / DNxHR proxy could not be built)"; };
+        p.video.onerror = () => { _ocioBusy(p.box, false); p.videoMode = false; p.canvas.style.display = "none"; p.empty.style.display = "flex"; p.empty.firstChild.textContent = "Video: browser cannot decode this codec (a ProRes / DNxHR proxy could not be built)"; };
         _resolveStreamSrc(node, p, path, meta);              // Ф3: stream a browser codec directly, or build+stream an H.264 proxy for ProRes/DNxHR/MXF
     }
     p.pb.seqMode = false;                                    // shared transport now runs the <video> clock
@@ -1681,7 +1727,7 @@ function ensurePlayer(node) {
     refreshBtn.style.cssText = "padding:5px 12px;border:0;border-radius:4px;background:#2b2b40;color:#cde;cursor:pointer;font:12px sans-serif;";
     refreshBtn.onmouseenter = () => refreshBtn.style.background = "#39395a";
     refreshBtn.onmouseleave = () => refreshBtn.style.background = "#2b2b40";
-    refreshBtn.onclick = () => { if (_playerTraceVideoSrc(node)) _playerVideoRefresh(node); else app.queuePrompt(0, 1); };   // video upstream -> stream it directly; else render (OCIOPlayer is OUTPUT_NODE)
+    refreshBtn.onclick = () => { _ocioBusy(node._ocioPlayer && node._ocioPlayer.box, true, "Processing…"); if (_playerTraceVideoSrc(node)) _playerVideoRefresh(node); else app.queuePrompt(0, 1); };   // video upstream -> stream it directly; else render (OCIOPlayer is OUTPUT_NODE)
     empty.append(emptyMsg, refreshBtn);
     // Auto-Refresh overlay: floats OVER the viewport when the node's INPUT changes (a node inserted / rewired
     // upstream, e.g. an OCIO Log Converter dropped in between) - the cached frames are then stale, so this prompts a
@@ -1692,7 +1738,7 @@ function ensurePlayer(node) {
     refreshOverlay.style.cssText = "position:absolute;top:6px;left:50%;transform:translateX(-50%);z-index:5;display:none;padding:4px 10px;border:0;border-radius:4px;background:rgba(40,40,64,0.92);color:#cde;cursor:pointer;font:11px sans-serif;box-shadow:0 1px 4px rgba(0,0,0,0.5);";
     refreshOverlay.onmouseenter = () => refreshOverlay.style.background = "rgba(57,57,90,0.95)";
     refreshOverlay.onmouseleave = () => refreshOverlay.style.background = "rgba(40,40,64,0.92)";
-    refreshOverlay.onclick = () => { const pp = node._ocioPlayer; if (pp && (pp.videoMode || _playerTraceVideoSrc(node))) _playerVideoRefresh(node); else app.queuePrompt(0, 1); };   // video upstream -> re-read the file; else render
+    refreshOverlay.onclick = () => { const pp = node._ocioPlayer; _ocioBusy(pp && pp.box, true, "Processing…"); if (pp && (pp.videoMode || _playerTraceVideoSrc(node))) _playerVideoRefresh(node); else app.queuePrompt(0, 1); };   // video upstream -> re-read the file; else render
     // Exposure control now lives HORIZONTALLY in the transport strip (between the viewport and the timeline), built
     // in _ensureTransport when p.isPlayer is set. No slider inside the viewport anymore. Owner spec 2026-07-03 (Task C).
     const video = document.createElement("video");           // Ф1b: hidden <video> for streaming a video source into the WebGL viewport (exposure + LUT shader)
@@ -1741,6 +1787,7 @@ function _playerLayout(node) {
 // onExecuted payload -> wire up the float viewport + metadata. Fields arrive as 1-element arrays (ComfyUI ui).
 function playerOnExecuted(node, message) {
     const p = ensurePlayer(node);
+    _ocioBusy(p.box, false);                                 // a render result arrived -> clear the "Processing…" overlay (video path re-shows "Building…" below if it must transcode a proxy)
     const first = (v) => Array.isArray(v) ? v[0] : v;
     // VIDEO source (a Load Video / OCIO Read video traced to a file): stream it client-side, NOT the float batch.
     // Phase 1a: capture the path + metadata; Phase 1b streams it via WebCodecs. For now show a placeholder + meta.
@@ -1823,6 +1870,24 @@ function renderPlayerMeta(node, data) {
 
 app.registerExtension({
     name: "ComfyUI-OCIO.io",
+    async setup() {
+        // Run / Queue feedback (owner spec 2026-07-03): show the "Processing…" spinner on an OCIO Read/Player
+        // viewport while THAT node is executing in the graph - covers the global Run button (the node's own Refresh
+        // button shows it immediately on click). Cleared when the node's result arrives (playerOnExecuted / img
+        // load / video ready) or when the queue goes idle / errors.
+        const api = app.api;
+        if (!api || !api.addEventListener) return;
+        const ocioNodes = () => ((app.graph && app.graph._nodes) || []).filter(n => n.type === "OCIOPlayer" || n.type === "OCIORead");
+        const hideAll = () => { for (const n of ocioNodes()) _ocioBusyNode(n, false); };
+        api.addEventListener("executing", (e) => {
+            const d = e && e.detail;
+            if (d == null) { hideAll(); return; }            // null detail = queue idle -> clear every OCIO spinner
+            const id = String(d);
+            for (const n of ocioNodes()) if (String(n.id) === id) _ocioBusyNode(n, true, "Processing…");
+        });
+        api.addEventListener("execution_error", hideAll);
+        api.addEventListener("execution_interrupted", hideAll);
+    },
     async beforeRegisterNodeDef(nodeType, nodeData) {
         // Uniform slot labels on EVERY OCIO node: an IMAGE carries a still, a sequence, or a video, so show the
         // short "img/seq/vid" on all IMAGE inputs (named image/images) and IMAGE outputs. Labels ONLY - the

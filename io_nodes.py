@@ -881,30 +881,71 @@ def _convert(image, in_cs, out_cs):
     return _apply_processor(image, cpu)
 
 
-def _lut_rgba8(in_cs, out_cs, size=33, raw=False):
-    """Bake the in_cs -> out_cs transform into an N x N x N RGBA8 3D LUT for the OCIO Read WebGL video
-    viewport. The browser plays the raw <video> and the shader samples this LUT, so a moving video reacts
-    to a colorspace change (the browser cannot apply OCIO to a <video> itself). Domain is [0,1]^3 (browser
-    decode is display-referred 8-bit); output is clamped to [0,1] so the texture is 8-bit and always
-    linear-filterable (no float-texture extension needed). Data is laid out for WebGL texImage3D: R (x)
-    varies fastest, then G (y), then B (z). raw, in==out, or OCIO-unavailable returns the identity ramp.
-    Returns (n, bytes)."""
+def _acescct_to_lin(x):
+    """ACEScct code value [0,1]-ish -> scene-linear (ACES spec, per channel). Used as a LOG SHAPER so an [0,1]
+    3D LUT can carry a scene-linear (HDR) signal: the LUT's sampling axis is ACEScct-coded, decoded to linear
+    here before the colorspace transform is baked in. The shader applies the matching lin->ACEScct encode."""
+    x = np.asarray(x, np.float32)
+    thr = 0.155251141552511                                  # ACEScct breakpoint (code value)
+    lin_low = (x - 0.0729055341958355) / 10.5402377416545
+    lin_hi = np.power(2.0, x * 17.52 - 9.72).astype(np.float32)
+    return np.where(x <= thr, lin_low, lin_hi).astype(np.float32)
+
+
+def _is_scene_linear(in_cs):
+    """Does this colorspace hold SCENE-LINEAR (HDR) values, so a [0,1] display LUT needs a log shaper first?
+    Ask OCIO's own encoding metadata (the studio config tags ACEScg / ACES2065-1 / Linear Rec.709 as
+    'scene-linear', displays as 'sdr-video', ACEScct as 'log') - robust, unlike guessing from the name. Falls
+    back to a name check only if the config exposes no encoding."""
+    if not in_cs:
+        return False
+    try:
+        _require_ocio()
+        cfg, _ = _resolve_config_keyed("")
+        if cfg is not None:
+            cs = cfg.getColorSpace(in_cs)
+            if cs is not None:
+                enc = (cs.getEncoding() or "").lower()
+                if enc:
+                    return enc == "scene-linear"
+    except Exception:
+        pass
+    low = in_cs.lower()                                      # fallback: only if encoding metadata is missing
+    return ("scene-linear" in low) or ("aces2065" in low) or ("acescg" in low) or low.startswith("lin") or ("linear" in low)
+
+
+def _lut_rgba8(in_cs, out_cs, size=33, raw=False, allow_shaper=False):
+    """Bake the in_cs -> out_cs transform into an N x N x N RGBA8 3D LUT for the WebGL viewports. The browser
+    plays raw pixels and the shader samples this LUT, so a moving image reacts to a colorspace change (the
+    browser cannot apply OCIO itself). Output is clamped to [0,1] so the texture is 8-bit and always
+    linear-filterable (no float-texture extension needed). Data is laid out for WebGL texImage3D: R (x) varies
+    fastest, then G (y), then B (z). raw, in==out, or OCIO-unavailable returns the identity ramp.
+
+    SHAPER (allow_shaper, for the FLOAT OCIO Player only): when the input is SCENE-LINEAR, a plain [0,1] domain
+    can only see linear 0..1 - it crushes highlights >1 and under-samples the shadow toe, so a scene-linear
+    Player looked FLAT (owner 2026-07-04). With allow_shaper the LUT's SAMPLING AXIS is ACEScct-coded: each
+    [0,1] grid coord is decoded to scene-linear via _acescct_to_lin BEFORE the transform, so the LUT spans the
+    full HDR range with log resolution. The shader must apply the matching lin->ACEScct encode. The OCIO Read
+    video viewport does NOT pass allow_shaper (its data is display-referred 8-bit), so it is unchanged.
+    Returns (n, bytes, shaper_on)."""
     import numpy as np
     n = int(size)
     lin = np.linspace(0.0, 1.0, n, dtype=np.float32)
     bb, gg, rr = np.meshgrid(lin, lin, lin, indexing="ij")   # C-order flatten -> index ((b*n+g)*n+r), r fastest
     grid = np.stack([rr, gg, bb], axis=-1).reshape(-1, 3).astype(np.float32)   # [n^3, 3] identity rgb
+    shaper = bool(allow_shaper) and (not raw) and _is_scene_linear(in_cs)
     if not raw and in_cs and out_cs and in_cs != out_cs:
         try:
             import torch
-            t = torch.from_numpy(np.ascontiguousarray(grid[None, :, None, :]))   # [1, n^3, 1, 3]
+            axis = _acescct_to_lin(grid) if shaper else grid   # shaper: LUT axis is ACEScct-coded -> decode to scene-linear before the transform
+            t = torch.from_numpy(np.ascontiguousarray(axis[None, :, None, :]))   # [1, n^3, 1, 3]
             grid = _convert(t, in_cs, out_cs)[0, :, 0, :].contiguous().numpy()
         except RuntimeError:
-            pass   # OCIO lib/config unavailable -> identity passthrough (same as _convert / _ocio_thumb)
+            shaper = False   # OCIO lib/config unavailable -> identity passthrough (same as _convert / _ocio_thumb)
     rgba = np.empty((grid.shape[0], 4), np.uint8)
     rgba[:, :3] = (np.clip(grid, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
     rgba[:, 3] = 255
-    return n, rgba.tobytes()
+    return n, rgba.tobytes(), shaper
 
 
 def _cs_combo(default):

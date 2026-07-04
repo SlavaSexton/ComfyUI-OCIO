@@ -1386,12 +1386,17 @@ function openFolderDialog(node) {   // Write output folder
 const _PLAYER_FRAG = `#version 300 es
 precision highp float; precision highp sampler3D;
 in vec2 uv; out vec4 o;
-uniform sampler2D uImg; uniform sampler3D uLut; uniform float uN; uniform float uOn; uniform float uExposure;
+uniform sampler2D uImg; uniform sampler3D uLut; uniform float uN; uniform float uOn; uniform float uExposure; uniform float uShaper;
+float lin2cct(float x){                                 // scene-linear -> ACEScct code (exact inverse of io_nodes._acescct_to_lin)
+  if (x <= 0.0078125) return 10.5402377416545 * x + 0.0729055341958355;
+  return (log2(max(x, 1e-10)) + 9.72) / 17.52;
+}
 void main(){
   vec4 src = texture(uImg, uv);
   vec3 c = src.rgb * exp2(uExposure);                 // VIEW-ONLY exposure, in the INPUT colorspace (see header note)
-  if (uOn > 0.5) {                                     // OCIO display LUT expects [0,1]; clamp for the sample fetch only
-    vec3 s = clamp(c, 0.0, 1.0) * ((uN - 1.0) / uN) + 0.5 / uN;
+  if (uOn > 0.5) {                                     // OCIO display LUT. Scene-linear input (uShaper) -> log-shape the coord so the [0,1] LUT spans HDR (no crushed highlights / flat toe); else sample linearly.
+    vec3 coords = (uShaper > 0.5) ? vec3(lin2cct(c.r), lin2cct(c.g), lin2cct(c.b)) : c;
+    vec3 s = clamp(coords, 0.0, 1.0) * ((uN - 1.0) / uN) + 0.5 / uN;
     c = texture(uLut, s).rgb;
   }
   o = vec4(c, 1.0);
@@ -1422,18 +1427,33 @@ function _playerInitGL(p) {
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
     gl.useProgram(prog);
     const locs = { uN: gl.getUniformLocation(prog, "uN"), uOn: gl.getUniformLocation(prog, "uOn"),
-                   uExposure: gl.getUniformLocation(prog, "uExposure") };
+                   uExposure: gl.getUniformLocation(prog, "uExposure"), uShaper: gl.getUniformLocation(prog, "uShaper") };
     gl.uniform1i(gl.getUniformLocation(prog, "uImg"), 0); gl.uniform1i(gl.getUniformLocation(prog, "uLut"), 1);
     p.gl = { gl, prog, locs, imgTex, lutTex };
     return p.gl;
 }
 async function _playerRefreshLut(node, p) {
     const g = p.gl; if (!g) return;
-    const q = new URLSearchParams({ in_cs: W(node, "input_colorspace")?.value || "", out_cs: W(node, "output_colorspace")?.value || "",
-        raw: W(node, "raw_data")?.value ? "1" : "0", size: "33" });
+    // 2026-07-04: pick the LUT's INPUT colorspace by viewport kind.
+    //  - STREAMING a raw video (p.videoMode): the <video> pixels are in the FILE's SOURCE colorspace - streaming
+    //    bypasses the upstream Read's conversion, so the Player's own input_colorspace does NOT describe this data.
+    //    Color-manage source -> player output (= what a direct Read(video)->Player must show; owner 2026-07-04: it
+    //    was applying player_input(ACES...) to raw sRGB video -> lifted/flat). Source = the upstream Read's input_cs.
+    //  - FLOAT viewport: the cached frames ARE in the Player's input_colorspace (the Read already converted them),
+    //    and may be scene-linear -> ask for the shaper (float=1).
+    let inCs = W(node, "input_colorspace")?.value || "";
+    let floatFlag = "1";
+    if (p.videoMode) {
+        const r = (typeof findUpstreamRead === "function") ? findUpstreamRead(node) : null;
+        if (r) inCs = W(r, "input_colorspace")?.value || inCs;   // the raw stream is in the source's colorspace
+        floatFlag = "0";                                         // display-referred 8-bit video -> no scene-linear log shaper
+    }
+    const q = new URLSearchParams({ in_cs: inCs, out_cs: W(node, "output_colorspace")?.value || "",
+        raw: W(node, "raw_data")?.value ? "1" : "0", size: "33", float: floatFlag });
     try {
         const r = await fetch("/ocio/lut?" + q.toString()); if (!r.ok) throw new Error("lut " + r.status);
         const n = parseInt(r.headers.get("X-Lut-Size") || "33", 10); const buf = new Uint8Array(await r.arrayBuffer());
+        p.shaper = (r.headers.get("X-Shaper") === "1") ? 1 : 0;   // backend decided (scene-linear input) -> shader applies lin->ACEScct before the LUT
         const gl = g.gl; gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_3D, g.lutTex);
         gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA8, n, n, n, 0, gl.RGBA, gl.UNSIGNED_BYTE, buf);
         p.lutN = n; p.lutReady = true; _playerDraw(p);
@@ -1451,6 +1471,7 @@ function _playerDraw(p) {
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_3D, g.lutTex);
     gl.uniform1f(g.locs.uN, p.lutN || 33); gl.uniform1f(g.locs.uOn, p.lutReady ? 1 : 0);
     gl.uniform1f(g.locs.uExposure, p.exposure || 0);
+    gl.uniform1f(g.locs.uShaper, p.shaper || 0);          // scene-linear input -> lin->ACEScct shaper before the LUT (fixes the flat Player)
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 // ---- Player frame cache: each frame is its own RGBA16F GPU texture kept in a bounded LRU, so playback and scrub
@@ -1623,6 +1644,7 @@ function _playerVideoDraw(p) {
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_3D, g.lutTex);
     gl.uniform1f(g.locs.uN, p.lutN || 33); gl.uniform1f(g.locs.uOn, p.lutReady ? 1 : 0);
     gl.uniform1f(g.locs.uExposure, p.exposure || 0);
+    gl.uniform1f(g.locs.uShaper, p.shaper || 0);          // scene-linear input -> lin->ACEScct shaper before the LUT (fixes the flat Player)
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 function _playerVideoRaf(node, p) {

@@ -248,16 +248,17 @@ try:
         q = request.rel_url.query
         in_cs, out_cs = q.get("in_cs", ""), q.get("out_cs", "")
         raw = q.get("raw", "0") == "1"
+        allow_shaper = q.get("float", "0") == "1"          # only the FLOAT OCIO Player asks for the scene-linear log shaper
         try:
             size = max(2, min(65, int(q.get("size", "33"))))
         except (TypeError, ValueError):
             size = 33
         try:
-            n, data = _lut_rgba8(in_cs, out_cs, size, raw)
+            n, data, shaper = _lut_rgba8(in_cs, out_cs, size, raw, allow_shaper=allow_shaper)
         except Exception as e:
             return web.json_response({"error": str(e)[:250]}, status=400)
         return web.Response(body=data, content_type="application/octet-stream",
-                            headers={"X-Lut-Size": str(n), "Cache-Control": "no-store"})
+                            headers={"X-Lut-Size": str(n), "X-Shaper": "1" if shaper else "0", "Cache-Control": "no-store"})
 
     @server.PromptServer.instance.routes.get("/ocio/stream")
     async def _ocio_stream(request):

@@ -288,8 +288,15 @@ def _seq_fps(files):
     return _SEQ_FPS_DEFAULT
 
 
+# A whole 4K clip decoded to a raw batch is enormous (65 s x 3840x2160 x rgb48le ~= 155 GB) - piping that through
+# subprocess stdout OOMs / hangs the box. Cap the raw decode to this many bytes; adapts to resolution (fewer 4K
+# frames, more 1080p). An over-budget / unbounded request returns the first N that fit + info['capped']=True.
+_VIDEO_DECODE_BUDGET = 2 * 1024 ** 3   # ~2 GB raw rgb48le (~43 frames at 4K, ~160 at 1080p): OOM-safe + bounded decode time (a 4K frame is ~0.5 s to pipe as rgb48le, so this stays well under a minute)
 def _read_video(path, frame_start, frame_count):
-    """Decode a video -> float32 RGB [N,H,W,3] (0..1) via ffmpeg piping 16-bit rgb48le."""
+    """Decode a video -> float32 RGB [N,H,W,3] (0..1) via ffmpeg piping 16-bit rgb48le, from frame_start. BOUNDED:
+    never buffers more than _VIDEO_DECODE_BUDGET of raw pixels (a long 4K clip would otherwise OOM); an unbounded
+    or over-budget request is capped, info['capped']=True. Uses -ss input seeking so a deep frame_start does not
+    decode the whole head into memory."""
     _require_ffmpeg()
     probe = subprocess.run([_FFPROBE, "-v", "error", "-select_streams", "v:0",
                             "-show_entries", "stream=width,height,nb_frames,codec_name,r_frame_rate,avg_frame_rate",
@@ -298,10 +305,16 @@ def _read_video(path, frame_start, frame_count):
     w, h = int(info.get("width", 0) or 0), int(info.get("height", 0) or 0)
     if not (w and h):
         raise RuntimeError(f"ffprobe could not read {path}: {probe.stderr[:200]}")
-    cmd = [_FFMPEG, "-v", "error", "-i", path]
-    if frame_count > 0:
-        cmd += ["-frames:v", str(frame_start + frame_count)]
-    cmd += ["-f", "rawvideo", "-pix_fmt", "rgb48le", "-"]
+    per_frame = max(1, w * h * 3 * 2)                       # raw rgb48le bytes per frame
+    cap = max(1, int(_VIDEO_DECODE_BUDGET // per_frame))    # frames that fit the budget at this resolution
+    want = frame_count if frame_count > 0 else 10 ** 9      # 0 = unbounded (the whole clip)
+    eff = min(want, cap)
+    capped = eff < want
+    fps = _video_fps(info) or 24.0
+    cmd = [_FFMPEG, "-v", "error"]
+    if frame_start > 0:
+        cmd += ["-ss", f"{frame_start / fps:.6f}"]          # seek so we buffer only [start, start+eff), not the head
+    cmd += ["-i", path, "-frames:v", str(eff), "-f", "rawvideo", "-pix_fmt", "rgb48le", "-"]
     proc = subprocess.run(cmd, capture_output=True)
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg decode failed: {proc.stderr.decode('utf-8', 'ignore')[:300]}")
@@ -310,9 +323,11 @@ def _read_video(path, frame_start, frame_count):
     if n == 0:
         raise RuntimeError("ffmpeg returned no frames")
     arr = buf[: n * w * h * 3].reshape(n, h, w, 3).astype(np.float32) / 65535.0
-    if frame_start:
-        arr = arr[frame_start:]
-    info["fps"] = _video_fps(info)
+    info["fps"] = fps
+    info["capped"] = capped
+    if capped:
+        print(f"[OCIO] video decode capped at {eff} frames (of {want if want < 10**9 else info.get('nb_frames','?')}) "
+              f"to fit the ~{_VIDEO_DECODE_BUDGET // 1024**3} GB budget at {w}x{h}; set start_frame/end_frame to view another range.")
     return arr, info
 
 

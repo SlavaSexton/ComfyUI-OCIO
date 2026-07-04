@@ -295,10 +295,10 @@ def _video_frame_count(info):
 
 def _video_input_cs(info):
     """OCIO input colorspace for a video, mapped from its ffprobe color metadata (color_primaries /
-    color_transfer / color_space), GUARDED to names that exist in the active config; falls back to the working
-    default when the tags are absent / unknown / unmappable. Owner ask 2026-07-03: read the colorspace from the
-    video metadata instead of always assuming sRGB. A bt709-tagged SDR video is Rec.709 display-referred
-    (BT.1886), not the sRGB piecewise curve; PQ / HLG transfers map to the Rec.2100 displays. Added 2026-07-03."""
+    color_transfer / color_space), GUARDED to names that exist in the active config. Only overrides the working
+    sRGB - Display default for HDR / wide-gamut sources (PQ / HLG / bt2020), where the tag genuinely matters.
+    Owner ask 2026-07-04: ordinary bt709 mp4 / mov are internet deliverables (Adobe Premiere -> web), so they
+    KEEP sRGB - Display, NOT broadcast BT.1886 Rec.709 - most viewers are on sRGB. Added 2026-07-03; SDR->sRGB 2026-07-04."""
     prim = (info.get("color_primaries", "") or "").lower()
     trc = (info.get("color_transfer", "") or "").lower()
     spc = (info.get("color_space", "") or "").lower()
@@ -313,14 +313,10 @@ def _video_input_cs(info):
         cs = pick("Rec.2100-PQ - Display", "ST2084-P3-D65 - Display")
     elif trc == "arib-std-b67":                                  # HLG HDR transfer
         cs = pick("Rec.2100-HLG - Display")
-    elif trc == "iec61966-2-1":                                  # explicit sRGB transfer
-        cs = pick("sRGB - Display")
-    elif prim == "bt2020" or spc in ("bt2020nc", "bt2020c"):
+    elif prim == "bt2020" or spc in ("bt2020nc", "bt2020c"):     # wide-gamut UHD
         cs = pick("Rec.2100-PQ - Display", "Rec.2100-HLG - Display")
-    elif prim == "bt709" or spc == "bt709":                      # Rec.709 gamut SDR -> BT.1886 display
-        cs = pick("Rec.1886 Rec.709 - Display", "Gamma 2.2 Rec.709 - Display", "sRGB - Display")
-    elif prim in ("smpte170m", "bt470bg", "bt601"):              # SD Rec.601 -> nearest available Rec.709 display
-        cs = pick("Rec.1886 Rec.709 - Display", "sRGB - Display")
+    # SDR Rec.709 / Rec.601 / plain sRGB: fall through to WORKING (sRGB - Display) - the internet-delivery default
+    # ordinary mp4/mov users expect. The widget stays editable if a bt709 camera plate really wants Rec.709.
     return cs or WORKING
 
 

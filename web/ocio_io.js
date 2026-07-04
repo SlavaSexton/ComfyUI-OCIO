@@ -1604,17 +1604,27 @@ function playerVideoStart(node, p, path, meta) {
 // the input dir by /ocio/stream) or an OCIO Read with a video 'source'. Lets the Player RE-READ the current file on
 // Refresh - so changing the Load Video file (a widget change, NOT a connection change) is picked up without recreating
 // the node, and without a backend round-trip that ComfyUI might cache. Added 2026-07-03.
-function _playerTraceVideoSrc(node, seen) {
+// 2026-07-03 (BUG B): OCIO color-processing node types (NOT the sources Read/LoadVideo, NOT the Player). If ANY of
+// these sits between a video source and the Player, streaming the raw source file would silently BYPASS its color
+// transform - the Player would show the untouched video, ignoring the intermediate node. So when one is crossed, the
+// trace returns null and the caller falls through to a normal render of the PROCESSED (materialized, capped) batch.
+const OCIO_PROC_TYPES = new Set(["OCIOLogConvert", "OCIOColorSpace", "OCIODisplay", "OCIOCDLTransform",
+    "OCIOFileTransform", "OCIOLookTransform", "OCIOGrade", "OCIOGradeMatch", "OCIOApplyGrade"]);
+function _playerTraceVideoSrc(node, seen, crossedProc) {
     try {
         seen = seen || new Set();
         if (!node || seen.has(node.id)) return null;
         seen.add(node.id);
-        if (node.type === "LoadVideo") { const w = W(node, "file"); return (w && w.value) ? String(w.value) : null; }
-        if (node.type === "OCIORead") { const s = W(node, "source")?.value; return (s && /\.(mov|mp4|mkv|avi|webm|mxf|m4v)$/i.test(String(s))) ? String(s) : null; }
+        // A video source is streamable ONLY if reached with NO processing node crossed (crossedProc falsy). With a
+        // processing node in between, return null -> the caller renders the PROCESSED batch instead of the raw stream.
+        if (node.type === "LoadVideo") { if (crossedProc) return null; const w = W(node, "file"); return (w && w.value) ? String(w.value) : null; }
+        if (node.type === "OCIORead") { if (crossedProc) return null; const s = W(node, "source")?.value; return (s && /\.(mov|mp4|mkv|avi|webm|mxf|m4v)$/i.test(String(s))) ? String(s) : null; }
         for (const inp of (node.inputs || [])) {
             if (inp.link == null) continue;
             const link = app.graph.links[inp.link]; if (!link) continue;
-            const f = _playerTraceVideoSrc(app.graph.getNodeById(link.origin_id), seen);
+            const origin = app.graph.getNodeById(link.origin_id);
+            const nextCrossed = crossedProc || (origin && OCIO_PROC_TYPES.has(origin.type));   // crossing INTO a color-processing node taints the stream
+            const f = _playerTraceVideoSrc(origin, seen, nextCrossed);
             if (f) return f;
         }
     } catch (e) { console.warn("[OCIO] video trace failed:", e); }   // never let a graph-walk error kill the Refresh onclick -> it falls through to a normal render
@@ -1683,7 +1693,7 @@ function ensurePlayer(node) {
             const pp = node._ocioPlayer;
             if (type === 1 && pp) {
                 if (_playerTraceVideoSrc(node)) _playerVideoRefresh(node);                         // a video source (Load Video / Read) is upstream -> stream the current file
-                else if (pp.player && pp.refreshOverlay) pp.refreshOverlay.style.display = "";      // a float source changed -> prompt a re-render
+                else if ((pp.player || pp.videoMode) && pp.refreshOverlay) pp.refreshOverlay.style.display = "";   // a float source changed, OR a processing node was inserted into a video chain (trace now null) -> prompt a re-render
             }
         } catch (e) {}
         return orig && orig.apply(this, arguments);

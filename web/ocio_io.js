@@ -92,18 +92,21 @@ const CODEC_LABEL = {
     dnxhr_hq: "DNxHR HQ", h264: "H.264", hevc: "HEVC",
 };
 
-// hide / show a widget (type swap + zero height; survives older and newer ComfyUI). Used by OCIO Write only.
-// OCIO Read uses setVisibleWidgets below instead (widget.hidden + zeroed computeSize, no type swap) - see
-// that function for why (serialization, not just layout, is the reason the two nodes differ here).
-const OCIO_HIDDEN = "ocio-hidden";
+// hide / show ONE widget with a TRUE collapse (no blank row). 2026-07-04: switched off the old OCIO_HIDDEN
+// type-swap - it left a blank row on Vue-nodes frontends (they drop a row only via options.hidden / v-if, not a
+// type change) AND risked blanking the widget value on serialize. Now identical to setVisibleWidgets' per-widget
+// logic: widget.hidden + options.hidden (dual-set - canvas reads .hidden, Vue reads options.hidden) + a zeroed
+// computeSize, NO type swap (so the value keeps serializing). Used by OCIO Write's per-container visibility.
 function showWidget(node, w, visible) {
     if (!w) return;
+    if (!w.options) w.options = {};
     if (visible) {
-        if (w.type === OCIO_HIDDEN) { w.type = w._oType; w.computeSize = w._oCompute; }
-        w.hidden = false;
-    } else if (w.type !== OCIO_HIDDEN) {
-        w._oType = w.type; w._oCompute = w.computeSize;
-        w.type = OCIO_HIDDEN; w.computeSize = () => [0, -4]; w.hidden = true;
+        w.hidden = false; w.options.hidden = false;
+        if (w._ocioCompute) { w.computeSize = w._ocioCompute; delete w._ocioCompute; }
+    } else {
+        w.hidden = true; w.options.hidden = true;
+        if (!w._ocioCompute) w._ocioCompute = w.computeSize;
+        w.computeSize = () => [0, 0];
     }
 }
 
@@ -2104,7 +2107,7 @@ app.registerExtension({
                         if (pw && pw.value !== "none") { pw.value = "none"; node.setDirtyCanvas(true, true); }
                     });
                 }
-                const _rn = W(this, "render_nonce"); if (_rn) { _rn.hidden = true; _rn.computeSize = () => [0, -4]; }   // internal cache-buster, hidden (like the Player's base)
+                showWidget(this, W(this, "render_nonce"), false);   // internal cache-buster - hidden with a true collapse (no blank row)
                 this.addWidget("button", "📁 choose output folder", null, () => openFolderDialog(this), { serialize: false });
                 this.addWidget("button", "▶ Render", null, () => ocioWriteRender(this), { serialize: false });
                 setTimeout(() => { applyContainer(); syncWriteFromUpstream(node); resolveAutoProfile(node); }, 0);
@@ -2183,8 +2186,7 @@ app.registerExtension({
                 for (const w of ["fps", "start_frame", "end_frame"]) {
                     onChange(this, w, () => { const p = this._ocioPlayer; if (p) { _syncTransport(p); } });
                 }
-                const _bw = W(this, "base");                          // 'base' = hidden frontend->backend channel (source first-frame number). Hide WITHOUT the type-swap: showWidget's type swap breaks value serialization -> '' -> crashed prompt validation. hidden+zeroed computeSize preserves the value (same as OCIO Read's setVisibleWidgets).
-                if (_bw) { _bw.hidden = true; _bw.computeSize = () => [0, -4]; }
+                showWidget(this, W(this, "base"), false);            // 'base' = hidden frontend->backend channel (source first-frame number). showWidget now hides WITHOUT a type-swap (options.hidden + zeroed computeSize), so the value keeps serializing (the old type-swap once blanked it -> '' -> crashed prompt validation).
                 _setVideoOutput(this, false);                        // R1: hide the VIDEO output until a video is rendered (playerOnExecuted re-adds it)
                 this._ocioAllWidgets = this.widgets.slice();
                 return r;

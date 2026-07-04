@@ -1801,6 +1801,7 @@ function ensurePlayer(node) {
         try {
             const pp = node._ocioPlayer;
             if (type === 1 && pp) {
+                pp._lastExecSig = null;                                                            // input re-wired -> force the next render to re-init the viewport (don't skip as "unchanged")
                 if (_playerTraceVideoSrc(node)) _playerVideoRefresh(node);                         // a video source (Load Video / Read) is upstream -> stream the current file
                 else if ((pp.player || pp.videoMode) && pp.refreshOverlay) pp.refreshOverlay.style.display = "";   // a float source changed, OR a processing node was inserted into a video chain (trace now null) -> prompt a re-render
             }
@@ -1827,6 +1828,16 @@ function playerOnExecuted(node, message) {
     const p = ensurePlayer(node);
     _ocioBusy(p.box, false);                                 // a render result arrived -> clear the "Processing…" overlay (video path re-shows "Building…" below if it must transcode a proxy)
     const first = (v) => Array.isArray(v) ? v[0] : v;
+    // 2026-07-04: SKIP the re-init (which restarts playback / re-caches the batch / re-fetches frames) when this
+    // execution result is IDENTICAL to the last. Rendering ANOTHER node in the same graph re-runs this OUTPUT_NODE
+    // viewer with the same result, and the viewer must NOT "re-play itself" on every unrelated render (owner). A real
+    // change (new source, new size / frame count) has a different signature and still re-inits; onConnectionsChange
+    // clears _lastExecSig so a genuine re-wire always re-inits too.
+    const _sig = JSON.stringify([first(message && message.video_path), first(message && message.player_dir),
+        first(message && message.player_total), first(message && message.player_cached),
+        first(message && message.resolution), first(message && message.input_cs)]);
+    if (_sig === p._lastExecSig && (p.player || p.videoMode)) return;   // unchanged -> leave the current viewport playing
+    p._lastExecSig = _sig;
     // VIDEO source (a Load Video / OCIO Read video traced to a file): stream it client-side, NOT the float batch.
     // Phase 1a: capture the path + metadata; Phase 1b streams it via WebCodecs. For now show a placeholder + meta.
     const vpath = first(message && message.video_path);

@@ -312,6 +312,35 @@ try:
         except Exception as e:
             return web.json_response({"ready": False, "error": str(e)[:200]}, status=500)
 
+    @server.PromptServer.instance.routes.post("/ocio/write_paths")
+    async def _ocio_write_paths(request):
+        """The output file(s) an OCIO Write would create for the given params + which already EXIST on disk - drives
+        the Render button's overwrite confirmation. Same local single-user trust as /ocio/thumb. Added 2026-07-04."""
+        import glob as _glob
+        import re as _re
+        from .io_nodes import _write_output_paths
+        try:
+            d = await request.json()
+        except Exception:
+            return web.json_response({"error": "bad json"}, status=400)
+        root = folder_paths.get_output_directory() if folder_paths else os.getcwd()
+        of = str(d.get("output_folder", "") or "").strip()
+        folder = root if not of else (of if os.path.isabs(of) else os.path.join(root, of))
+        try:
+            first = _write_output_paths(folder, d.get("filename", ""), d.get("container", "sequence"),
+                                        d.get("still_format", "exr"), d.get("video_codec", "prores_4444"),
+                                        d.get("output_colorspace", ""), bool(d.get("raw_data")),
+                                        bool(d.get("colorspace_in_name", True)), int(d.get("start_number", 1) or 1), 1)[0]
+        except Exception as e:
+            return web.json_response({"error": str(e)[:200]}, status=400)
+        existing = []
+        if d.get("container") == "sequence":
+            pattern = _re.sub(r"\.\d{4}(\.[^.]+)$", r".*\1", first)         # <stem>.0001.exr -> <stem>.*.exr (all existing frames of this stem)
+            existing = sorted(p for p in _glob.glob(pattern) if os.path.isfile(p))
+        elif os.path.isfile(first):
+            existing = [first]
+        return web.json_response({"first": first, "existing": existing})
+
     @server.PromptServer.instance.routes.get("/ocio/floatframe")
     async def _ocio_floatframe(request):
         """One cached HALF-float RGBA frame for the OCIO Player's WebGL float viewport: raw half-float bytes +

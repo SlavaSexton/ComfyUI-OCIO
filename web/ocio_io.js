@@ -1881,6 +1881,32 @@ function renderPlayerMeta(node, data) {
     box.innerHTML = PLAYER_META_ROWS.map(([k, label]) => `<div>${label}: ${values[k]}</div>`).join("");
 }
 
+// OCIO Write "Render" button (owner spec 2026-07-04): (1) overwrite guard - ask the server which output files this
+// Write would create and which already exist; if any exist, confirm before overwriting (Cancel aborts). (2) bump the
+// hidden render_nonce so ComfyUI does NOT cache an identical Write - a repeat render to the SAME path actually
+// re-writes (the reported bug: 2nd click / after deleting the file wrote nothing). window.confirm = the standard
+// Overwrite / Cancel dialog the owner asked for.
+async function ocioWriteRender(node) {
+    try {
+        const params = {
+            output_folder: W(node, "output_folder")?.value || "", filename: W(node, "filename")?.value || "",
+            container: W(node, "container")?.value, still_format: W(node, "still_format")?.value,
+            video_codec: W(node, "video_codec")?.value, output_colorspace: W(node, "output_colorspace")?.value,
+            raw_data: W(node, "raw_data")?.value ? 1 : 0, colorspace_in_name: W(node, "colorspace_in_name")?.value ? 1 : 0,
+            start_number: parseInt(W(node, "start_number")?.value, 10) || 1,
+        };
+        const r = await fetch("/ocio/write_paths", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(params) });
+        const d = await r.json();
+        if (d && Array.isArray(d.existing) && d.existing.length) {
+            const n = d.existing.length, sample = String(d.existing[0]).split(/[\\/]/).pop();
+            const msg = n === 1 ? `File already exists:\n\n${sample}\n\nOverwrite it?`
+                                : `${n} files already exist (e.g. ${sample}).\n\nOverwrite them?`;
+            if (!window.confirm(msg)) return;                     // Cancel -> abort the render, write nothing
+        }
+    } catch (e) { /* existence probe failed -> don't block the render */ }
+    const w = W(node, "render_nonce"); if (w) w.value = String(Date.now());   // bump -> ComfyUI cache miss -> re-writes even to the same path
+    app.queuePrompt(0, 1);
+}
 app.registerExtension({
     name: "ComfyUI-OCIO.io",
     async setup() {
@@ -2078,8 +2104,9 @@ app.registerExtension({
                         if (pw && pw.value !== "none") { pw.value = "none"; node.setDirtyCanvas(true, true); }
                     });
                 }
+                const _rn = W(this, "render_nonce"); if (_rn) { _rn.hidden = true; _rn.computeSize = () => [0, -4]; }   // internal cache-buster, hidden (like the Player's base)
                 this.addWidget("button", "📁 choose output folder", null, () => openFolderDialog(this), { serialize: false });
-                this.addWidget("button", "▶ Render", null, () => app.queuePrompt(0, 1), { serialize: false });
+                this.addWidget("button", "▶ Render", null, () => ocioWriteRender(this), { serialize: false });
                 setTimeout(() => { applyContainer(); syncWriteFromUpstream(node); resolveAutoProfile(node); }, 0);
                 return r;
             };

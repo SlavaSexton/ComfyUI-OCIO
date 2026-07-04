@@ -976,6 +976,24 @@ def _cs_tag(name):
     return re.sub(r"[^a-z0-9]+", "_", low).strip("_")[:24]
 
 
+def _write_output_paths(folder, filename, container, still_format, video_codec, output_colorspace,
+                        raw_data, colorspace_in_name, start_number, count):
+    """The exact output file path(s) OCIOWrite.write() creates for these params - SINGLE SOURCE OF TRUTH for both
+    write() and the /ocio/write_paths overwrite check (so the "file exists?" prompt checks the real names). count =
+    number of frames to write (1 for a still / video). Added 2026-07-04."""
+    name = (str(filename) if filename is not None else "").strip() or "ocio_out"
+    tag = ("raw" if raw_data else _cs_tag(output_colorspace)) if colorspace_in_name else ""
+    stem = f"{name}_{tag}" if tag else name
+    if container == "video":
+        ext = ".mov" if str(video_codec).startswith(("prores", "dnxhr")) else ".mp4"
+        return [os.path.join(folder, stem + ext)]
+    if container == "still image":
+        return [os.path.join(folder, f"{stem}.{_STILL_EXT[still_format]}")]
+    ext = _STILL_EXT[still_format]                                          # sequence: 4-digit numbered frames
+    sn = int(start_number)
+    return [os.path.join(folder, f"{stem}.{sn + i:04d}.{ext}") for i in range(max(1, int(count)))]
+
+
 class OCIOWrite:
     """Color-manage an IMAGE batch and write it (Nuke: Write).
 
@@ -1030,6 +1048,8 @@ class OCIOWrite:
             "alpha": ("MASK", {"tooltip": "Optional alpha channel -> RGBA (EXR / TIFF / PNG; ignored for JPEG). Wire OCIO Read's alpha output, or any MASK."}),
             "fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 240.0, "step": 0.001,
                               "tooltip": "Video frame rate. Wire OCIO Read's fps output here to carry the source rate."}),
+            "render_nonce": ("STRING", {"default": "",
+                             "tooltip": "(internal, hidden) The Render button bumps this so a repeat render to the SAME path actually re-writes - ComfyUI would otherwise cache an identical Write and skip it (no file written on the 2nd click). STRING so a blank value can never fail validation."}),
         }}
 
     RETURN_TYPES = ("STRING",)
@@ -1047,7 +1067,7 @@ class OCIOWrite:
     def write(self, images, profile, from_colorspace, output_colorspace, container, still_format, video_codec,
               bit_depth, auto_range, first_frame, last_frame, start_number, source_start, raw_data,
               output_folder, filename, colorspace_in_name=True, auto_colorspace=True, compression="zip",
-              alpha=None, fps=24.0):
+              alpha=None, fps=24.0, render_nonce=""):   # render_nonce: cache-buster, bumped by the Render button so a repeat write happens (see INPUT_TYPES)
         _LOG_PROFILES = {"LumiPic LogC3 (Flux/Qwen)": _logc3_to_lin, "LumiPic V10 LogC4": _logc4_to_lin}
         if profile in _LOG_PROFILES and not raw_data:
             arr_lin = images.detach().cpu().numpy().astype(np.float32).copy()
@@ -1072,11 +1092,12 @@ class OCIOWrite:
         n = arr.shape[0]
         folder = self._resolve_folder(output_folder)
         os.makedirs(folder, exist_ok=True)
-        name = filename.strip() or "ocio_out"
         cs = None if raw_data else output_colorspace                       # colorspace stamped in metadata
         base = source_start if source_start else 1                         # logical number of the first batch frame
-        tag = ("raw" if raw_data else _cs_tag(output_colorspace)) if colorspace_in_name else ""
-        stem = f"{name}_{tag}" if tag else name                            # e.g. name_acescg.0001.exr
+        # output paths via the shared _write_output_paths (same names the /ocio/write_paths overwrite check uses)
+        def _wp(cnt):
+            return _write_output_paths(folder, filename, container, still_format, video_codec, output_colorspace,
+                                       raw_data, colorspace_in_name, start_number, cnt)
 
         def alpha_of(src_a, i, ref):
             if src_a is None:
@@ -1085,9 +1106,8 @@ class OCIOWrite:
             return fr if fr.shape[:2] == ref.shape[:2] else None
 
         if container == "still image":
-            ext = _STILL_EXT[still_format]
             idx = min(max(0, first_frame - base), n - 1)                   # frame number -> batch index
-            saved = os.path.join(folder, f"{stem}.{ext}")
+            saved = _wp(1)[0]
             _save_still(saved, arr[idx], still_format, bit_depth, alpha_of(a_arr, idx, arr[idx]), cs, compression)
             count, preview = 1, arr[idx]
         else:
@@ -1097,16 +1117,14 @@ class OCIOWrite:
             if sub.shape[0] == 0:
                 raise RuntimeError(f"nothing in write range [{first_frame}-{last_frame}] (input has {n} frame(s))")
             if container == "video":
-                ext = ".mov" if video_codec.startswith(("prores", "dnxhr")) else ".mp4"
-                saved = os.path.join(folder, stem + ext)
+                saved = _wp(1)[0]
                 save_video(sub, saved, video_codec, float(fps) if fps and fps > 0 else 24.0,
                            None if raw_data else output_colorspace)
             else:                                                          # sequence
-                ext = _STILL_EXT[still_format]
+                paths = _wp(sub.shape[0])
                 for i in range(sub.shape[0]):
-                    _save_still(os.path.join(folder, f"{stem}.{start_number + i:04d}.{ext}"),
-                                sub[i], still_format, bit_depth, alpha_of(sub_a, i, sub[i]), cs, compression)
-                saved = os.path.join(folder, f"{stem}.{start_number:04d}.{ext}")
+                    _save_still(paths[i], sub[i], still_format, bit_depth, alpha_of(sub_a, i, sub[i]), cs, compression)
+                saved = paths[0]
             count, preview = sub.shape[0], sub[0]
 
         return {"ui": {"images": self._preview(preview),

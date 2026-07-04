@@ -1570,13 +1570,37 @@ function _playerVideoRaf(node, p) {
     };
     p.raf = requestAnimationFrame(loop);
 }
+// 2026-07-03 (Ф3): resolve the streamable URL for a video source via /ocio/proxy. A browser codec (h264/vp8/vp9/
+// av1) streams directly; a ProRes / DNxHR / MXF is transcoded ONCE to a cached H.264 proxy server-side (the front
+// end shows "Building…" and polls until ready). Sets p.video.src when resolved; bails if the source was switched.
+async function _resolveStreamSrc(node, p, path, meta) {
+    let url = "/ocio/stream?src=" + encodeURIComponent(path), building = false;
+    try {
+        for (let i = 0; i < 900; i++) {                      // ~15 min ceiling (1 s poll); most proxies are a few seconds
+            const r = await fetch("/ocio/proxy?src=" + encodeURIComponent(path));
+            const d = await r.json().catch(() => ({}));
+            if (node._ocioPlayer !== p || p._vidPath !== path) return;   // source switched / node gone -> abandon
+            if (d && d.ready && d.url) { url = d.url; break; }
+            if (d && d.building) {
+                building = true;
+                p.canvas.style.display = "none"; p.empty.style.display = "flex";
+                if (p.empty.firstChild) p.empty.firstChild.textContent = "Building H.264 proxy (transcoding ProRes / DNxHR)…";
+                await new Promise((res) => setTimeout(res, 1000));
+                continue;
+            }
+            break;                                           // error/unknown -> fall back to the direct URL (onerror explains if truly undecodable)
+        }
+    } catch (e) { /* network error -> fall back to the direct URL */ }
+    if (node._ocioPlayer !== p || p._vidPath !== path) return;
+    p._vidUrl = url;
+    if (building) { p.empty.style.display = "none"; p.canvas.style.display = ""; }   // proxy ready -> back to the viewport
+    p.video.src = url;
+}
 function playerVideoStart(node, p, path, meta) {
     _playerStop(p);                                          // leave the float path (cancels its rAF, frees textures)
     p.videoMode = true; p.player = null;
-    const url = "/ocio/stream?src=" + encodeURIComponent(path);
-    if (p._vidUrl !== url) {
-        p._vidUrl = url; p.video.loop = false; p.pb.playing = false; p.pb.dir = 1; p.pb.revAnchor = null;
-        p.video.src = url;
+    if (p._vidPath !== path) {
+        p._vidPath = path; p.video.loop = false; p.pb.playing = false; p.pb.dir = 1; p.pb.revAnchor = null;
         p.video.onseeked = () => { if (p.videoMode) _playerVideoDraw(p); };   // reverse / scrub: paint each settled seek
         p.video.onloadedmetadata = () => {
             if (p.video.videoWidth) {
@@ -1584,7 +1608,8 @@ function playerVideoStart(node, p, path, meta) {
                 renderPlayerMeta(node, { resolution: p.video.videoWidth + "x" + p.video.videoHeight, total: meta.frames || 0, cached: meta.frames || 0, fps: meta.fps || 24, input_cs: W(node, "input_colorspace")?.value });
             }
         };
-        p.video.onerror = () => { p.videoMode = false; p.canvas.style.display = "none"; p.empty.style.display = "flex"; p.empty.firstChild.textContent = "Video: browser cannot decode this codec (ProRes / DNxHR need an H.264 proxy)"; };
+        p.video.onerror = () => { p.videoMode = false; p.canvas.style.display = "none"; p.empty.style.display = "flex"; p.empty.firstChild.textContent = "Video: browser cannot decode this codec (a ProRes / DNxHR proxy could not be built)"; };
+        _resolveStreamSrc(node, p, path, meta);              // Ф3: stream a browser codec directly, or build+stream an H.264 proxy for ProRes/DNxHR/MXF
     }
     p.pb.seqMode = false;                                    // shared transport now runs the <video> clock
     p.pb.fileFrames = Math.max(1, meta.frames || 0);

@@ -270,6 +270,48 @@ try:
             return web.json_response({"error": "not a video file"}, status=404)
         return web.FileResponse(p)
 
+    _PROXY_JOBS = {}   # proxy_path -> subprocess.Popen of the running H.264 transcode (non-blocking)
+
+    @server.PromptServer.instance.routes.get("/ocio/proxy")
+    async def _ocio_proxy(request):
+        """Resolve a streamable URL for the OCIO Player. A browser-decodable source (h264/vp8/vp9/av1) streams
+        directly. A ProRes / DNxHR / MXF (undecodable in a <video>) is transcoded ONCE to a cached H.264 proxy
+        (downscaled to 1920) and the proxy is streamed instead. Non-blocking: the first call for an undecodable
+        source kicks off the ffmpeg transcode and returns {building:true}; the front end polls until {ready:true}.
+        Same local-single-user trust as /ocio/stream. Added 2026-07-03 (owner: ProRes/MXF won't play)."""
+        import subprocess as _sp
+        from urllib.parse import quote as _quote
+        from .io_nodes import _input_dir, VIDEO_EXTS, _needs_proxy, _proxy_path, _proxy_transcode_cmd
+        src = request.rel_url.query.get("src", "")
+        p = src if os.path.isabs(src) else os.path.join(_input_dir(), src)
+        if not (p and os.path.isfile(p) and os.path.splitext(p)[1].lower() in VIDEO_EXTS):
+            return web.json_response({"error": "not a video file"}, status=404)
+
+        def _stream_url(x):
+            return "/ocio/stream?src=" + _quote(x)
+        try:
+            if not _needs_proxy(p):
+                return web.json_response({"ready": True, "proxy": False, "url": _stream_url(p)})
+            proxy = _proxy_path(p)
+            job = _PROXY_JOBS.get(proxy)
+            if job is not None:                                        # a transcode is (or was) running for this proxy
+                rc = job.poll()
+                if rc is None:
+                    return web.json_response({"ready": False, "building": True})
+                _PROXY_JOBS.pop(proxy, None)                          # finished - clear the job slot
+                if rc != 0 or not (os.path.isfile(proxy) and os.path.getsize(proxy) > 0):
+                    return web.json_response({"ready": False, "error": "proxy transcode failed"}, status=500)
+            if os.path.isfile(proxy) and os.path.getsize(proxy) > 0:  # cached (or just-finished) proxy is ready
+                return web.json_response({"ready": True, "proxy": True, "url": _stream_url(proxy)})
+            try:                                                      # not started yet -> kick off a non-blocking transcode
+                _PROXY_JOBS[proxy] = _sp.Popen(_proxy_transcode_cmd(p, proxy),
+                                               stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+            except Exception as e:
+                return web.json_response({"ready": False, "error": str(e)[:200]}, status=500)
+            return web.json_response({"ready": False, "building": True})
+        except Exception as e:
+            return web.json_response({"ready": False, "error": str(e)[:200]}, status=500)
+
     @server.PromptServer.instance.routes.get("/ocio/floatframe")
     async def _ocio_floatframe(request):
         """One cached HALF-float RGBA frame for the OCIO Player's WebGL float viewport: raw half-float bytes +

@@ -23,6 +23,7 @@ import glob
 import re
 import shutil
 import subprocess
+import hashlib
 from fractions import Fraction
 
 import numpy as np
@@ -425,6 +426,55 @@ def _read_video_frame(path):
     if n == 0:
         raise RuntimeError("ffmpeg returned no frames")
     return buf[: w * h * 3].reshape(h, w, 3).astype(np.float32) / 65535.0
+
+
+# --- H.264 proxy for the on-node Player -----------------------------------------------------------------------
+# Browsers cannot decode ProRes / DNxHR (and HEVC has no software fallback), so the Player's <video> element errors
+# on them ("ocio read не проигрывает вообще"). Transcode ONCE to a small H.264 mp4 - downscaled to _PROXY_MAX_SIDE
+# (the Player already caps its display there, so no visible loss for a viewer) - cache it keyed by the source's
+# realpath+mtime+size, and stream the proxy instead. The __init__ /ocio/proxy route drives + caches the transcode;
+# these are the pure helpers. Full-res float review stays the EXR path, not video streaming. Added 2026-07-03.
+_BROWSER_VIDEO_CODECS = {"h264", "vp8", "vp9", "av1"}   # codecs a desktop <video> decodes directly; everything else (prores, dnxhd, hevc w/o HW SW-fallback, ...) gets a proxy - conservative so a clip ALWAYS plays
+_PROXY_MAX_SIDE = 1920
+
+def _video_codec(path):
+    """The video stream's codec_name (lower-case), '' if unreadable."""
+    try:
+        pr = subprocess.run([_FFPROBE, "-v", "error", "-select_streams", "v:0", "-show_entries",
+                             "stream=codec_name", "-of", "default=noprint_wrappers=1:nokey=1", path],
+                            capture_output=True, text=True)
+        return (pr.stdout.strip().splitlines() or [""])[0].strip().lower()
+    except Exception:
+        return ""
+
+def _needs_proxy(path):
+    """True if a browser <video> cannot be relied on to decode this file's codec -> a server H.264 proxy is needed."""
+    return _video_codec(path) not in _BROWSER_VIDEO_CODECS
+
+def _proxy_dir():
+    root = folder_paths.get_temp_directory() if folder_paths is not None else os.path.join(os.path.expanduser("~"), ".ocio_tmp")
+    d = os.path.join(root, "ocio_proxy")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+def _proxy_path(path):
+    """Deterministic cache path for a source's H.264 proxy, keyed by realpath+mtime+size (an edited source
+    re-transcodes). .mp4 (a VIDEO_EXTS ext) so /ocio/stream will serve it back."""
+    try:
+        st = os.stat(path)
+        key = f"{os.path.realpath(path)}|{int(st.st_mtime)}|{st.st_size}"
+    except OSError:
+        key = path
+    return os.path.join(_proxy_dir(), hashlib.sha1(key.encode("utf-8", "ignore")).hexdigest()[:16] + ".mp4")
+
+def _proxy_transcode_cmd(src, dst):
+    """ffmpeg args to build the H.264 proxy: downscale to _PROXY_MAX_SIDE (even dims for yuv420p), yuv420p +
+    faststart so the <video> streams + seeks, no audio (the Player is muted). One-time; cached by _proxy_path."""
+    _require_ffmpeg()
+    return [_FFMPEG, "-v", "error", "-y", "-i", src,
+            "-vf", f"scale='min({_PROXY_MAX_SIDE},iw)':-2:flags=bicubic",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+            "-an", "-movflags", "+faststart", dst]
 
 
 def load_source(source, start_frame=0, end_frame=0, frame_mode="auto", missing_mode="black", edge_mode="hold"):

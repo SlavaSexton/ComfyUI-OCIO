@@ -1680,6 +1680,17 @@ function playerVideoStart(node, p, path, meta) {
     const _rShift = _r ? Math.round(W(_r, "frame_shift")?.value || 0) : 0;
     const _rStart = _r ? Math.round(W(_r, "start_frame")?.value || (_r._ocioSeq && _r._ocioSeq.start) || 0) : 0;
     p.videoBase = (_rShift > 0 ? _rShift : (_rStart > 0 ? _rStart : 1));
+    // 2026-07-04: sync the Player's OWN fields from the streamed video + upstream Read (the FLOAT path does this via
+    // syncPlayerFromUpstream, but the stream path did NOT - so start/end stayed 0, the in/out handles were not at the
+    // clip extremes, and fps / input CS never pulled through). start/end span the whole clip; fps from the video meta;
+    // input CS mirrors the Read's OUTPUT colorspace (what actually feeds the Player) unless the user picked one.
+    const _vf = Math.max(1, meta.frames || 0);
+    setWSilent(node, "start_frame", p.videoBase);
+    setWSilent(node, "end_frame", p.videoBase + _vf - 1);
+    setWSilent(node, "base", String(p.videoBase));
+    if (meta.fps > 0) { setWSilent(node, "fps", meta.fps); p.pb.fps = meta.fps; }
+    if (_r && !p.userSetCs) { const _ro = W(_r, "output_colorspace")?.value; if (_ro) setWSilent(node, "input_colorspace", _ro); }
+    node.setDirtyCanvas(true, true);
     if (p._vidPath !== path) {
         p._vidPath = path; p.video.loop = false; p.pb.playing = false; p.pb.dir = 1; p.pb.revAnchor = null;
         p.video.onseeked = () => { if (p.videoMode) _playerVideoDraw(p); };   // reverse / scrub: paint each settled seek

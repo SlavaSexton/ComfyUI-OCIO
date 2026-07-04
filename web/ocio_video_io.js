@@ -16,6 +16,9 @@ const DUAL = {
     OCIOCDLTransform:  { imgIn: "image", vidIn: "video", imgOut: 0, vidOut: 1 },
     OCIOFileTransform: { imgIn: "image", vidIn: "video", imgOut: 0, vidOut: 1 },
     OCIOLookTransform: { imgIn: "image", vidIn: "video", imgOut: 0, vidOut: 1 },
+    // Write (OUTPUT_NODE, path output) and Player (input-only viewer): two mutually-exclusive INPUTS, no output pair.
+    OCIOWrite:         { imgIn: "images", vidIn: "video", imgOut: null, vidOut: null },
+    OCIOPlayer:        { imgIn: "images", vidIn: "video", imgOut: null, vidOut: null },
 };
 
 const LG = () => window.LiteGraph;

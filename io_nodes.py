@@ -63,7 +63,7 @@ from PIL import Image
 
 from .nodes import (_apply_processor, _cached_cpu_processor, _colorspace_names,
                     _combo_or_string, _input_dir, _logc3_to_lin, _logc4_to_lin,
-                    _require_ocio, _resolve_config_keyed, _scan_files)
+                    _require_ocio, _resolve_config_keyed, _scan_files, _video_unwrap)
 
 try:
     import folder_paths
@@ -1099,7 +1099,6 @@ class OCIOWrite:
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
-            "images": ("IMAGE",),
             "profile": (["none", "auto", "LTX 2.3 HDR", "LumiPic LogC3 (Flux/Qwen)", "LumiPic V10 LogC4",
                         "Seedance 4K 10-bit"],
                         {"default": "none",
@@ -1134,6 +1133,8 @@ class OCIOWrite:
             "auto_colorspace": ("BOOLEAN", {"default": True,
                                  "tooltip": "When the input is wired from LTX's LTXVHDRDecodePostprocess (SDR->HDR), auto-set from_colorspace = 'Linear Rec.709 (sRGB)' and output_colorspace = 'ACEScg', so you do not have to. Editing the colorspaces by hand still wins. Front-end only."}),
         }, "optional": {
+            "images": ("IMAGE", {"tooltip": "An image / sequence / video frame batch to write. Mutually exclusive with the ComfyUI Video input."}),
+            "video": ("VIDEO", {"tooltip": "A ComfyUI native VIDEO (e.g. Load Video) to render out with ALL these Write settings (container, codec, colorspace, bit depth). Mutually exclusive with the image input; the movie's own frame rate is used for a video container."}),
             "alpha": ("MASK", {"tooltip": "Optional alpha channel -> RGBA (EXR / TIFF / PNG; ignored for JPEG). Wire OCIO Read's alpha output, or any MASK."}),
             "fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 240.0, "step": 0.001,
                               "tooltip": "Video frame rate. Wire OCIO Read's fps output here to carry the source rate."}),
@@ -1153,10 +1154,16 @@ class OCIOWrite:
             return root
         return output_folder if os.path.isabs(output_folder) else os.path.join(root, output_folder)
 
-    def write(self, images, profile, from_colorspace, output_colorspace, container, still_format, video_codec,
+    def write(self, profile, from_colorspace, output_colorspace, container, still_format, video_codec,
               bit_depth, auto_range, first_frame, last_frame, start_number, source_start, raw_data,
               output_folder, filename, colorspace_in_name=True, auto_colorspace=True, compression="zip",
-              alpha=None, fps=24.0, render_nonce=""):   # render_nonce: cache-buster, bumped by the Render button so a repeat write happens (see INPUT_TYPES)
+              alpha=None, fps=24.0, render_nonce="", images=None, video=None):   # render_nonce: cache-buster (see INPUT_TYPES). images/video: mutually-exclusive inputs.
+        if video is not None:                                        # a native ComfyUI VIDEO -> render it out with ALL these Write settings (container, codec, colorspace, bit depth)
+            images, _vfps, _ = _video_unwrap(video)
+            if _vfps and _vfps > 0:
+                fps = _vfps                                          # a video container inherits the movie's own frame rate
+        if images is None:
+            raise ValueError("OCIO Write: connect an image / sequence to 'OCIO Img/Seq/Vid', OR a movie to 'ComfyUI Video'.")
         _LOG_PROFILES = {"LumiPic LogC3 (Flux/Qwen)": _logc3_to_lin, "LumiPic V10 LogC4": _logc4_to_lin}
         if profile in _LOG_PROFILES and not raw_data:
             arr_lin = images.detach().cpu().numpy().astype(np.float32).copy()

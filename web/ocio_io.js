@@ -2021,9 +2021,9 @@ app.registerExtension({
                     // video pipeline. Name them so on EVERY OCIO node - input and output, both sides. Labels ONLY;
                     // slot names are untouched so connections/saved graphs resolve. Covers OCIO Read's VIDEO output
                     // and OCIO Player's VIDEO input renames too (they are just VIDEO sockets on OCIO nodes).
-                    for (const s of (this.inputs || [])) if (s.type === "IMAGE" && (s.name === "image" || s.name === "images")) s.label = "Image Sequence Video";
+                    for (const s of (this.inputs || [])) if (s.type === "IMAGE" && (s.name === "image" || s.name === "images")) s.label = "OCIO Img/Seq/Vid";
                     for (const s of (this.inputs || [])) if (s.type === "VIDEO") s.label = "ComfyUI Video";
-                    for (const s of (this.outputs || [])) if (s.type === "IMAGE") s.label = "Image Sequence Video";
+                    for (const s of (this.outputs || [])) if (s.type === "IMAGE") s.label = "OCIO Img/Seq/Vid";
                     for (const s of (this.outputs || [])) if (s.type === "VIDEO") s.label = "ComfyUI Video";
                     this.setDirtyCanvas(true, true);
                 };

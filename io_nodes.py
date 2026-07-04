@@ -1000,7 +1000,7 @@ class OCIORead:
         }}
 
     RETURN_TYPES = ("IMAGE", "MASK", "FLOAT", "STRING", "VIDEO")
-    RETURN_NAMES = ("image/sequence/video", "alpha", "fps", "info", "video")   # VIDEO appended (index 4) so the frame batch can feed VIDEO-typed edit/save nodes; indices 0-3 unchanged
+    RETURN_NAMES = ("image/sequence/video", "alpha", "fps", "info", "ComfyUI Video")   # index 4 VIDEO output named "ComfyUI Video" so it reads right even if the front end ignores a post-create label mutation; output names are display-only (connections are by slot index), so no saved-graph break
     FUNCTION = "read"
     CATEGORY = "OCIO"
 

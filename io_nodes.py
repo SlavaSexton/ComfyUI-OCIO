@@ -1033,7 +1033,11 @@ class OCIOPlayer:
                 "fps": ("FLOAT", {"default": 24.0, "min": 0.0, "max": 1000.0, "step": 0.001,
                                   "tooltip": "Playback rate for the viewer + the fps output."}),
             },
-            "optional": {"alpha": ("MASK", {"tooltip": "Optional alpha to view / carry through."})},
+            "optional": {
+                "alpha": ("MASK", {"tooltip": "Optional alpha to view / carry through."}),
+                "base": ("INT", {"default": 0, "min": 0, "max": 100000000,
+                                 "tooltip": "Source first-frame number, set by the front end from the upstream OCIO Read (hidden). start_frame/end_frame are SOURCE frame numbers; the node subtracts base to get 0-based batch indices. 0 = they are already 0-based indices."}),
+            },
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
 
@@ -1046,12 +1050,15 @@ class OCIOPlayer:
     CATEGORY = "OCIO"
 
     def play(self, images, input_colorspace, output_colorspace, raw_data, start_frame, end_frame, fps,
-             alpha=None, unique_id="0"):
+             alpha=None, base=0, unique_id="0"):
         n = int(images.shape[0])
         cache_dir, total, cached, h, w = _player_cache(unique_id, images, alpha)
-        s = max(0, min(int(start_frame), n - 1))
-        e = int(end_frame) if (end_frame and int(end_frame) >= s) else n - 1
-        e = max(s, min(e, n - 1))
+        # start_frame/end_frame are SOURCE frame numbers (so the node's fields match the upstream OCIO Read + the
+        # viewer timeline); subtract base to get 0-based batch indices for the actual trim. base 0 = already indices.
+        b = max(0, int(base))
+        sf, ef = int(start_frame), int(end_frame)
+        s = max(0, min(sf - b, n - 1)) if sf > 0 else 0
+        e = max(s, min(ef - b, n - 1)) if (ef > 0 and (ef - b) >= s) else n - 1
         sub = images[s:e + 1].contiguous()
         out = sub if raw_data else _convert(sub, input_colorspace, output_colorspace)
         if alpha is not None:
@@ -1063,7 +1070,7 @@ class OCIOPlayer:
             mask = torch.ones((out.shape[0], out.shape[1], out.shape[2]), dtype=torch.float32)
         cs = "raw" if raw_data else f"{input_colorspace} -> {output_colorspace}"
         cap_note = f", viewer capped at {cached}" if cached < total else ""
-        info = f"player: {total} frame(s) in{cap_note}; out [{s}-{e}] = {out.shape[0]} frame(s), {w}x{h}, {cs}"
+        info = f"player: {total} frame(s) in{cap_note}; out [{s + b}-{e + b}] = {out.shape[0]} frame(s), {w}x{h}, {cs}"
         return {"ui": {"player_dir": [cache_dir], "player_total": [str(total)], "player_cached": [str(cached)],
                        "resolution": [f"{w}x{h}"], "fps": [str(float(fps))], "input_cs": [input_colorspace]},
                 "result": (out, mask, float(fps), info)}

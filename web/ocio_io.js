@@ -510,12 +510,12 @@ function _pbSeek(p, f) {
 }
 // in / out range = the node's start_frame / end_frame widgets (single source of truth, bidirectional). Widgets
 // store frame numbers; these convert to/from the 0-based index via _seqBase (base 0 = video, unchanged).
-function _pbIn(p) { const base = _seqBase(p), w = W(p.node, "start_frame"); return Math.max(0, Math.min(_pbLast(p), Math.round((w?.value ?? base)) - base)); }
-function _pbOut(p) { const base = _seqBase(p), last = _pbLast(p), w = W(p.node, "end_frame"); return Math.max(_pbIn(p), Math.min(last, Math.round((w?.value ?? (base + last))) - base)); }
+function _pbIn(p) { const base = _dispBase(p), w = W(p.node, "start_frame"); return Math.max(0, Math.min(_pbLast(p), Math.round((w?.value ?? base)) - base)); }
+function _pbOut(p) { const base = _dispBase(p), last = _pbLast(p), w = W(p.node, "end_frame"); return Math.max(_pbIn(p), Math.min(last, Math.round((w?.value ?? (base + last))) - base)); }
 function _pbSetField(p, name, f) { const w = W(p.node, name); if (!w) return; w.value = f; try { w.callback && w.callback(f); } catch (e) {} p.node.setDirtyCanvas(true, true); }
-function _pbSetIn(p, f) { const base = _seqBase(p); _pbSetField(p, "start_frame", base + Math.max(0, Math.min(_pbOut(p), Math.round(f)))); }
-function _pbSetOut(p, f) { const base = _seqBase(p); _pbSetField(p, "end_frame", base + Math.max(_pbIn(p), Math.min(_pbLast(p), Math.round(f)))); }
-function _pbResetRange(p) { const base = _seqBase(p); _pbSetField(p, "start_frame", base); _pbSetField(p, "end_frame", base + _pbLast(p)); }
+function _pbSetIn(p, f) { const base = _dispBase(p); _pbSetField(p, "start_frame", base + Math.max(0, Math.min(_pbOut(p), Math.round(f)))); }
+function _pbSetOut(p, f) { const base = _dispBase(p); _pbSetField(p, "end_frame", base + Math.max(_pbIn(p), Math.min(_pbLast(p), Math.round(f)))); }
+function _pbResetRange(p) { const base = _dispBase(p); _pbSetField(p, "start_frame", base); _pbSetField(p, "end_frame", base + _pbLast(p)); }
 function _pbSet(node, p, on, dir) {
     p.pb.playing = on; p.pb.dir = dir || 1; p.pb.revAnchor = null; p.pb.seqAnchor = null;   // re-anchor on every state change
     const inF = _pbIn(p), outF = _pbOut(p), cur = _pbCur(p);
@@ -940,15 +940,26 @@ function resyncAllWrites() {
 // at the source fps - matching OCIO Read even through 10-20 nodes. frame_shift on the Read re-bases the numbering.
 function syncPlayerFromUpstream(node) {
     const p = node._ocioPlayer; if (!p || !p.player) return;
+    const cached = (p.player.cached | 0) || 1;
     const read = findUpstreamRead(node);
-    if (!read) { p.player.base = 0; return; }              // no OCIO Read upstream -> plain 0-based numbering
+    if (!read) {                                           // no OCIO Read upstream -> plain 0-based numbering (indices)
+        p.player.base = 0; setWSilent(node, "base", 0); node.setDirtyCanvas(true, true); return;
+    }
     const seq = read._ocioSeq;
     const rSF = W(read, "start_frame")?.value || 0;
     const rShift = W(read, "frame_shift")?.value || 0;
     const rFps = W(read, "fps")?.value || 0;
     const s0 = rSF > 0 ? rSF : ((seq && seq.start != null) ? (seq.start | 0) : 0);
-    const first = rShift > 0 ? rShift : s0;                // same rule OCIO Write uses
-    p.player.base = first | 0;
+    const first = (rShift > 0 ? rShift : s0) | 0;          // same rule OCIO Write uses (frame_shift re-bases the numbering)
+    const lastN = first + cached - 1;
+    p.player.base = first;
+    setWSilent(node, "base", first);                       // backend maps the SOURCE start/end numbers -> 0-based batch indices (subtracts base)
+    // start_frame/end_frame now hold SOURCE numbers (so the fields match the timeline). Keep a still-valid user
+    // sub-range; otherwise snap to the full source range [first .. lastN].
+    const curSF = Math.round(W(node, "start_frame")?.value || 0), curEF = Math.round(W(node, "end_frame")?.value || 0);
+    if (!(curSF >= first && curEF <= lastN && curSF <= curEF && curEF > 0)) {
+        setWSilent(node, "start_frame", first); setWSilent(node, "end_frame", lastN);
+    }
     if (rFps > 0) { p.pb.fps = rFps; setWSilent(node, "fps", rFps); }   // fps must match the source, not the Player default
     node.setDirtyCanvas(true, true);
 }
@@ -1824,6 +1835,7 @@ app.registerExtension({
                 for (const w of ["fps", "start_frame", "end_frame"]) {
                     onChange(this, w, () => { const p = this._ocioPlayer; if (p) { _syncTransport(p); } });
                 }
+                showWidget(this, W(this, "base"), false);            // 'base' = hidden frontend->backend channel (source first-frame number for the index mapping), not a user control
                 this._ocioAllWidgets = this.widgets.slice();
                 return r;
             };

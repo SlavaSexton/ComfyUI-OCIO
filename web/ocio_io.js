@@ -578,7 +578,10 @@ function _seqBase(p) { return (p.pb && p.pb.seqMode && p.seq) ? (p.seq.origStart
 // backend start_frame/end_frame are 0-based BATCH indices and must stay so (the trim uses them), so the source frame
 // numbers live here as a display-only offset, learned from the upstream OCIO Read (syncPlayerFromUpstream). Timeline
 // labels + the frame field use _dispBase; the widget<->index math (_pbIn/_pbSetIn) keeps using _seqBase (base 0 for Player).
-function _dispBase(p) { return _seqBase(p) + ((p.player && p.player.base) ? (p.player.base | 0) : 0); }
+function _dispBase(p) {
+    if (p && p.videoMode && p.videoBase) return p.videoBase | 0;   // streamed video: 1-based (or the upstream Read's re-based numbering) - the <video> clock is a 0-based index, videoBase maps it to frame numbers
+    return _seqBase(p) + ((p.player && p.player.base) ? (p.player.base | 0) : 0);
+}
 function _pbCur(p) {
     if (p.pb && p.pb.seqMode) return Math.max(0, Math.min(_pbLast(p), p.pb.seqFrame | 0));
     const v = p.video, d = v && v.duration, last = _pbLast(p); if (!(d > 0) || last < 1) return 0;
@@ -1660,6 +1663,13 @@ async function _resolveStreamSrc(node, p, path, meta) {
 function playerVideoStart(node, p, path, meta) {
     _playerStop(p);                                          // leave the float path (cancels its rAF, frees textures)
     p.videoMode = true; p.player = null;
+    // streamed video is 1-BASED (frame 1 = first). Mirror the upstream OCIO Read's numbering (frame_shift / start_frame,
+    // both 1 for a plain video); a bare Load Video with no OCIO Read upstream defaults to 1. The <video> clock is a
+    // 0-based index; _dispBase adds videoBase so the timeline + frame field read 1..N.
+    const _r = findUpstreamRead(node);
+    const _rShift = _r ? Math.round(W(_r, "frame_shift")?.value || 0) : 0;
+    const _rStart = _r ? Math.round(W(_r, "start_frame")?.value || (_r._ocioSeq && _r._ocioSeq.start) || 0) : 0;
+    p.videoBase = (_rShift > 0 ? _rShift : (_rStart > 0 ? _rStart : 1));
     if (p._vidPath !== path) {
         p._vidPath = path; p.video.loop = false; p.pb.playing = false; p.pb.dir = 1; p.pb.revAnchor = null;
         p.video.onseeked = () => { if (p.videoMode) _playerVideoDraw(p); };   // reverse / scrub: paint each settled seek
@@ -1871,7 +1881,8 @@ function renderPlayerMeta(node, data) {
     if (!data) { box.innerHTML = ""; return; }
     const framesTxt = data.cached < data.total ? `${data.total} (viewer capped at ${data.cached})` : String(data.total);
     const pp = node._ocioPlayer;
-    const base = (pp && pp.player && pp.player.base) ? (pp.player.base | 0) : 0;   // source frame numbering (mirrored from upstream OCIO Read)
+    const base = (pp && pp.videoMode && pp.videoBase) ? (pp.videoBase | 0)        // streamed video: 1-based (or the upstream Read's numbering)
+               : ((pp && pp.player && pp.player.base) ? (pp.player.base | 0) : 0);   // float batch: mirrored from the upstream OCIO Read
     const rangeTxt = `${base}-${base + Math.max(1, data.cached || 1) - 1}`;
     const values = {
         resolution: data.resolution || "-",

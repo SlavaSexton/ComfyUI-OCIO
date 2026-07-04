@@ -487,11 +487,14 @@ def load_source(source, start_frame=0, end_frame=0, frame_mode="auto", missing_m
     s = source if os.path.isabs(source) else os.path.join(_input_dir(), source)
     ext = os.path.splitext(s)[1].lower()
     if ext in VIDEO_EXTS:
-        count = (end_frame - start_frame + 1) if end_frame >= start_frame and end_frame > 0 else 0
-        arr, info = _read_video(s, start_frame, count)
+        # video frame numbers are 1-BASED (frame 1 = first); map to the 0-based ffmpeg decode index (frame 1 -> 0).
+        # start_frame 0 (unbounded/default) also maps to index 0. count spans [start_frame, end_frame] inclusive.
+        count = (end_frame - start_frame + 1) if (end_frame >= start_frame and end_frame > 0) else 0
+        arr, info = _read_video(s, max(0, start_frame - 1), count)
         alpha = np.ones((*arr.shape[:3], 1), np.float32)     # video has no alpha -> opaque
         arr = np.concatenate([arr, alpha], axis=-1)
         info["kind"] = "video"
+        info["orig_start"] = 1                               # 1-based numbering (frame 1 is the first frame)
         info["label"] = os.path.basename(s)
         return arr, info
     files = _frame_files(s)                       # an explicit folder or #### pattern
@@ -543,7 +546,8 @@ def _seq_range(source):
         # over an absent/N-A stream duration (needed for MXF, whose stream carries no nb_frames or duration).
         info = dict(line.split("=", 1) for line in pr.stdout.strip().splitlines() if "=" in line)
         nb = _video_frame_count(info)   # robust: nb_frames, or duration x fps when nb_frames is 'N/A' (MXF)
-        return {"kind": "video", "start": 0, "end": max(0, nb - 1), "count": nb, "fps": _video_fps(info),
+        # video frame numbering is 1-BASED (owner 2026-07-04: frame 1 is the first frame, not 0) - a 451-frame clip is 1..451
+        return {"kind": "video", "start": 1, "end": nb, "count": nb, "fps": _video_fps(info),
                 "input_cs": _video_input_cs(info)}   # colorspace from the video's color metadata (owner ask)
     files = _frame_files(s)
     if not files and os.path.isfile(s):

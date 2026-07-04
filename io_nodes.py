@@ -1035,8 +1035,8 @@ class OCIOPlayer:
             },
             "optional": {
                 "alpha": ("MASK", {"tooltip": "Optional alpha to view / carry through."}),
-                "base": ("INT", {"default": 0, "min": 0, "max": 100000000,
-                                 "tooltip": "Source first-frame number, set by the front end from the upstream OCIO Read (hidden). start_frame/end_frame are SOURCE frame numbers; the node subtracts base to get 0-based batch indices. 0 = they are already 0-based indices."}),
+                "base": ("STRING", {"default": "0",
+                                    "tooltip": "Source first-frame number, set by the front end from the upstream OCIO Read (hidden). start_frame/end_frame are SOURCE frame numbers; the node subtracts base to get 0-based batch indices. 0 = already 0-based indices. STRING (not INT) so a blank value can NEVER fail prompt validation."}),
             },
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
@@ -1055,7 +1055,10 @@ class OCIOPlayer:
         cache_dir, total, cached, h, w = _player_cache(unique_id, images, alpha)
         # start_frame/end_frame are SOURCE frame numbers (so the node's fields match the upstream OCIO Read + the
         # viewer timeline); subtract base to get 0-based batch indices for the actual trim. base 0 = already indices.
-        b = max(0, int(base))
+        try:
+            b = max(0, int(float(str(base).strip() or "0")))   # STRING / blank-safe: a bad or empty base is treated as 0 (legacy indices), never crashes
+        except (TypeError, ValueError):
+            b = 0
         sf, ef = int(start_frame), int(end_frame)
         s = max(0, min(sf - b, n - 1)) if sf > 0 else 0
         e = max(s, min(ef - b, n - 1)) if (ef > 0 and (ef - b) >= s) else n - 1

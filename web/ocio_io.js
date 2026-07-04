@@ -968,7 +968,7 @@ function syncPlayerFromUpstream(node) {
     const cached = (p.player.cached | 0) || 1;
     const read = findUpstreamRead(node);
     if (!read) {                                           // no OCIO Read upstream -> plain 0-based numbering (indices)
-        p.player.base = 0; setWSilent(node, "base", 0); node.setDirtyCanvas(true, true); return;
+        p.player.base = 0; setWSilent(node, "base", "0"); node.setDirtyCanvas(true, true); return;
     }
     const seq = read._ocioSeq;
     const rSF = W(read, "start_frame")?.value || 0;
@@ -978,7 +978,7 @@ function syncPlayerFromUpstream(node) {
     const first = (rShift > 0 ? rShift : s0) | 0;          // same rule OCIO Write uses (frame_shift re-bases the numbering)
     const lastN = first + cached - 1;
     p.player.base = first;
-    setWSilent(node, "base", first);                       // backend maps the SOURCE start/end numbers -> 0-based batch indices (subtracts base)
+    setWSilent(node, "base", String(first));               // STRING widget: backend maps SOURCE start/end numbers -> 0-based batch indices (subtracts base)
     // start_frame/end_frame now hold SOURCE numbers (so the fields match the timeline). Keep a still-valid user
     // sub-range; otherwise snap to the full source range [first .. lastN].
     const curSF = Math.round(W(node, "start_frame")?.value || 0), curEF = Math.round(W(node, "end_frame")?.value || 0);
@@ -1890,7 +1890,8 @@ app.registerExtension({
                 for (const w of ["fps", "start_frame", "end_frame"]) {
                     onChange(this, w, () => { const p = this._ocioPlayer; if (p) { _syncTransport(p); } });
                 }
-                showWidget(this, W(this, "base"), false);            // 'base' = hidden frontend->backend channel (source first-frame number for the index mapping), not a user control
+                const _bw = W(this, "base");                          // 'base' = hidden frontend->backend channel (source first-frame number). Hide WITHOUT the type-swap: showWidget's type swap breaks value serialization -> '' -> crashed prompt validation. hidden+zeroed computeSize preserves the value (same as OCIO Read's setVisibleWidgets).
+                if (_bw) { _bw.hidden = true; _bw.computeSize = () => [0, -4]; }
                 this._ocioAllWidgets = this.widgets.slice();
                 return r;
             };

@@ -1225,14 +1225,45 @@ class OCIOWrite:
                 saved = paths[0]
             count, preview = sub.shape[0], sub[0]
 
-        return {"ui": {"images": self._preview(preview),
-                       "ocio": [("raw" if raw_data else f"{from_colorspace} -> {output_colorspace}")],
-                       "count": [str(count)], "saved": [os.path.basename(saved)]},
-                "result": (saved,)}
+        ui = {"ocio": [("raw" if raw_data else f"{from_colorspace} -> {output_colorspace}")],
+              "count": [str(count)], "saved": [os.path.basename(saved)]}
+        if container == "video":
+            # The output video can sit ANYWHERE on disk; ComfyUI's native preview only serves output/temp/input, and a
+            # still PNG renders broken inside its <video> for a video node ("Invalid URL"). So write a small, always-
+            # servable H.264 preview into the temp dir and show it as an animated (playing) preview instead.
+            ui["images"] = self._video_preview(sub, fps, saved)
+            ui["animated"] = (True,)
+        else:
+            ui["images"] = self._preview(preview)
+        return {"ui": ui, "result": (saved,)}
 
     def _preview(self, frame0):
         """First written frame, shown naively in its output colorspace (a wrong pick looks visibly wrong)."""
         return _save_preview_png(frame0, "ocio_write_preview.png")
+
+    def _video_preview(self, arr, fps, seed=""):
+        """A small, always-servable H.264 preview of the just-written clip, in ComfyUI's TEMP dir, for the node's
+        video preview (the real output may be an absolute path ComfyUI cannot serve). Downscaled to <=512 wide and
+        capped to 96 frames, so it is cheap and browser-playable (h264) even when the master is ProRes/DNxHR. Returns
+        the ui 'images' list; pair with 'animated': (True,) so ComfyUI shows a playing video."""
+        if folder_paths is None:
+            return []
+        try:
+            tdir = folder_paths.get_temp_directory()
+            os.makedirs(tdir, exist_ok=True)
+            a = np.asarray(arr, np.float32)[: min(int(arr.shape[0]), 96), :, :, :3]   # cap frames, RGB only
+            h, w = int(a.shape[1]), int(a.shape[2])
+            if w > 512:
+                import cv2
+                nw = 512
+                nh = max(2, int(round(h * (512.0 / w))))
+                nh -= nh % 2                                                          # even dims for h264
+                a = np.stack([cv2.resize(f, (nw, nh), interpolation=cv2.INTER_AREA) for f in a])
+            name = "ocio_write_prev_" + hashlib.md5(str(seed).encode("utf-8", "ignore")).hexdigest()[:8] + ".mp4"
+            save_video(a, os.path.join(tdir, name), "h264", float(fps) if fps and fps > 0 else 24.0, None)
+            return [{"filename": name, "subfolder": "", "type": "temp"}]
+        except Exception:
+            return []
 
 
 # --------------------------------------------------------------------------- OCIO Player (in-graph float viewer)

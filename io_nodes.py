@@ -17,6 +17,7 @@
 # OPENCV_IO_ENABLE_OPENEXR=1 in the server environment (set on launch).
 
 import os
+import tempfile
 os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
 
 import glob
@@ -380,7 +381,7 @@ def _read_video(path, frame_start, frame_count):
     decode the whole head into memory."""
     _require_ffmpeg()
     probe = subprocess.run([_FFPROBE, "-v", "error", "-select_streams", "v:0",
-                            "-show_entries", "stream=width,height,nb_frames,codec_name,r_frame_rate,avg_frame_rate",
+                            "-show_entries", "stream=width,height,nb_frames,codec_name,pix_fmt,r_frame_rate,avg_frame_rate",
                             "-of", "default=noprint_wrappers=1", path], capture_output=True, text=True)
     info = dict(line.split("=", 1) for line in probe.stdout.strip().splitlines() if "=" in line)
     w, h = int(info.get("width", 0) or 0), int(info.get("height", 0) or 0)
@@ -393,18 +394,43 @@ def _read_video(path, frame_start, frame_count):
     eff = min(want, cap)
     capped = eff < want
     fps = _video_fps(info) or 24.0
-    cmd = [_FFMPEG, "-v", "error"]
+    # 2026-07-04: pick the decode depth from the SOURCE. An 8-bit source (h264 yuv420p, etc.) gains nothing from a
+    # 16-bit rgb48le decode - it just doubles the data. Hi-bit sources (10/12-bit ProRes/DNxHR) carry an le/be
+    # endianness tag in pix_fmt and DO need rgb48le to keep precision. rgb24 for 8-bit halves the raw bytes.
+    pix = (info.get("pix_fmt") or "")
+    hi = ("le" in pix) or ("be" in pix)
+    px, dt, maxv = ("rgb48le", "<u2", 65535.0) if hi else ("rgb24", "u1", 255.0)
+    # 2026-07-04: decode to a TEMP FILE, not a subprocess pipe. On Windows, reading a multi-GB raw stream back through
+    # subprocess.run(capture_output=True) is pathologically slow (measured ~61 s for 3.9 GB); ffmpeg -> temp file +
+    # np.fromfile is 12-25x faster (4.8 s rgb48le / 2.4 s rgb24, same 450-frame 1920x800 clip). This - not the memory
+    # budget - was the cause of the multi-minute Player loads with a color node in the chain.
+    cmd = [_FFMPEG, "-v", "error", "-y"]
     if frame_start > 0:
-        cmd += ["-ss", f"{frame_start / fps:.6f}"]          # seek so we buffer only [start, start+eff), not the head
-    cmd += ["-i", path, "-frames:v", str(eff), "-f", "rawvideo", "-pix_fmt", "rgb48le", "-"]
-    proc = subprocess.run(cmd, capture_output=True)
-    if proc.returncode != 0:
-        raise RuntimeError(f"ffmpeg decode failed: {proc.stderr.decode('utf-8', 'ignore')[:300]}")
-    buf = np.frombuffer(proc.stdout, dtype="<u2")
+        cmd += ["-ss", f"{frame_start / fps:.6f}"]          # seek so we decode only [start, start+eff), not the head
+    tmp_dir = None
+    if folder_paths is not None:
+        try:
+            tmp_dir = folder_paths.get_temp_directory()
+            os.makedirs(tmp_dir, exist_ok=True)                 # ComfyUI's temp dir may not exist yet -> create it (else fall back to the system temp)
+        except Exception:
+            tmp_dir = None
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".raw", prefix="ocio_vid_", dir=tmp_dir)
+    os.close(tmp_fd)
+    try:
+        cmd += ["-i", path, "-frames:v", str(eff), "-f", "rawvideo", "-pix_fmt", px, tmp_path]
+        proc = subprocess.run(cmd, capture_output=True)
+        if proc.returncode != 0:
+            raise RuntimeError(f"ffmpeg decode failed: {proc.stderr.decode('utf-8', 'ignore')[:300]}")
+        buf = np.fromfile(tmp_path, dtype=dt)
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
     n = buf.size // (w * h * 3)
     if n == 0:
         raise RuntimeError("ffmpeg returned no frames")
-    arr = buf[: n * w * h * 3].reshape(n, h, w, 3).astype(np.float32) / 65535.0
+    arr = buf[: n * w * h * 3].reshape(n, h, w, 3).astype(np.float32) / maxv
     info["fps"] = fps
     info["capped"] = capped
     if capped:
@@ -1277,8 +1303,17 @@ class OCIOPlayer:
         cs = "raw" if raw_data else f"{input_colorspace} -> {output_colorspace}"
         cap_note = f", viewer capped at {cached}" if cached < total else ""
         info = f"player: {total} frame(s) in{cap_note}, {w}x{h}, {cs}"
+        # 2026-07-04: cheap CONTENT signal (first-frame mean/std). The front-end skips re-initialising the viewport on an
+        # UNRELATED render by comparing an execution signature - but dir/size/count stay identical when only the PIXELS
+        # change (e.g. flipping a LogConvert swap_direction upstream), so without a content term the viewport went stale.
+        try:
+            _f0 = images[0].float()
+            content_sig = f"{float(_f0.mean()):.6f}_{float(_f0.std()):.6f}"
+        except Exception:
+            content_sig = ""
         return {"ui": {"player_dir": [cache_dir], "player_total": [str(total)], "player_cached": [str(cached)],
-                       "resolution": [f"{w}x{h}"], "fps": [str(float(fps))], "input_cs": [input_colorspace]},
+                       "resolution": [f"{w}x{h}"], "fps": [str(float(fps))], "input_cs": [input_colorspace],
+                       "content_sig": [content_sig]},
                 "result": ()}
 
 

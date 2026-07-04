@@ -1714,7 +1714,7 @@ function playerVideoStart(node, p, path, meta) {
     _playerRefreshLut(node, p);                              // bake the in_cs -> out_cs display LUT
     p.empty.style.display = "none"; p.canvas.style.display = "";
     p.pb.showTransport = true; if (p.transport) { p.transport.bar.style.display = "flex"; if (p.transport.audioRow) p.transport.audioRow.style.display = "none"; }
-    if (p.refreshOverlay) { p.refreshOverlay.textContent = "↻ Refresh"; p.refreshOverlay.style.display = ""; }   // persistent Refresh in video mode: re-reads the current upstream file (switch the Load Video file -> click Refresh)
+    if (p.refreshOverlay) { p.refreshOverlay._stale = false; p.refreshOverlay.style.background = "rgba(40,40,64,0.85)"; p.refreshOverlay.title = "Refresh this viewport"; p.refreshOverlay.style.display = ""; }   // persistent top-left Refresh square in video mode: re-reads the current upstream file (switch the Load Video file -> click)
     _setVideoOutput(node, true);                             // streaming a video (any trigger) -> expose the VIDEO output
     renderPlayerMeta(node, { resolution: meta.res || "-", total: meta.frames || 0, cached: meta.frames || 0, fps: meta.fps || 24, input_cs: W(node, "input_colorspace")?.value });   // show meta now; loadedmetadata fills in the resolution
     node.setSize([node.size[0], node.computeSize()[1]]);
@@ -1781,13 +1781,18 @@ function ensurePlayer(node) {
     // Auto-Refresh overlay: floats OVER the viewport when the node's INPUT changes (a node inserted / rewired
     // upstream, e.g. an OCIO Log Converter dropped in between) - the cached frames are then stale, so this prompts a
     // re-render. Click = Queue (renders this OUTPUT_NODE). Hidden until an input change; hidden again on the next render.
+    // Persistent Refresh: a small SQUARE in the TOP-LEFT, always visible over any content (image / sequence / video)
+    // so the owner can re-pull the viewport anywhere - not just in video mode (owner 2026-07-04). Normally slate;
+    // turns amber (._stale) when a node was inserted / rewired upstream so the cached frames are stale, until the next
+    // render clears it. onClick: video upstream -> re-read the file; else Queue (OCIOPlayer is an OUTPUT_NODE viewer).
+    const OV_BASE = "rgba(40,40,64,0.85)", OV_STALE = "rgba(150,95,20,0.92)";
     const refreshOverlay = document.createElement("button");
-    refreshOverlay.textContent = "↻ Refresh (input changed)";
-    refreshOverlay.title = "The input changed - click to re-render this node";
-    refreshOverlay.style.cssText = "position:absolute;top:6px;left:50%;transform:translateX(-50%);z-index:5;display:none;padding:4px 10px;border:0;border-radius:4px;background:rgba(40,40,64,0.92);color:#cde;cursor:pointer;font:11px sans-serif;box-shadow:0 1px 4px rgba(0,0,0,0.5);";
-    refreshOverlay.onmouseenter = () => refreshOverlay.style.background = "rgba(57,57,90,0.95)";
-    refreshOverlay.onmouseleave = () => refreshOverlay.style.background = "rgba(40,40,64,0.92)";
-    refreshOverlay.onclick = () => { const pp = node._ocioPlayer; _ocioBusy(pp && pp.box, true, "Processing…"); if (pp && (pp.videoMode || _playerTraceVideoSrc(node))) _playerVideoRefresh(node); else app.queuePrompt(0, 1); };   // video upstream -> re-read the file; else render
+    refreshOverlay.textContent = "↻";
+    refreshOverlay.title = "Refresh this viewport";
+    refreshOverlay.style.cssText = "position:absolute;top:6px;left:6px;z-index:5;display:none;width:26px;height:26px;padding:0;border:0;border-radius:4px;background:" + OV_BASE + ";color:#cde;cursor:pointer;font:16px/1 sans-serif;box-shadow:0 1px 4px rgba(0,0,0,0.5);";
+    refreshOverlay.onmouseenter = () => refreshOverlay.style.background = refreshOverlay._stale ? "rgba(175,115,30,0.95)" : "rgba(57,57,90,0.95)";
+    refreshOverlay.onmouseleave = () => refreshOverlay.style.background = refreshOverlay._stale ? OV_STALE : OV_BASE;
+    refreshOverlay.onclick = () => { const pp = node._ocioPlayer; refreshOverlay._stale = false; refreshOverlay.style.background = OV_BASE; refreshOverlay.title = "Refresh this viewport"; _ocioBusy(pp && pp.box, true, "Processing…"); if (pp && (pp.videoMode || _playerTraceVideoSrc(node))) _playerVideoRefresh(node); else app.queuePrompt(0, 1); };
     // Exposure control now lives HORIZONTALLY in the transport strip (between the viewport and the timeline), built
     // in _ensureTransport when p.isPlayer is set. No slider inside the viewport anymore. Owner spec 2026-07-03 (Task C).
     const video = document.createElement("video");           // Ф1b: hidden <video> for streaming a video source into the WebGL viewport (exposure + LUT shader)
@@ -1814,7 +1819,7 @@ function ensurePlayer(node) {
             if (type === 1 && pp) {
                 pp._lastExecSig = null;                                                            // input re-wired -> force the next render to re-init the viewport (don't skip as "unchanged")
                 if (_playerTraceVideoSrc(node)) _playerVideoRefresh(node);                         // a video source (Load Video / Read) is upstream -> stream the current file
-                else if ((pp.player || pp.videoMode) && pp.refreshOverlay) pp.refreshOverlay.style.display = "";   // a float source changed, OR a processing node was inserted into a video chain (trace now null) -> prompt a re-render
+                else if ((pp.player || pp.videoMode) && pp.refreshOverlay) { pp.refreshOverlay._stale = true; pp.refreshOverlay.style.background = "rgba(150,95,20,0.92)"; pp.refreshOverlay.title = "Input changed - click to re-render"; pp.refreshOverlay.style.display = ""; }   // float source changed / processing node inserted into a video chain -> flag the Refresh square amber (stale)
             }
         } catch (e) {}
         return orig && orig.apply(this, arguments);
@@ -1846,7 +1851,8 @@ function playerOnExecuted(node, message) {
     // clears _lastExecSig so a genuine re-wire always re-inits too.
     const _sig = JSON.stringify([first(message && message.video_path), first(message && message.player_dir),
         first(message && message.player_total), first(message && message.player_cached),
-        first(message && message.resolution), first(message && message.input_cs)]);
+        first(message && message.resolution), first(message && message.input_cs),
+        first(message && message.content_sig)]);   // content_sig: first-frame mean/std -> a LogConvert swap (same dir/size, different pixels) re-inits instead of going stale
     if (_sig === p._lastExecSig && (p.player || p.videoMode)) return;   // unchanged -> leave the current viewport playing
     p._lastExecSig = _sig;
     // VIDEO source (a Load Video / OCIO Read video traced to a file): stream it client-side, NOT the float batch.
@@ -1871,7 +1877,7 @@ function playerOnExecuted(node, message) {
     if (!dir || !(cached > 0)) { renderPlayerMeta(node, null); return; }
     p.player = { dir, total, cached, resolution };
     _playerClearTex(p);                                  // fresh render -> the old frame textures are stale, drop them
-    if (p.refreshOverlay) p.refreshOverlay.style.display = "none";   // rendered -> no longer stale, hide the input-changed prompt
+    if (p.refreshOverlay) { p.refreshOverlay._stale = false; p.refreshOverlay.style.background = "rgba(40,40,64,0.85)"; p.refreshOverlay.title = "Refresh this viewport"; p.refreshOverlay.style.display = ""; }   // rendered (image/sequence) -> persistent top-left Refresh square, no longer stale
     p.autoCsChecked = false;                             // re-evaluate HDR auto-cs for this fresh render
     p._playerFirstErr = null;
     p.pb.fileFrames = cached;                            // transport ruler spans the CACHED frames (0..cached-1)

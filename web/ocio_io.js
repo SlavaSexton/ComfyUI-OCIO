@@ -1578,9 +1578,39 @@ function playerVideoStart(node, p, path, meta) {
     _playerRefreshLut(node, p);                              // bake the in_cs -> out_cs display LUT
     p.empty.style.display = "none"; p.canvas.style.display = "";
     p.pb.showTransport = true; if (p.transport) { p.transport.bar.style.display = "flex"; if (p.transport.audioRow) p.transport.audioRow.style.display = "none"; }
-    if (p.refreshOverlay) p.refreshOverlay.style.display = "none";
+    if (p.refreshOverlay) { p.refreshOverlay.textContent = "↻ Refresh"; p.refreshOverlay.style.display = ""; }   // persistent Refresh in video mode: re-reads the current upstream file (switch the Load Video file -> click Refresh)
+    _setVideoOutput(node, true);                             // streaming a video (any trigger) -> expose the VIDEO output
     node.setSize([node.size[0], node.computeSize()[1]]);
     _playerVideoRaf(node, p);
+}
+// Trace the graph back to the upstream video FILE: a standard Load Video node (its 'file' widget, resolved against
+// the input dir by /ocio/stream) or an OCIO Read with a video 'source'. Lets the Player RE-READ the current file on
+// Refresh - so changing the Load Video file (a widget change, NOT a connection change) is picked up without recreating
+// the node, and without a backend round-trip that ComfyUI might cache. Added 2026-07-03.
+function _playerTraceVideoSrc(node, seen) {
+    seen = seen || new Set();
+    if (!node || seen.has(node.id)) return null;
+    seen.add(node.id);
+    if (node.type === "LoadVideo") { const w = W(node, "file"); return (w && w.value) ? String(w.value) : null; }
+    if (node.type === "OCIORead") { const s = W(node, "source")?.value; return (s && /\.(mov|mp4|mkv|avi|webm|mxf|m4v)$/i.test(String(s))) ? String(s) : null; }
+    for (const inp of (node.inputs || [])) {
+        if (inp.link == null) continue;
+        const link = app.graph.links[inp.link]; if (!link) continue;
+        const f = _playerTraceVideoSrc(app.graph.getNodeById(link.origin_id), seen);
+        if (f) return f;
+    }
+    return null;
+}
+async function _playerVideoRefresh(node) {
+    const p = node._ocioPlayer || ensurePlayer(node);
+    const src = _playerTraceVideoSrc(node);
+    if (!src) { app.queuePrompt(0, 1); return; }              // no traceable video source -> fall back to a full render
+    let fps = 24, frames = 0;
+    try {
+        const r = await fetch("/ocio/seq_range", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source: src }) });
+        const d = await r.json(); fps = d.fps || 24; frames = d.count || 0;
+    } catch (e) {}
+    playerVideoStart(node, p, src, { fps, frames });          // stream the CURRENT upstream file (re-read -> switching the Load Video file works)
 }
 function ensurePlayer(node) {
     if (node._ocioPlayer) return node._ocioPlayer;
@@ -1597,7 +1627,7 @@ function ensurePlayer(node) {
     refreshBtn.style.cssText = "padding:5px 12px;border:0;border-radius:4px;background:#2b2b40;color:#cde;cursor:pointer;font:12px sans-serif;";
     refreshBtn.onmouseenter = () => refreshBtn.style.background = "#39395a";
     refreshBtn.onmouseleave = () => refreshBtn.style.background = "#2b2b40";
-    refreshBtn.onclick = () => app.queuePrompt(0, 1);   // == Queue: OCIOPlayer is OUTPUT_NODE, so this renders the graph + repopulates the viewport (owner: no duplicate button - this in-viewport Refresh IS the render)
+    refreshBtn.onclick = () => { if (_playerTraceVideoSrc(node)) _playerVideoRefresh(node); else app.queuePrompt(0, 1); };   // video upstream -> stream it directly; else render (OCIOPlayer is OUTPUT_NODE)
     empty.append(emptyMsg, refreshBtn);
     // Auto-Refresh overlay: floats OVER the viewport when the node's INPUT changes (a node inserted / rewired
     // upstream, e.g. an OCIO Log Converter dropped in between) - the cached frames are then stale, so this prompts a
@@ -1608,7 +1638,7 @@ function ensurePlayer(node) {
     refreshOverlay.style.cssText = "position:absolute;top:6px;left:50%;transform:translateX(-50%);z-index:5;display:none;padding:4px 10px;border:0;border-radius:4px;background:rgba(40,40,64,0.92);color:#cde;cursor:pointer;font:11px sans-serif;box-shadow:0 1px 4px rgba(0,0,0,0.5);";
     refreshOverlay.onmouseenter = () => refreshOverlay.style.background = "rgba(57,57,90,0.95)";
     refreshOverlay.onmouseleave = () => refreshOverlay.style.background = "rgba(40,40,64,0.92)";
-    refreshOverlay.onclick = () => app.queuePrompt(0, 1);
+    refreshOverlay.onclick = () => { const pp = node._ocioPlayer; if (pp && (pp.videoMode || _playerTraceVideoSrc(node))) _playerVideoRefresh(node); else app.queuePrompt(0, 1); };   // video upstream -> re-read the file; else render
     // Exposure control now lives HORIZONTALLY in the transport strip (between the viewport and the timeline), built
     // in _ensureTransport when p.isPlayer is set. No slider inside the viewport anymore. Owner spec 2026-07-03 (Task C).
     const video = document.createElement("video");           // Ф1b: hidden <video> for streaming a video source into the WebGL viewport (exposure + LUT shader)
@@ -1630,7 +1660,13 @@ function ensurePlayer(node) {
     // Show the auto-Refresh overlay when an INPUT connection changes (a node plugged in / rewired upstream) - the
     // cached render is now stale. LiteGraph.INPUT === 1. Only once a render exists (before that, the empty-state Refresh covers it).
     node.onConnectionsChange = (orig => function (type, idx, connected, link_info) {
-        try { const pp = node._ocioPlayer; if (type === 1 && pp && pp.player && pp.refreshOverlay) pp.refreshOverlay.style.display = ""; } catch (e) {}
+        try {
+            const pp = node._ocioPlayer;
+            if (type === 1 && pp) {
+                if (_playerTraceVideoSrc(node)) _playerVideoRefresh(node);                         // a video source (Load Video / Read) is upstream -> stream the current file
+                else if (pp.player && pp.refreshOverlay) pp.refreshOverlay.style.display = "";      // a float source changed -> prompt a re-render
+            }
+        } catch (e) {}
         return orig && orig.apply(this, arguments);
     })(node.onConnectionsChange);
     return p;

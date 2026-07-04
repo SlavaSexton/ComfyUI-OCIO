@@ -23,9 +23,31 @@ import glob
 import re
 import shutil
 import subprocess
+from fractions import Fraction
 
 import numpy as np
 import torch
+
+# Video output for OCIO Read / Player so their frame batch can feed VIDEO-typed inputs (Wan/Kling/Grok/Topaz
+# edit nodes, SaveVideo, etc. - those take VIDEO, not IMAGE). Guarded: an old ComfyUI without comfy_api's video
+# type just gets a None VIDEO slot instead of an import crash. Added 2026-07-03.
+try:
+    from comfy_api.latest import InputImpl as _CA_IMPL, Types as _CA_TYPES
+    _HAS_VIDEO_API = True
+except Exception:
+    _HAS_VIDEO_API = False
+
+
+def _make_video(images, fps):
+    """Build a ComfyUI VIDEO object from an IMAGE batch + fps (so OCIO Read/Player can feed video nodes).
+    None if the comfy_api video type is unavailable (very old ComfyUI) - the output slot then stays empty."""
+    if not _HAS_VIDEO_API or images is None:
+        return None
+    try:
+        r = float(fps) if fps and float(fps) > 0 else 24.0
+        return _CA_IMPL.VideoFromComponents(_CA_TYPES.VideoComponents(images=images, frame_rate=Fraction(r).limit_denominator(600000)))
+    except Exception:
+        return None
 
 try:
     import cv2
@@ -790,8 +812,8 @@ class OCIORead:
                     "tooltip": "0 = take from the video metadata (24 for stills). Flows to OCIO Write through the wire."}),
         }}
 
-    RETURN_TYPES = ("IMAGE", "MASK", "FLOAT", "STRING")
-    RETURN_NAMES = ("image/sequence/video", "alpha", "fps", "info")
+    RETURN_TYPES = ("IMAGE", "MASK", "FLOAT", "STRING", "VIDEO")
+    RETURN_NAMES = ("image/sequence/video", "alpha", "fps", "info", "video")   # VIDEO appended (index 4) so the frame batch can feed VIDEO-typed edit/save nodes; indices 0-3 unchanged
     FUNCTION = "read"
     CATEGORY = "OCIO"
 
@@ -823,7 +845,7 @@ class OCIORead:
         # the single on-node preview for Read. A ui.images entry would render a SECOND, stale-after-run
         # thumbnail (ComfyUI paints it from node.imgs independently of the DOM widget). OCIOWrite keeps its
         # ui.images preview - it has no live front-end thumb, so that is still its only preview.
-        return (rgb, mask, out_fps, txt)
+        return (rgb, mask, out_fps, txt, _make_video(rgb, out_fps))   # VIDEO from the SAME color-managed batch + fps
 
 
 _STILL_EXT = {"exr": "exr", "tiff": "tif", "png": "png", "jpeg": "jpg"}
@@ -1062,11 +1084,12 @@ class OCIOPlayer:
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
 
-    RETURN_TYPES = ("IMAGE", "MASK", "FLOAT", "STRING")
-    RETURN_NAMES = ("image/sequence/video", "alpha", "fps", "info")
+    RETURN_TYPES = ("IMAGE", "MASK", "FLOAT", "STRING", "VIDEO")
+    RETURN_NAMES = ("image/sequence/video", "alpha", "fps", "info", "video")   # VIDEO appended (index 4); indices 0-3 unchanged
     OUTPUT_NODE = True   # 2026-07-03: always execute on queue (a viewer), so its Refresh/Render populates it even as a terminal node
     OUTPUT_TOOLTIPS = ("Batch converted input->output colorspace and trimmed to [start,end]. Exposure is view-only, NOT baked here.",
-                       "Alpha for the trimmed range.", "fps (passed through).", "What the node did.")
+                       "Alpha for the trimmed range.", "fps (passed through).", "What the node did.",
+                       "The output batch as a VIDEO object, to feed VIDEO-typed edit/save nodes.")
     FUNCTION = "play"
     CATEGORY = "OCIO"
 
@@ -1108,11 +1131,11 @@ class OCIOPlayer:
             info = f"player: streaming video {os.path.basename(vpath)} ({vw}x{vh}, {vframes} frame(s))"
             return {"ui": {"video_path": [vpath], "video_res": [f"{vw}x{vh}"], "video_fps": [str(vfps)],
                            "video_frames": [str(vframes)], "input_cs": [input_colorspace]},
-                    "result": (out, mask, float(fps), info)}
+                    "result": (out, mask, float(fps), info, _make_video(out, fps))}
         if images is None:                                          # nothing connected -> valid empty output (OUTPUT_NODE)
             out = torch.zeros((1, 1, 1, 3), dtype=torch.float32)
             mask = torch.ones((1, 1, 1), dtype=torch.float32)
-            return {"ui": {}, "result": (out, mask, float(fps), "player: no input")}
+            return {"ui": {}, "result": (out, mask, float(fps), "player: no input", _make_video(out, fps))}
         n = int(images.shape[0])
         cache_dir, total, cached, h, w = _player_cache(unique_id, images, alpha)
         # start_frame/end_frame are SOURCE frame numbers (so the node's fields match the upstream OCIO Read + the
@@ -1138,7 +1161,7 @@ class OCIOPlayer:
         info = f"player: {total} frame(s) in{cap_note}; out [{s + b}-{e + b}] = {out.shape[0]} frame(s), {w}x{h}, {cs}"
         return {"ui": {"player_dir": [cache_dir], "player_total": [str(total)], "player_cached": [str(cached)],
                        "resolution": [f"{w}x{h}"], "fps": [str(float(fps))], "input_cs": [input_colorspace]},
-                "result": (out, mask, float(fps), info)}
+                "result": (out, mask, float(fps), info, _make_video(out, fps))}
 
 
 NODE_CLASS_MAPPINGS = {"OCIORead": OCIORead, "OCIOWrite": OCIOWrite, "OCIOPlayer": OCIOPlayer}

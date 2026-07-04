@@ -1146,6 +1146,7 @@ async function uploadRead(node) {
 }
 
 // ---- disk browser (server-side) - folders for Write output, folders + files for Read source ---------------
+let _ocioLastBrowseDir = "";   // remember the folder the browser was last in, so re-opening Open Files starts there (not the root)
 async function listDir(path, wantFiles, sequence) {
     const r = await fetch("/ocio/list_dirs", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -1232,6 +1233,8 @@ function openBrowser(node, opts) {
     async function render(path) {
         state = await listDir(path, opts.pickFiles, opts.pickFiles && seqMode);
         cur.value = state.path;
+        if (state.path) _ocioLastBrowseDir = state.path;   // remember where we are for next time
+
         list.innerHTML = "";
         const here = state.path.replace(/\\/g, "/");
         for (const d of state.dirs) {
@@ -1275,7 +1278,9 @@ function openBrowser(node, opts) {
         pick(p);
     };
     overlay.onclick = (e) => { if (e.target === overlay) close(); };
-    render("");
+    const _cur = (W(node, opts.widget)?.value || "").trim();
+    const _start = _cur ? _cur.replace(/[\\/][^\\/]*$/, "") : _ocioLastBrowseDir;   // open in the current file's folder, else where we last browsed (not the root)
+    render(_start || "");
 }
 function openFolderDialog(node) {   // Write output folder
     return openBrowser(node, { widget: "output_folder", forOutput: true });
@@ -1567,7 +1572,12 @@ function playerVideoStart(node, p, path, meta) {
         p._vidUrl = url; p.video.loop = false; p.pb.playing = false; p.pb.dir = 1; p.pb.revAnchor = null;
         p.video.src = url;
         p.video.onseeked = () => { if (p.videoMode) _playerVideoDraw(p); };   // reverse / scrub: paint each settled seek
-        p.video.onloadedmetadata = () => { if (p.video.videoWidth) _adoptAspect(node, p, p.video.videoWidth, p.video.videoHeight); };
+        p.video.onloadedmetadata = () => {
+            if (p.video.videoWidth) {
+                _adoptAspect(node, p, p.video.videoWidth, p.video.videoHeight);
+                renderPlayerMeta(node, { resolution: p.video.videoWidth + "x" + p.video.videoHeight, total: meta.frames || 0, cached: meta.frames || 0, fps: meta.fps || 24, input_cs: W(node, "input_colorspace")?.value });
+            }
+        };
         p.video.onerror = () => { p.videoMode = false; p.canvas.style.display = "none"; p.empty.style.display = "flex"; p.empty.firstChild.textContent = "Video: browser cannot decode this codec (ProRes / DNxHR need an H.264 proxy)"; };
     }
     p.pb.seqMode = false;                                    // shared transport now runs the <video> clock
@@ -1580,6 +1590,7 @@ function playerVideoStart(node, p, path, meta) {
     p.pb.showTransport = true; if (p.transport) { p.transport.bar.style.display = "flex"; if (p.transport.audioRow) p.transport.audioRow.style.display = "none"; }
     if (p.refreshOverlay) { p.refreshOverlay.textContent = "↻ Refresh"; p.refreshOverlay.style.display = ""; }   // persistent Refresh in video mode: re-reads the current upstream file (switch the Load Video file -> click Refresh)
     _setVideoOutput(node, true);                             // streaming a video (any trigger) -> expose the VIDEO output
+    renderPlayerMeta(node, { resolution: meta.res || "-", total: meta.frames || 0, cached: meta.frames || 0, fps: meta.fps || 24, input_cs: W(node, "input_colorspace")?.value });   // show meta now; loadedmetadata fills in the resolution
     node.setSize([node.size[0], node.computeSize()[1]]);
     _playerVideoRaf(node, p);
 }

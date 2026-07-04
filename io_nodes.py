@@ -1041,7 +1041,6 @@ class OCIOPlayer:
         cs = _colorspace_names()
         return {
             "required": {
-                "images": ("IMAGE", {"tooltip": "Any IMAGE batch - still (N=1), sequence or video (N>1)."}),
                 "input_colorspace": _combo_or_string(cs, WORKING, "The colorspace the incoming batch is in (front-end auto-guesses ACEScg for HDR / >1 data, else sRGB - Display)."),
                 "output_colorspace": _combo_or_string(cs, WORKING, "The colorspace to convert the OUTPUT to."),
                 "raw_data": ("BOOLEAN", {"default": False, "label_on": "raw (no convert)", "label_off": "color-managed",
@@ -1054,6 +1053,8 @@ class OCIOPlayer:
                                   "tooltip": "Playback rate for the viewer + the fps output."}),
             },
             "optional": {
+                "images": ("IMAGE", {"tooltip": "Any IMAGE batch - still (N=1), sequence or video (N>1). Optional: connect a Load Video node to 'video' instead to stream a movie without materializing it."}),
+                "video": ("VIDEO", {"tooltip": "Connect a Load Video node here to STREAM a movie in the viewport (WebCodecs decode-on-demand, no whole-clip materialization). Takes priority over 'images' for what the viewer shows."}),
                 "alpha": ("MASK", {"tooltip": "Optional alpha to view / carry through."}),
                 "base": ("STRING", {"default": "0",
                                     "tooltip": "Source first-frame number, set by the front end from the upstream OCIO Read (hidden). start_frame/end_frame are SOURCE frame numbers; the node subtracts base to get 0-based batch indices. 0 = already 0-based indices. STRING (not INT) so a blank value can NEVER fail prompt validation."}),
@@ -1069,8 +1070,49 @@ class OCIOPlayer:
     FUNCTION = "play"
     CATEGORY = "OCIO"
 
-    def play(self, images, input_colorspace, output_colorspace, raw_data, start_frame, end_frame, fps,
-             alpha=None, base=0, unique_id="0"):
+    def play(self, input_colorspace, output_colorspace, raw_data, start_frame, end_frame, fps,
+             images=None, alpha=None, base=0, video=None, unique_id="0"):
+        # A connected VIDEO streams client-side (WebCodecs decode-on-demand) - do NOT materialize its frames
+        # (a long 4K clip is hundreds of GB). Extract just the file path + a cheap probe for the front end; skip
+        # the float cache. Takes priority over 'images' for what the viewer shows.
+        vpath = ""
+        if video is not None:
+            try:
+                src = video.get_stream_source()
+                vpath = src if isinstance(src, str) else ""
+            except Exception:
+                vpath = ""
+        if vpath:
+            vw = vh = 0
+            vfps = 0.0
+            vframes = 0
+            try:
+                _require_ffmpeg()
+                pr = subprocess.run([_FFPROBE, "-v", "error", "-select_streams", "v:0", "-show_entries",
+                                     "stream=width,height,nb_frames,r_frame_rate,avg_frame_rate,duration",
+                                     "-of", "default=noprint_wrappers=1", vpath], capture_output=True, text=True)
+                pi = dict(l.split("=", 1) for l in pr.stdout.strip().splitlines() if "=" in l)
+                vw, vh = int(pi.get("width", 0) or 0), int(pi.get("height", 0) or 0)
+                vfps = _video_fps(pi)
+                vframes = int(pi.get("nb_frames", 0) or 0)
+                if not vframes and vfps and pi.get("duration"):
+                    vframes = int(round(float(pi["duration"]) * vfps))
+            except Exception:
+                pass
+            if images is not None:                                  # still pass images through to the OUTPUT (no float cache built)
+                out = images if raw_data else _convert(images, input_colorspace, output_colorspace)
+                mask = torch.ones((out.shape[0], out.shape[1], out.shape[2]), dtype=torch.float32)
+            else:
+                out = torch.zeros((1, 1, 1, 3), dtype=torch.float32)
+                mask = torch.ones((1, 1, 1), dtype=torch.float32)
+            info = f"player: streaming video {os.path.basename(vpath)} ({vw}x{vh}, {vframes} frame(s))"
+            return {"ui": {"video_path": [vpath], "video_res": [f"{vw}x{vh}"], "video_fps": [str(vfps)],
+                           "video_frames": [str(vframes)], "input_cs": [input_colorspace]},
+                    "result": (out, mask, float(fps), info)}
+        if images is None:                                          # nothing connected -> valid empty output (OUTPUT_NODE)
+            out = torch.zeros((1, 1, 1, 3), dtype=torch.float32)
+            mask = torch.ones((1, 1, 1), dtype=torch.float32)
+            return {"ui": {}, "result": (out, mask, float(fps), "player: no input")}
         n = int(images.shape[0])
         cache_dir, total, cached, h, w = _player_cache(unique_id, images, alpha)
         # start_frame/end_frame are SOURCE frame numbers (so the node's fields match the upstream OCIO Read + the

@@ -1568,6 +1568,20 @@ function _playerLayout(node) {
 function playerOnExecuted(node, message) {
     const p = ensurePlayer(node);
     const first = (v) => Array.isArray(v) ? v[0] : v;
+    // VIDEO source (a Load Video / OCIO Read video traced to a file): stream it client-side, NOT the float batch.
+    // Phase 1a: capture the path + metadata; Phase 1b streams it via WebCodecs. For now show a placeholder + meta.
+    const vpath = first(message && message.video_path);
+    if (vpath) {
+        const vres = first(message.video_res) || "", vfps = parseFloat(first(message.video_fps)) || 24, vframes = parseInt(first(message.video_frames), 10) || 0;
+        p.videoSrc = { path: vpath, res: vres, fps: vfps, frames: vframes };
+        console.log("[OCIO Player] video source:", vpath, vres, vfps + "fps", vframes + " frames");
+        _playerStop(p); p.player = null;                          // not the float path
+        p.canvas.style.display = "none"; p.empty.style.display = "flex";
+        p.empty.firstChild.textContent = `Video ${vres} ${vframes}f @ ${vfps} - WebCodecs stream (building)`;
+        if (p.refreshOverlay) p.refreshOverlay.style.display = "none";
+        renderPlayerMeta(node, { resolution: vres, total: vframes, cached: vframes, fps: vfps, input_cs: first(message.input_cs) });
+        return;
+    }
     const dir = first(message && message.player_dir);
     const total = parseInt(first(message && message.player_total) || "0", 10);
     const cached = parseInt(first(message && message.player_cached) || "0", 10);
@@ -1647,6 +1661,7 @@ app.registerExtension({
                 const rr = _ocLabel ? _ocLabel.apply(this, arguments) : undefined;
                 const relabel = () => {
                     for (const s of (this.inputs || [])) if (s.type === "IMAGE" && (s.name === "image" || s.name === "images")) s.label = "img/seq/vid";
+                    for (const s of (this.inputs || [])) if (s.type === "VIDEO") s.label = "Load Video";   // OCIO Player: the VIDEO input takes a Load Video node (streamed, not materialized)
                     for (const s of (this.outputs || [])) if (s.type === "IMAGE") s.label = "img/seq/vid";
                     this.setDirtyCanvas(true, true);
                 };

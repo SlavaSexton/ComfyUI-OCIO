@@ -326,11 +326,14 @@ try:
         root = folder_paths.get_output_directory() if folder_paths else os.getcwd()
         of = str(d.get("output_folder", "") or "").strip()
         folder = root if not of else (of if os.path.isabs(of) else os.path.join(root, of))
+        sf = d.get("still_frame")
+        sf = int(sf) if (sf is not None and str(sf) != "") else None       # still grabbed from a seq/video -> stamp the frame number
         try:
             first = _write_output_paths(folder, d.get("filename", ""), d.get("container", "sequence"),
                                         d.get("still_format", "exr"), d.get("video_codec", "prores_4444"),
                                         d.get("output_colorspace", ""), bool(d.get("raw_data")),
-                                        bool(d.get("colorspace_in_name", True)), int(d.get("start_number", 1) or 1), 1)[0]
+                                        bool(d.get("colorspace_in_name", True)), int(d.get("start_number", 1) or 1), 1,
+                                        still_frame=sf)[0]
         except Exception as e:
             return web.json_response({"error": str(e)[:200]}, status=400)
         existing = []

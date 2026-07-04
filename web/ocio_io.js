@@ -1898,6 +1898,10 @@ async function ocioWriteRender(node) {
             raw_data: W(node, "raw_data")?.value ? 1 : 0, colorspace_in_name: W(node, "colorspace_in_name")?.value ? 1 : 0,
             start_number: parseInt(W(node, "start_number")?.value, 10) || 1,
         };
+        if (params.container === "still image") {            // a still grabbed from a sequence / video stamps its frame number -> match that name for the exists-check
+            const _r = findUpstreamRead(node), _k = _r && _r._ocioSeq && _r._ocioSeq.kind;
+            if (_k === "sequence" || _k === "video") params.still_frame = parseInt(W(node, "first_frame")?.value, 10);
+        }
         const r = await fetch("/ocio/write_paths", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(params) });
         const d = await r.json();
         if (d && Array.isArray(d.existing) && d.existing.length) {
@@ -2094,9 +2098,16 @@ app.registerExtension({
                 onChange(this, "video_codec", () => { applyCodecLabel(); pokeWidgets(node); node.setDirtyCanvas(true, true); });
                 // auto frame range / fps from the upstream OCIO Read
                 onChange(this, "auto_range", (v) => { if (v) syncWriteFromUpstream(node); });
-                for (const w of ["first_frame", "last_frame", "start_number"]) {
+                for (const w of ["last_frame", "start_number"]) {
                     onChange(this, w, () => { const ar = W(node, "auto_range"); if (ar) ar.value = false; });  // manual edit -> auto OFF
                 }
+                onChange(this, "first_frame", () => {
+                    const ar = W(node, "auto_range"); if (ar) ar.value = false;                                // manual edit -> auto OFF
+                    // output keeps the SOURCE frame numbers: start_number tracks first_frame, so rendering frame 39
+                    // (first=last=39) names it 0039, not 0000. A later manual start_number edit still overrides (re-base).
+                    const ff = W(node, "first_frame"); if (ff) setWSilent(node, "start_number", ff.value);
+                    node.setDirtyCanvas(true, true);
+                });
                 // profile: a concrete HDR preset silently drives from/output colorspace + still_format/bit_depth;
                 // "auto" resolves via resolveAutoProfile (upstream trace); a manual colorspace edit flips back to "none"
                 onChange(this, "profile", (v) => { if (v !== "auto") applyProfile(node, v); });

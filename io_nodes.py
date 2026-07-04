@@ -977,10 +977,12 @@ def _cs_tag(name):
 
 
 def _write_output_paths(folder, filename, container, still_format, video_codec, output_colorspace,
-                        raw_data, colorspace_in_name, start_number, count):
+                        raw_data, colorspace_in_name, start_number, count, still_frame=None):
     """The exact output file path(s) OCIOWrite.write() creates for these params - SINGLE SOURCE OF TRUTH for both
     write() and the /ocio/write_paths overwrite check (so the "file exists?" prompt checks the real names). count =
-    number of frames to write (1 for a still / video). Added 2026-07-04."""
+    number of frames to write (1 for a still / video). still_frame (still image only): when not None, the source
+    frame number to stamp in the name (name_cs.0039.png) - a still grabbed from a sequence / video; None = plain
+    name (a single image). Added 2026-07-04."""
     name = (str(filename) if filename is not None else "").strip() or "ocio_out"
     tag = ("raw" if raw_data else _cs_tag(output_colorspace)) if colorspace_in_name else ""
     stem = f"{name}_{tag}" if tag else name
@@ -988,7 +990,10 @@ def _write_output_paths(folder, filename, container, still_format, video_codec, 
         ext = ".mov" if str(video_codec).startswith(("prores", "dnxhr")) else ".mp4"
         return [os.path.join(folder, stem + ext)]
     if container == "still image":
-        return [os.path.join(folder, f"{stem}.{_STILL_EXT[still_format]}")]
+        ext = _STILL_EXT[still_format]
+        if still_frame is not None:                                        # a frame grabbed from a seq/video -> stamp its source frame number
+            return [os.path.join(folder, f"{stem}.{int(still_frame):04d}.{ext}")]
+        return [os.path.join(folder, f"{stem}.{ext}")]
     ext = _STILL_EXT[still_format]                                          # sequence: 4-digit numbered frames
     sn = int(start_number)
     return [os.path.join(folder, f"{stem}.{sn + i:04d}.{ext}") for i in range(max(1, int(count)))]
@@ -1095,9 +1100,9 @@ class OCIOWrite:
         cs = None if raw_data else output_colorspace                       # colorspace stamped in metadata
         base = source_start if source_start else 1                         # logical number of the first batch frame
         # output paths via the shared _write_output_paths (same names the /ocio/write_paths overwrite check uses)
-        def _wp(cnt):
+        def _wp(cnt, still_frame=None):
             return _write_output_paths(folder, filename, container, still_format, video_codec, output_colorspace,
-                                       raw_data, colorspace_in_name, start_number, cnt)
+                                       raw_data, colorspace_in_name, start_number, cnt, still_frame=still_frame)
 
         def alpha_of(src_a, i, ref):
             if src_a is None:
@@ -1107,7 +1112,9 @@ class OCIOWrite:
 
         if container == "still image":
             idx = min(max(0, first_frame - base), n - 1)                   # frame number -> batch index
-            saved = _wp(1)[0]
+            # a still grabbed from a sequence / video (n>1) stamps its SOURCE frame number in the name
+            # (name_cs.0039.png, not name_cs.png); a genuine single image (n==1) keeps the plain name.
+            saved = _wp(1, still_frame=(first_frame if n > 1 else None))[0]
             _save_still(saved, arr[idx], still_format, bit_depth, alpha_of(a_arr, idx, arr[idx]), cs, compression)
             count, preview = 1, arr[idx]
         else:

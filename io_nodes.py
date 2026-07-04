@@ -1345,6 +1345,17 @@ class OCIOPlayer:
             return {"ui": {"video_path": [vpath], "video_res": [f"{vw}x{vh}"], "video_fps": [str(vfps)],
                            "video_frames": [str(vframes)], "input_cs": [input_colorspace]},
                     "result": ()}                               # INPUT-ONLY viewer: nothing flows out
+        if video is not None and not vpath:
+            # 2026-07-04: a PROCESSED / in-memory VIDEO (VideoFromComponents, e.g. from Load Video -> OCIO color node)
+            # has NO file to stream. Unwrap it to frames and show the PROCESSED result through the float cache below -
+            # otherwise the viewer fell through to the empty branch and the intermediate OCIO nodes looked ignored.
+            try:
+                _vframes, _vfps, _ = _video_unwrap(video)
+                images = _vframes
+                if _vfps and _vfps > 0:
+                    fps = _vfps
+            except Exception:
+                pass
         if images is None:                                          # nothing connected -> empty viewer
             return {"ui": {}, "result": ()}
         cache_dir, total, cached, h, w = _player_cache(unique_id, images, alpha)   # cache the input as float .npy for the viewport (INPUT-ONLY: no trim, no output)

@@ -135,17 +135,17 @@ try:
             from .io_nodes import _split_frame
             groups, singles = {}, []
             for e in files:
-                sp = _split_frame(e)                       # basename -> (prefix, num, pad, ext)
+                sp = _split_frame(e)                       # basename -> (prefix, num, pad, ext, suffix)
                 if sp:
-                    prefix, num, pad, ext = sp
-                    groups.setdefault((prefix, ext, pad), []).append((num, e))
+                    prefix, num, pad, ext, suffix = sp
+                    groups.setdefault((prefix, suffix, ext, pad), []).append((num, e))
                 else:
                     singles.append(e)
             seqs = []
-            for (prefix, ext, pad), items in sorted(groups.items()):
+            for (prefix, suffix, ext, pad), items in sorted(groups.items()):
                 items.sort()
                 nums = [n for n, _ in items]
-                seqs.append({"label": f"{prefix}{'#' * pad}{ext}  [{nums[0]}-{nums[-1]}]  ({len(nums)})",
+                seqs.append({"label": f"{prefix}{'#' * pad}{suffix}{ext}  [{nums[0]}-{nums[-1]}]  ({len(nums)})",
                              "src": items[0][1]})
             for s in sorted(singles):
                 seqs.append({"label": s, "src": s, "single": True})

@@ -118,15 +118,17 @@ def _read_still(path):
 
 
 def _split_frame(path):
-    """`.../name.0132.exr` -> (prefix='.../name.', frame=132, pad=4, ext='.exr'); None if no trailing number.
-    Handles dot or underscore separators (name.0132.ext, name_0132.ext, name0132.ext)."""
+    """`.../name.0132.exr` -> (prefix='.../name.', frame=132, pad=4, ext='.exr', suffix=''); None if no number.
+    The frame is the LAST run of digits in the stem; any trailing NON-digit suffix after it (before the extension)
+    is captured separately, so 'supir_out_00001_.png' -> ('supir_out_', 1, 5, '.png', '_') collapses correctly
+    (Nuke handles this too). Handles dot / underscore separators (name.0132.ext, name_0132.ext, name0132.ext)."""
     d, base = os.path.dirname(path), os.path.basename(path)
     stem, ext = os.path.splitext(base)
-    m = re.match(r"^(.*?)(\d+)$", stem)
+    m = re.match(r"^(.*?)(\d+)(\D*)$", stem)   # last digit run + trailing non-digits (a suffix like '_'); (\D*)$ forces the LAST run
     if not m:
         return None
     prefix = os.path.join(d, m.group(1)) if d else m.group(1)
-    return (prefix, int(m.group(2)), len(m.group(2)), ext)
+    return (prefix, int(m.group(2)), len(m.group(2)), ext, m.group(3))
 
 
 def _frame_num(path):
@@ -140,9 +142,12 @@ def _sequence_siblings(path):
     sp = _split_frame(path)
     if not sp:
         return []
-    prefix, _, _, ext = sp
-    out = [c for c in glob.glob(prefix + "*" + ext)
-           if (_split_frame(c) or (None,))[0] == prefix and os.path.splitext(c)[1].lower() == ext.lower()]
+    prefix, _, _, ext, suffix = sp
+    out = []
+    for c in glob.glob(prefix + "*" + suffix + ext):        # e.g. supir_out_*_.png
+        x = _split_frame(c)
+        if x and x[0] == prefix and x[4] == suffix and os.path.splitext(c)[1].lower() == ext.lower():
+            out.append(c)
     return sorted(out, key=_frame_num)
 
 
@@ -151,8 +156,8 @@ def _seq_label(files):
     sp = _split_frame(files[0])
     if not sp:
         return os.path.basename(files[0])
-    prefix, n0, pad, ext = sp
-    return f"{os.path.basename(prefix)}{'#' * pad}{ext} [{n0}-{_frame_num(files[-1])}]"
+    prefix, n0, pad, ext, suffix = sp
+    return f"{os.path.basename(prefix)}{'#' * pad}{suffix}{ext} [{n0}-{_frame_num(files[-1])}]"
 
 
 def _collapse_ranges(nums):

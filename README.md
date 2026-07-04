@@ -7,6 +7,8 @@
 **Nuke-style OpenColorIO color nodes for ComfyUI.**
 <br>
 **Read a sequence, grade in ACES, write ProRes - fully color-managed.**
+<br>
+**Now on ComfyUI's native VIDEO wire: color-manage HDR, LTX, Flux, Cineon and 10-bit clips inside a native video graph.**
 
 **By [AI VFX NEWS](https://t.me/AI_VFX_NEWS) · Slava Sexton.**
 
@@ -24,12 +26,15 @@ Eight color-management nodes for ComfyUI, modelled on **The Foundry Nuke's OCIO 
 display transform or a LUT, and - the two big ones - **Read** any still / image sequence / video off disk and
 **Write** it back out color-managed, in EXR / TIFF / PNG / JPEG or ProRes / DNxHR / h264 / hevc.
 
-Every node is a standard ComfyUI node (plain `IMAGE` / `MASK` / `FLOAT` / `STRING` types), so they interoperate
-with the whole ecosystem: pipe **OCIO Read** into any node, and any node into **OCIO Write**.
+Every node is a standard ComfyUI node, so it interoperates with the whole ecosystem on plain `IMAGE` / `MASK` /
+`FLOAT` / `STRING` types: pipe **OCIO Read** into any node, and any node into **OCIO Write**. The six color nodes
+now also carry a native ComfyUI **VIDEO** input and output beside the IMAGE one, so they drop straight into
+ComfyUI's native video graph as color and light stages: `Load Video -> OCIO color node -> Video Combine / Save
+Video`. Same nodes, same math, now on the native VIDEO wire.
 
 <div align="center">
 
-<img src="docs/assets/nodes.png" width="880" alt="All eight OCIO nodes: Read, ColorSpace, LogConvert, CDLTransform, Display, FileTransform, LookTransform, Write">
+<img src="docs/assets/nodes.png" width="880" alt="The OCIO nodes in a ComfyUI workflow: native Load Image and Load Video feed OCIO Read, ColorSpace, LogConvert, Display, CDLTransform, FileTransform, LookTransform, Player and Write through paired OCIO Img/Seq/Vid and ComfyUI Video sockets">
 
 </div>
 
@@ -75,6 +80,15 @@ it must be a **full build** (the codecs above are only in full builds) on your s
 Check it is found with `ffmpeg -version` in a terminal. If ffmpeg is not on `PATH`, the still/sequence nodes
 still work - only the video container in OCIO Read / Write is unavailable, and it says so.
 
+### Compatibility: web UI and standalone
+
+The pack runs the same in both places: the **ComfyUI web UI** in a modern browser (tested in Google Chrome) and
+the **desktop / standalone** ComfyUI app. The nodes are pure Python, and the front end is a small `web/` bundle
+that loads in any current browser and in the standalone app alike. There is no OS-specific native code to build.
+The only external dependency for VIDEO is **ffmpeg** on your `PATH` (see above); for EXR, set
+`OPENCV_IO_ENABLE_OPENEXR=1` before ComfyUI starts. Neither is platform-specific: set them once on Windows, macOS
+or Linux and the nodes behave identically.
+
 ## Colorspaces, the short version
 
 ComfyUI has no color management: it holds images as plain gamma-encoded **sRGB** in `0..1`. These nodes add the
@@ -89,6 +103,30 @@ The config is **ACES 2.0**, so a few names differ from the ACES 1.x names you ma
 whole camera set is present (ARRI LogC3 / LogC4, RED Log3G10, Sony S-Log3, Canon Log, Panasonic V-Log, Apple Log,
 and more), just under the 2.0 names. Colorspace conversions match Nuke's; the display transform (OCIO Display) is
 the ACES 2.0 output, which reads slightly different from an ACES 1.x setup.
+
+---
+
+## Image and Video: native ComfyUI video pipeline
+
+These nodes are pure color and light operators, so they belong anywhere in a graph, on stills or on a moving
+clip. Each of the six color nodes (ColorSpace, LogConvert, Display, CDLTransform, FileTransform, LookTransform)
+carries two inputs side by side: an IMAGE input labelled **"OCIO Img/Seq/Vid"** and a VIDEO input labelled
+**"ComfyUI Video"**. They are mutually exclusive. Connect one and the other auto-disconnects; the output mirrors
+whichever input is live, so a VIDEO in gives you a VIDEO out and an IMAGE in gives you an IMAGE out.
+
+The VIDEO type is ComfyUI's **native** video (the `comfy_api` `VideoFromComponents`, the same type **Load Video**
+emits), not a custom wrapper. So the nodes talk directly to **Load Video**, **Save Video**, **Video Combine**,
+**Get Video Components**, and **VHS**. Drop a color node into the middle of a stock video graph and it fits.
+
+Two ends of the wire matter most:
+
+- **OCIO Read** exposes a VIDEO output ("ComfyUI Video") that feeds ComfyUI-native video nodes downstream.
+- **OCIO Write** takes a VIDEO input. Wire **Load Video** (or any VIDEO source) into it and Write **records** that
+  native clip to disk with all of its settings: container, codec, output colorspace, bit depth. The container
+  inherits the clip's frame rate. Verified: `Load Video -> OCIO Write (video, h264)` writes a valid h264 mp4.
+
+The practical result: color-manage and render HDR, LTX, Flux and Cineon plates, and 10-bit Seedance 4K, straight
+inside a native ComfyUI video graph, without bouncing frames out to a folder and back.
 
 ---
 
@@ -115,8 +153,9 @@ Load a **still / image sequence / video** off disk and color-manage it on the wa
   frame, or `error`. Missing frames are detected automatically and listed on the node and in the `info` output.
 - **fps** - taken from the video metadata (24 for stills); flows to **OCIO Write** through the wire.
 
-**Outputs:** `image/video` (the frame batch), `alpha` (MASK, the file's alpha channel), `fps`, `info`
-(frames / resolution / format / range / missing frames).
+**Outputs:** `OCIO Img/Seq/Vid` (the frame batch), `alpha` (MASK, the file's alpha channel), `fps`, `info`
+(frames / resolution / format / range / missing frames), and `ComfyUI Video` (a native ComfyUI VIDEO of the same
+color-managed batch, to feed Load Video / Save Video / Video Combine and the like).
 
 ### OCIO Write
 
@@ -166,16 +205,17 @@ blend with the original, and an optional **config_path**. The **swap** button fl
 
 ### OCIO LogConvert
 
-Linear <-> log (Nuke: *OCIOLogConvert*), **dependency-free** (no OCIO needed). **operation** (`lin_to_log` /
-`log_to_lin`), **curve**, **mix**. Curves are the published specs, verified by round-trip:
+Linear <-> log (Nuke: *OCIOLogConvert*), **dependency-free** (no OCIO needed). **operation** (`Linear to Log` /
+`Log to Linear`), **curve**, **mix**. Curves are the published specs, verified by round-trip:
 
-- **cineon** - Nuke's flat film log; black `0` lifts to `0.0928` (matches Nuke's default). *(default)*
-- **acescct** - ACES log with a toe (black `0.0729`, S-2016-001).
-- **acescc** - pure ACES log (S-2014-003).
-- **logc3** - ARRI LogC3 EI800; ceiling ~55 linear. The curve LTX-2's HDR IC-LoRA uses.
-- **logc4** - ARRI LogC4; wider headroom, ceiling ~469.8 linear. The curve LumiPic's V10 `*_logc4_*` HDR LoRA targets.
+- **Cineon** - Nuke's flat film log; black `0` lifts to `0.0928` (matches Nuke's default). *(default)*
+- **ACEScct** - ACES log with a toe (black `0.0729`, S-2016-001).
+- **ACEScc** - pure ACES log (S-2014-003).
+- **ARRI LogC3** - ARRI LogC3 EI800; ceiling ~55 linear. The curve LTX-2's HDR IC-LoRA uses.
+- **ARRI LogC4** - ARRI LogC4; wider headroom, ceiling ~469.8 linear. The curve LumiPic's V10 `*_logc4_*` HDR LoRA targets.
+- **Sony S-Log3**, **Panasonic V-Log**, **Canon Log 3**, **RED Log3G10**, **DaVinci Intermediate** - the rest of the camera-native set.
 
-The **swap** button flips the direction. For **logc3 / logc4**, `log_to_lin` decodes the plate to linear; keep
+The **swap** button flips the direction. For **ARRI LogC3 / LogC4**, `Log to Linear` decodes the plate to linear; keep
 the Rec.709 primaries, then convert Rec.709 -> ACEScg with **OCIO ColorSpace** (do not use a config "ARRI LogC3 /
 LogC4" colorspace - that assumes ARRI Wide Gamut and would shift the gamut).
 
@@ -204,6 +244,35 @@ flips in / out.
 
 ---
 
+## Color accuracy, measured
+
+Accuracy is a number here, not a claim. The pack ships a color-accuracy regression suite (`tools/accuracy`) that
+checks every transform against an **independent** PyOpenColorIO reference and the published specs, so you can read
+the error instead of trusting the label.
+
+<div align="center">
+
+<img src="docs/assets/accuracy/ocio_parity.png" width="880" alt="OCIO parity: OCIOColorSpace, Display and CDL versus the raw OCIO CPU processor, worst max-abs error 0.000e+00 across 9 transforms and 4 fixtures">
+
+</div>
+
+Latest run:
+
+- **Bit-exact OCIO parity.** OCIOColorSpace, Display and CDL match the raw OCIO CPU processor bit for bit: worst
+  max-abs error **0.000e+00** across 9 transforms x 4 fixtures, 0 results over the 1e-4 threshold.
+- **HDR safety: 0 silent clamps.** Negatives and values above 1.0 survive the conversions, curves and grades. No
+  quiet clip to the `0..1` box.
+- **Rec.709 -> ACEScg parity: 0.00e+00.** The exact path the LTX and Flux HDR recipes rely on.
+
+The suite renders its evidence to `docs/assets/accuracy/`: `ocio_parity.png` (node output vs the raw OCIO CPU
+processor), `log_curves.png` (log round-trips and vendor-spec anchors), `hdr_safety.png` (negatives and >1 values
+across conversions, curves and grade), `roundtrip.png` (A->B->A plus real EXR/PNG write/read loops),
+`deltaE_colorchecker.png` (ΔE2000 on the 24 X-Rite patches), `quantisation_dither.png` (8/16-bit and EXR
+write/read-back banding), `histogram_compare.png` (ours vs reference by `cv2.compareHist`). See
+`tools/accuracy/README.md` to run it yourself.
+
+---
+
 ## Recipe: LTX-2.3 SDR-to-HDR, written as an ACEScg EXR sequence
 
 **OCIO Write takes the LTX-2.3 HDR IC-LoRA output and writes it as an ACEScg EXR sequence.** LTX's HDR IC-LoRA
@@ -226,7 +295,7 @@ Wire it and OCIO Write auto-detects the LTX node upstream and sets `from_colorsp
 `output_colorspace = ACEScg` for you (`auto_colorspace`, on by default).
 
 **Method B, our chain (skip LTX's decoder).** Do the whole decode on this pack: tap LTX's `VAE Decode` output (the
-raw LogC3 plate), run **OCIO LogConvert** (`log_to_lin`, curve `logc3`) to get linear Rec.709, then **OCIO ColorSpace**
+raw LogC3 plate), run **OCIO LogConvert** (`Log to Linear`, curve `ARRI LogC3`) to get linear Rec.709, then **OCIO ColorSpace**
 (`Linear Rec.709 (sRGB)` -> `ACEScg`), then **OCIO Write**:
 
 ```
@@ -271,6 +340,25 @@ through OCIO Write with the frame count intact.
 
 You get the source image run through each of the six color nodes (with a preview each), plus an OCIO Read ->
 OCIO Write pair.
+
+## Why this exists (and what's next)
+
+ComfyUI has no real color management. Every model works in plain sRGB, `0..255`, and that is not a gap in one
+node, it is the whole ecosystem's default and its ceiling. Diffusion assumes 8-bit sRGB going in and coming out.
+That is fine for a thumbnail. It is not fine for anyone who has to hand a plate to a color pipeline.
+
+So this pack builds a real color pipeline on top of a system that was never meant to hold one. A large part of
+the work went into making color management function *inside* ComfyUI's IMAGE-only, sRGB world at all. ComfyUI
+fought it at nearly every step, from how images are typed on the wire to how the graph reloads. Most of what you
+don't see in these nodes is the plumbing that keeps real color math alive in a place that assumes it doesn't exist.
+
+Doing that pushed me toward something much bigger. I'm not going to say what it is yet. What I will say: it aims to
+turn ComfyUI into a genuine tool for the people who grade, composite and finish for a living, not a toy that
+outputs sRGB JPEGs. More on that soon.
+
+The jokes are over. This is built for working VFX, color and compositing pros from the film and advertising
+industry, to their standard. Work continues: bug fixes and new pro-grade features for OCIO color, on an ongoing
+basis.
 
 ## Credits
 

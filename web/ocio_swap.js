@@ -10,7 +10,7 @@ import { app } from "../../scripts/app.js";
 const SWAPS = {
     OCIOColorSpace:   { kind: "pair",   a: "in_colorspace", b: "out_colorspace", label: "⇄ swap in/out" },
     OCIOLookTransform:{ kind: "pair",   a: "in_colorspace", b: "out_colorspace", label: "⇄ swap in/out" },
-    OCIOLogConvert:   { kind: "toggle", a: "operation", on: "lin_to_log", off: "log_to_lin", label: "⇄ swap direction" },
+    OCIOLogConvert:   { kind: "toggle", a: "operation", on: "Linear to Log", off: "Log to Linear", label: "⇄ swap direction" },
 };
 
 function widget(node, name) {

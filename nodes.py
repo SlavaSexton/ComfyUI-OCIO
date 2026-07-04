@@ -501,10 +501,11 @@ class OCIOLogConvert:
     def INPUT_TYPES(cls):
         return {"required": {
             "image": ("IMAGE",),
-            "operation": (["lin_to_log", "log_to_lin"], {"default": "lin_to_log"}),
-            "curve": (["cineon", "acescct", "acescc", "logc3", "logc4", "slog3", "vlog", "canonlog3",
-                       "log3g10", "davinci_intermediate"], {"default": "cineon",
-                      "tooltip": "cineon = Nuke flat film log (black 0.0928). acescct = ACES log with a toe (0.0729). acescc = pure ACES log. logc3 = ARRI LogC3 EI800, the LTX-2 HDR curve (ceiling ~55 linear). logc4 = ARRI LogC4, wider headroom (ceiling ~469.8 linear), the LumiPic V10 *_logc4_* curve. slog3 = Sony S-Log3 (18% grey -> code 420/1023). vlog = Panasonic V-Log (18% grey -> code 433/1023). canonlog3 = Canon Log 3, three-piece curve with a linear mid segment around 0. log3g10 = RED Log3G10 (18% grey -> 1/3, 10 stops over grey -> 1.0). davinci_intermediate = Blackmagic DaVinci Intermediate OETF (18% grey -> 0.336043). All five are camera-native transfer curves only: log_to_lin decodes the plate to linear in the camera's own primaries; pair with a camera-gamut -> ACEScg ColorSpace step, not the config's same-named colorspace."}),
+            "operation": (["Linear to Log", "Log to Linear"], {"default": "Linear to Log"}),
+            "curve": (["Cineon", "ACEScct", "ACEScc", "ARRI LogC3", "ARRI LogC4", "Sony S-Log3",
+                       "Panasonic V-Log", "Canon Log 3", "RED Log3G10", "DaVinci Intermediate"],
+                      {"default": "Cineon",
+                      "tooltip": "Cineon = Nuke flat film log (black 0.0928). ACEScct = ACES log with a toe (0.0729). ACEScc = pure ACES log. ARRI LogC3 = ARRI LogC3 EI800, the LTX-2 HDR curve (ceiling ~55 linear). ARRI LogC4 = ARRI LogC4, wider headroom (ceiling ~469.8 linear), the LumiPic V10 *_logc4_* curve. Sony S-Log3 = Sony S-Log3 (18% grey -> code 420/1023). Panasonic V-Log = Panasonic V-Log (18% grey -> code 433/1023). Canon Log 3 = Canon Log 3, three-piece curve with a linear mid segment around 0. RED Log3G10 = RED Log3G10 (18% grey -> 1/3, 10 stops over grey -> 1.0). DaVinci Intermediate = Blackmagic DaVinci Intermediate OETF (18% grey -> 0.336043). All are camera-native transfer curves only: Log to Linear decodes the plate to linear in the camera's own primaries; pair with a camera-gamut -> ACEScg ColorSpace step, not the config's same-named colorspace."}),
             "mix": _mix_input(),
         }}
 
@@ -515,12 +516,37 @@ class OCIOLogConvert:
     CATEGORY = "OCIO"
 
     def run(self, image, operation, curve, mix=1.0):
-        f_lin2log, f_log2lin = _CURVES[curve]
-        fn = f_lin2log if operation == "lin_to_log" else f_log2lin
+        # 2026-07-04: dropdowns now show Title-Case labels (Sony S-Log3, Linear to Log). Map back to the machine keys,
+        # and still accept the OLD keys (cineon / lin_to_log) so saved graphs and the swap button keep working.
+        curve_map = {"Cineon": "cineon", "ACEScct": "acescct", "ACEScc": "acescc", "ARRI LogC3": "logc3",
+                     "ARRI LogC4": "logc4", "Sony S-Log3": "slog3", "Panasonic V-Log": "vlog",
+                     "Canon Log 3": "canonlog3", "RED Log3G10": "log3g10", "DaVinci Intermediate": "davinci_intermediate"}
+        op_map = {"Linear to Log": "lin_to_log", "Log to Linear": "log_to_lin",
+                  "lin_to_log": "lin_to_log", "log_to_lin": "log_to_lin"}
+        curve_key = curve_map.get(curve, curve)
+        op_key = op_map.get(operation, "lin_to_log")
+        f_lin2log, f_log2lin = _CURVES[curve_key]
+        fn = f_lin2log if op_key == "lin_to_log" else f_log2lin
         arr = image.detach().cpu().numpy().astype(np.float32)
         out = arr.copy()
         out[..., :3] = fn(arr[..., :3])
         return (_blend(image, torch.from_numpy(out).to(image.device, image.dtype), mix),)
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, curve=None, operation=None):
+        # The dropdowns switched from machine keys (cineon / lin_to_log) to Title-Case labels (Cineon / Linear to Log).
+        # ComfyUI would reject a SAVED graph holding the old value as "not in list" BEFORE run() maps it - so accept
+        # both here (listing curve/operation makes ComfyUI skip its combo-membership check and defer to this). run()
+        # maps either form to the curve key.
+        curves = {"Cineon", "ACEScct", "ACEScc", "ARRI LogC3", "ARRI LogC4", "Sony S-Log3", "Panasonic V-Log",
+                  "Canon Log 3", "RED Log3G10", "DaVinci Intermediate",
+                  "cineon", "acescct", "acescc", "logc3", "logc4", "slog3", "vlog", "canonlog3", "log3g10", "davinci_intermediate"}
+        ops = {"Linear to Log", "Log to Linear", "lin_to_log", "log_to_lin"}
+        if curve is not None and curve not in curves:
+            return f"curve '{curve}' is not a known log curve"
+        if operation is not None and operation not in ops:
+            return f"operation '{operation}' is not a known direction"
+        return True
 
 
 class OCIOColorSpace:

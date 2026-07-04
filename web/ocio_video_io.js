@@ -36,15 +36,21 @@ app.registerExtension({
         nodeType.prototype.onConnectionsChange = function (type, index, connected, link_info, ioSlot) {
             const r = _conn ? _conn.apply(this, arguments) : undefined;
             try {
-                if (this.__ocioDualBusy) return r;                 // re-entrancy guard: our own disconnects re-fire this
-                this.__ocioDualBusy = true;
+                // CRITICAL (owner 2026-07-04): do NOT mutate links while a graph is LOADING. On a page reload ComfyUI
+                // restores every link, firing onConnectionsChange for each; disconnecting mid-restore corrupted the
+                // whole graph (all links vanished). Two guards: skip while app.configuringGraph is set, AND only ever
+                // disconnect on a GENUINE conflict (the OTHER input already connected) - a saved graph never has both
+                // (mutual exclusion prevents it), so a normal load triggers nothing here.
+                if (app.configuringGraph || this.__ocioDualBusy) return r;
                 if (type === LG().INPUT && connected) {
                     const imgIn = inSlot(this, cfg.imgIn), vidIn = inSlot(this, cfg.vidIn);
-                    if (index === imgIn) {                          // IMAGE connected -> drop the VIDEO input + the (now dead) VIDEO output
-                        if (vidIn >= 0) this.disconnectInput(vidIn);
+                    const isC = (s) => s >= 0 && this.inputs[s] && this.inputs[s].link != null;
+                    this.__ocioDualBusy = true;
+                    if (index === imgIn && isC(vidIn)) {            // IMAGE just connected while VIDEO is in -> drop VIDEO in + its dead output
+                        this.disconnectInput(vidIn);
                         if (cfg.vidOut != null) this.disconnectOutput(cfg.vidOut);
-                    } else if (index === vidIn) {                   // VIDEO connected -> drop the IMAGE input + the (now dead) IMAGE output
-                        if (imgIn >= 0) this.disconnectInput(imgIn);
+                    } else if (index === vidIn && isC(imgIn)) {     // VIDEO just connected while IMAGE is in -> drop IMAGE in + its dead output
+                        this.disconnectInput(imgIn);
                         if (cfg.imgOut != null) this.disconnectOutput(cfg.imgOut);
                     }
                 }

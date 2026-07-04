@@ -125,8 +125,32 @@ try:
         except Exception:
             pass
         parent = os.path.dirname(base)
-        return web.json_response({"path": base, "parent": parent if parent != base else "", "dirs": dirs,
-                                  "files": files, "output_root": os.path.abspath(root)})
+        resp = {"path": base, "parent": parent if parent != base else "", "dirs": dirs,
+                "files": files, "output_root": os.path.abspath(root)}
+        # Sequence mode (owner E1): collapse numbered frames in this folder into ONE entry per name-prefix, so PBR
+        # passes (Diffuse.####, Normal.####, Depth.####) each show as a single named sequence with its frame range,
+        # Nuke-style. Non-numbered files stay as singles. The entry's src is the first frame; OCIO Read's frame_mode
+        # grabs the whole sequence from it.
+        if data.get("sequence") and files:
+            from .io_nodes import _split_frame
+            groups, singles = {}, []
+            for e in files:
+                sp = _split_frame(e)                       # basename -> (prefix, num, pad, ext)
+                if sp:
+                    prefix, num, pad, ext = sp
+                    groups.setdefault((prefix, ext, pad), []).append((num, e))
+                else:
+                    singles.append(e)
+            seqs = []
+            for (prefix, ext, pad), items in sorted(groups.items()):
+                items.sort()
+                nums = [n for n, _ in items]
+                seqs.append({"label": f"{prefix}{'#' * pad}{ext}  [{nums[0]}-{nums[-1]}]  ({len(nums)})",
+                             "src": items[0][1]})
+            for s in sorted(singles):
+                seqs.append({"label": s, "src": s, "single": True})
+            resp["seqs"] = seqs
+        return web.json_response(resp)
 
     @server.PromptServer.instance.routes.post("/ocio/seq_range")
     async def _ocio_seq_range(request):

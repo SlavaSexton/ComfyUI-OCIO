@@ -1122,10 +1122,10 @@ async function uploadRead(node) {
 }
 
 // ---- disk browser (server-side) - folders for Write output, folders + files for Read source ---------------
-async function listDir(path, wantFiles) {
+async function listDir(path, wantFiles, sequence) {
     const r = await fetch("/ocio/list_dirs", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ path: path || "", files: !!wantFiles }),
+        body: JSON.stringify({ path: path || "", files: !!wantFiles, sequence: !!sequence }),
     });
     return await r.json();
 }
@@ -1152,6 +1152,17 @@ function openBrowser(node, opts) {
     const title = document.createElement("div");
     title.textContent = opts.pickFiles ? "Choose a file, or a sequence folder" : "Choose / create output folder";
     title.style.fontWeight = "600";
+    // Sequence checkbox (Read source browser, owner E1): collapse numbered frames in a folder into ONE entry per
+    // name-prefix - PBR passes (Diffuse.#### / Normal.#### / Depth.####) each show as one named sequence. Default ON.
+    let seqMode = true, seqRow = null, seqChk = null;
+    if (opts.pickFiles) {
+        seqRow = document.createElement("label");
+        seqRow.style.cssText = "display:flex;align-items:center;gap:6px;font-size:12px;color:#bcd;cursor:pointer;user-select:none;";
+        seqChk = document.createElement("input"); seqChk.type = "checkbox"; seqChk.checked = true;
+        const sl = document.createElement("span"); sl.textContent = "Sequence (collapse numbered frames by name)";
+        seqRow.append(seqChk, sl);
+        seqChk.onchange = () => { seqMode = seqChk.checked; render(state.path); };
+    }
     const cur = document.createElement("input");
     cur.type = "text";
     cur.placeholder = "path (editable) - Enter to go there, e.g. D:\\Projects\\shot";
@@ -1183,7 +1194,7 @@ function openBrowser(node, opts) {
     const useBtn = mk(opts.pickFiles ? "use this folder (sequence)" : "use this folder", true);
     const cancelBtn = mk("cancel");
     buttons.append(upBtn, useBtn, cancelBtn);
-    box.append(title, cur, list, ...(newRow ? [newRow] : []), buttons);
+    box.append(title, cur, ...(seqRow ? [seqRow] : []), list, ...(newRow ? [newRow] : []), buttons);
     overlay.appendChild(box);
     document.body.appendChild(overlay);
 
@@ -1195,7 +1206,7 @@ function openBrowser(node, opts) {
         close();
     };
     async function render(path) {
-        state = await listDir(path, opts.pickFiles);
+        state = await listDir(path, opts.pickFiles, opts.pickFiles && seqMode);
         cur.value = state.path;
         list.innerHTML = "";
         const here = state.path.replace(/\\/g, "/");
@@ -1208,14 +1219,19 @@ function openBrowser(node, opts) {
             row.onclick = () => render(here + "/" + d);
             list.appendChild(row);
         }
-        for (const f of (state.files || [])) {
+        const fileRow = (label, src, icon) => {
             const row = document.createElement("div");
-            row.textContent = "🎞 " + f;
+            row.textContent = icon + " " + label;
             row.style.cssText = "padding:6px 10px;cursor:pointer;border-bottom:1px solid #2a2a2a;color:#cdd;";
             row.onmouseenter = () => (row.style.background = "#2c3b2c");
             row.onmouseleave = () => (row.style.background = "");
-            row.onclick = () => pick(here + "/" + f);            // pick this file (frame_mode grabs the sequence)
+            row.onclick = () => pick(here + "/" + src);          // frame_mode grabs the whole sequence from the first frame
             list.appendChild(row);
+        };
+        if (opts.pickFiles && seqMode && Array.isArray(state.seqs)) {
+            for (const s of state.seqs) fileRow(s.label, s.src, s.single ? "🎞" : "🎬");   // collapsed sequences (clapperboard) + singles (frame)
+        } else {
+            for (const f of (state.files || [])) fileRow(f, f, "🎞");
         }
         if (!state.dirs.length && !(state.files || []).length) {
             const e = document.createElement("div");

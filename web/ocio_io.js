@@ -1209,6 +1209,7 @@ async function uploadRead(node) {
 
 // ---- disk browser (server-side) - folders for Write output, folders + files for Read source ---------------
 let _ocioLastBrowseDir = "";   // remember the folder the browser was last in, so re-opening Open Files starts there (not the root)
+let _ocioLastOutputDir = "";   // OCIO Write: the ABSOLUTE last-CHOSEN output folder, so "Output Folder" re-opens there (owner 2026-07-04). Separate from _ocioLastBrowseDir so input browsing doesn't move the output start.
 async function listDir(path, wantFiles, sequence) {
     const r = await fetch("/ocio/list_dirs", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -1288,6 +1289,7 @@ function openBrowser(node, opts) {
     const close = () => overlay.remove();
     let state = { path: "", parent: "", output_root: "", dirs: [], files: [] };
     const pick = (p) => {
+        if (opts.forOutput) _ocioLastOutputDir = p;   // remember the ABSOLUTE chosen output folder, so next open starts here
         setW(node, opts.widget, opts.forOutput ? relToOutput(p, state.output_root) : p);
         if (opts.pickFiles) setW(node, "input_colorspace", autoInCs(p));
         close();
@@ -1341,7 +1343,11 @@ function openBrowser(node, opts) {
     };
     overlay.onclick = (e) => { if (e.target === overlay) close(); };
     const _cur = (W(node, opts.widget)?.value || "").trim();
-    const _start = _cur ? _cur.replace(/[\\/][^\\/]*$/, "") : _ocioLastBrowseDir;   // open in the current file's folder, else where we last browsed (not the root)
+    // OUTPUT folder: re-open at the last CHOSEN folder (absolute; the widget value is stored relative-to-output, so
+    // don't dirname it). FILE picker: open in the current file's folder, else where we last browsed. Fall back to root.
+    const _start = opts.forOutput
+        ? (_ocioLastOutputDir || _ocioLastBrowseDir || "")
+        : (_cur ? _cur.replace(/[\\/][^\\/]*$/, "") : _ocioLastBrowseDir);
     render(_start || "");
 }
 function openFolderDialog(node) {   // Write output folder
@@ -2130,7 +2136,7 @@ app.registerExtension({
                     });
                 }
                 showWidget(this, W(this, "render_nonce"), false);   // internal cache-buster - hidden with a true collapse (no blank row)
-                this.addWidget("button", "📁 choose output folder", null, () => openFolderDialog(this), { serialize: false });
+                this.addWidget("button", "Output Folder", null, () => openFolderDialog(this), { serialize: false });
                 this.addWidget("button", "▶ Render", null, () => ocioWriteRender(this), { serialize: false });
                 setTimeout(() => { applyContainer(); syncWriteFromUpstream(node); resolveAutoProfile(node); }, 0);
                 return r;

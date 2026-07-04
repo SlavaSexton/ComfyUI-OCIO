@@ -985,7 +985,7 @@ function syncPlayerFromUpstream(node) {
     const cached = (p.player.cached | 0) || 1;
     const read = findUpstreamRead(node);
     if (!read) {                                           // no OCIO Read upstream -> plain 0-based numbering (indices)
-        p.player.base = 0; setWSilent(node, "base", "0"); node.setDirtyCanvas(true, true); return;
+        p.player.base = 0; setWSilent(node, "base", "0"); p._syncRange = null; node.setDirtyCanvas(true, true); return;
     }
     const seq = read._ocioSeq;
     const rSF = W(read, "start_frame")?.value || 0;
@@ -996,12 +996,18 @@ function syncPlayerFromUpstream(node) {
     const lastN = first + cached - 1;
     p.player.base = first;
     setWSilent(node, "base", String(first));               // STRING widget: backend maps SOURCE start/end numbers -> 0-based batch indices (subtracts base)
-    // start_frame/end_frame now hold SOURCE numbers (so the fields match the timeline). Keep a still-valid user
-    // sub-range; otherwise snap to the full source range [first .. lastN].
+    // 2026-07-03 (BUG A fix): start_frame/end_frame hold SOURCE numbers (so the fields match the timeline). On a
+    // genuine source-range CHANGE (new first/lastN vs the last sync), snap to the full new range [first .. lastN] - a new clip shows
+    // whole. On a re-render of the SAME source (exposure / colorspace change, same range) preserve the current
+    // values if still a valid sub-range (keeps a user trim), else snap. Root cause of the stale-widget bug: the
+    // old guard could not tell a previous AUTO-SET range from a user trim, so switching to a source whose range
+    // CONTAINED the old values kept them (start/end widgets stale while the meta panel already showed the new range).
+    const rangeChanged = !p._syncRange || p._syncRange.first !== first || p._syncRange.last !== lastN;
     const curSF = Math.round(W(node, "start_frame")?.value || 0), curEF = Math.round(W(node, "end_frame")?.value || 0);
-    if (!(curSF >= first && curEF <= lastN && curSF <= curEF && curEF > 0)) {
+    if (rangeChanged || !(curSF >= first && curEF <= lastN && curSF <= curEF && curEF > 0)) {
         setWSilent(node, "start_frame", first); setWSilent(node, "end_frame", lastN);
     }
+    p._syncRange = { first, last: lastN };
     if (rFps > 0) { p.pb.fps = rFps; setWSilent(node, "fps", rFps); }   // fps must match the source, not the Player default
     node.setDirtyCanvas(true, true);
 }

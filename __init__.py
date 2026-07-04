@@ -163,6 +163,8 @@ try:
         in_cs = request.rel_url.query.get("in_cs", "")
         out_cs = request.rel_url.query.get("out_cs", "")
         raw = request.rel_url.query.get("raw", "0") == "1"
+        full = request.rel_url.query.get("full", "0") == "1"      # original mode: full-res (proxy = downscaled 512)
+        max_side = 8192 if full else 512                          # thumb_frame never upscales, so 8192 = "as-is" up to 8K
         try:
             frame = int(request.rel_url.query.get("frame", ""))   # sequence flipbook: a specific frame NUMBER
         except (TypeError, ValueError):
@@ -174,7 +176,7 @@ try:
             # sequence flipbook's rapid frame requests do NOT block the aiohttp event loop (which also serves
             # /prompt, /system_stats). cv2 / ffmpeg release the GIL during the heavy read, so this parallelises.
             import asyncio
-            rgb = await asyncio.get_event_loop().run_in_executor(None, thumb_frame, src, 512, frame)
+            rgb = await asyncio.get_event_loop().run_in_executor(None, thumb_frame, src, max_side, frame)
         except FileNotFoundError as e:
             return web.json_response({"error": f"not found: {e}"}, status=404)
         except Exception as e:

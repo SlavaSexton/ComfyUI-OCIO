@@ -222,7 +222,7 @@ function _adoptAspect(node, p, mw, mh) {
 function ensureReadPreview(node) {
     if (node._ocioPrev) return node._ocioPrev;
     const box = document.createElement("div");
-    box.style.cssText = "width:100%;height:100%;display:flex;justify-content:center;align-items:center;overflow:hidden;";
+    box.style.cssText = "width:100%;height:100%;position:relative;display:flex;justify-content:center;align-items:center;overflow:hidden;";
     const img = document.createElement("img");
     img.style.cssText = "width:100%;height:100%;object-fit:contain;display:none;";   // FILL the box (width/height 100%, not max-*): a small proxy thumb must upscale to the node size, like the Player's full-res canvas. object-fit:contain keeps aspect
     // a still/frame that fails to decode (server 404/400, or a non-media path that got through) shows the readable
@@ -237,7 +237,21 @@ function ensureReadPreview(node) {
     canvas.style.cssText = "width:100%;height:100%;object-fit:contain;display:none;";   // FILL the box (see img note): scale the color-managed video to the node size
     const msg = document.createElement("div");   // "No media - unsupported format" placeholder (hidden by default)
     msg.style.cssText = "display:none;color:#889;font:12px sans-serif;text-align:center;padding:24px;";
-    box.append(img, video, canvas, msg);
+    // Proxy / Original tag (top-left, faint): the preview is a downscaled 512px PROXY by default (fast); click to
+    // read the source at full resolution (ORIGINAL, as-is), click again to go back. Owner spec 2026-07-03.
+    const proxyTag = document.createElement("div");
+    proxyTag.textContent = "proxy";
+    proxyTag.title = "Preview resolution - proxy (fast, 512px) or original (full-res, as-is). Click to toggle.";
+    proxyTag.style.cssText = "position:absolute;top:3px;left:5px;z-index:4;font:10px sans-serif;color:rgba(180,200,220,0.5);cursor:pointer;user-select:none;text-shadow:0 1px 2px rgba(0,0,0,0.85);";
+    proxyTag.onclick = () => {
+        const pp = node._ocioPrev; if (!pp) return;
+        pp.original = !pp.original;                       // proxy (512px) <-> original (full-res)
+        proxyTag.textContent = pp.original ? "original" : "proxy";
+        proxyTag.style.color = pp.original ? "rgba(120,230,170,0.85)" : "rgba(180,200,220,0.5)";
+        _seqClearCache(pp);                              // resolution changed -> cached frames are stale
+        if (pp.seq) _seqShow(pp); else updateReadPreview(node);   // re-fetch the current frame at the new resolution
+    };
+    box.append(img, video, canvas, msg, proxyTag);
     const w = node.addDOMWidget("preview", "div", box, { serialize: false });
     w.computeSize = (width) => [0, node._ocioReadCollapsed ? 0 : _previewH(node, node._ocioPrev, width)];   // scale with node width (aspect-locked); 0 when the Viewer is collapsed
     w._ocioAlwaysVisible = true;                      // always shown, regardless of source kind
@@ -359,6 +373,7 @@ function _seqUrl(p, idx) {
         src: p.seq.src, frame: String(base + (idx | 0)),
         in_cs: W(node, "input_colorspace")?.value || "", out_cs: W(node, "output_colorspace")?.value || "",
         raw: W(node, "raw_data")?.value ? "1" : "0",
+        full: p.original ? "1" : "0",                    // original = full-res thumb, proxy = 512px
     }).toString();
 }
 function _seqClearCache(p) {
@@ -448,7 +463,7 @@ function _stopViewport(p) {
 }
 function _thumbQuery(node, src) {
     return new URLSearchParams({ src, in_cs: W(node, "input_colorspace")?.value || "", out_cs: W(node, "output_colorspace")?.value || "",
-        raw: W(node, "raw_data")?.value ? "1" : "0", rand: String(Date.now()) }).toString();
+        raw: W(node, "raw_data")?.value ? "1" : "0", full: node._ocioPrev?.original ? "1" : "0", rand: String(Date.now()) }).toString();
 }
 // ---- Nuke-style transport bar for the video viewport (client-side, drives the hidden <video>; the WebGL loop
 // renders whatever frame it lands on). A numbered timeline ruler (0..fileFrames-1) with a draggable playhead and
@@ -853,6 +868,9 @@ async function fillRange(node, source) {
         });
         const d = await r.json();
         node._ocioSeq = d;
+        // auto-set the visible Frame Mode to the detected kind (owner E3): still->single, sequence->sequence, video->video
+        const fmMap = { still: "single", sequence: "sequence", video: "video" };
+        if (d && fmMap[d.kind]) setWSilent(node, "frame_mode", fmMap[d.kind]);
         const pv = node._ocioPrev;
         if (d && (d.kind === "sequence" || d.kind === "video")) {
             setWSilent(node, "start_frame", d.start | 0);

@@ -750,8 +750,8 @@ class OCIORead:
     def INPUT_TYPES(cls):
         return {"required": {
             "source": ("STRING", {"default": "", "tooltip": r"Path to a still / sequence folder / frame / video, ANYWHERE on disk (absolute like D:\shots\LeftGirl.v01, or relative to the ComfyUI input folder). Use the browse button. A folder or one frame of a sequence -> the whole sequence (see frame_mode)."}),
-            "frame_mode": (["auto", "single", "sequence"], {"default": "auto",
-                           "tooltip": "How to read a selected frame (Nuke's 'grab sequence'). auto: numbered file with siblings -> whole sequence; single: just this file; sequence: force-collapse its siblings. A folder is always a sequence; a video is always its full clip."}),
+            "frame_mode": (["auto", "single", "sequence", "video"], {"default": "auto",
+                           "tooltip": "How to read a selected frame (Nuke's 'grab sequence'). auto: numbered file with siblings -> whole sequence; single: just this file; sequence: force-collapse its siblings; video: a movie clip (auto-detected by extension). A folder is always a sequence; a video is always its full clip. The front end auto-sets this to the detected kind on load."}),
             "input_colorspace": _cs_combo(WORKING),
             "output_colorspace": _cs_combo(WORKING),
             "raw_data": ("BOOLEAN", {"default": False,

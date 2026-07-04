@@ -472,9 +472,11 @@ def _proxy_transcode_cmd(src, dst):
     faststart so the <video> streams + seeks, no audio (the Player is muted). One-time; cached by _proxy_path."""
     _require_ffmpeg()
     return [_FFMPEG, "-v", "error", "-y", "-i", src,
+            "-map", "0:v:0",                                  # ONLY the first video stream (drop audio / extra tracks)
             "-vf", f"scale='min({_PROXY_MAX_SIDE},iw)':-2:flags=bicubic",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
-            "-an", "-movflags", "+faststart", dst]
+            "-an", "-write_tmcd", "0",                        # a ProRes/MXF carries a timecode track that ffmpeg auto-writes as a 'tmcd' DATA stream into the mp4; a <video> element can STALL on that extra stream (buffers but no picture). -write_tmcd 0 = a clean VIDEO-ONLY proxy.
+            "-movflags", "+faststart", dst]
 
 
 def load_source(source, start_frame=0, end_frame=0, frame_mode="auto", missing_mode="black", edge_mode="hold"):

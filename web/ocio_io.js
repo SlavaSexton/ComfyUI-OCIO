@@ -395,16 +395,20 @@ function _ensureRaf(node, p) {                          // one rAF loop drives b
 }
 function _startViewport(node, p, src) {
     p.pb.seqMode = false;                              // leaving any image-sequence mode
-    const streamUrl = "/ocio/stream?src=" + encodeURIComponent(src);
-    if (p.streamUrl !== streamUrl) {
-        p.streamUrl = streamUrl; p.video.loop = false; p.pb.playing = false; p.pb.dir = 1; p.pb.revAnchor = null;
-        p.video.src = streamUrl;
+    if (p.streamPath !== src) {
+        p.streamPath = src; p.video.loop = false; p.pb.playing = false; p.pb.dir = 1; p.pb.revAnchor = null;
         p.video.onloadeddata = () => { if (!p.pb.playing) { try { p.video.pause(); p.video.currentTime = 0; } catch (e) {} } };   // load paused, but never fight an explicit play
         // Reverse plays by seeking a PAUSED <video> backward frame by frame; the browser only paints a seeked frame
         // once the seek settles, and the rAF _drawViewport skips while readyState dips mid-seek - so the viewport
         // looked frozen while the playhead moved. Draw on every completed seek so reverse (and any scrub) updates.
         p.video.onseeked = () => { if (!p.pb.seqMode) _drawViewport(p); };
-        p.video.onerror = () => { _stopViewport(p); _showReadMsg(p, "No media - unsupported format"); };   // decode failed: readable message, not a blank box (Task F)
+        p.video.onerror = () => { _ocioBusy(p.box, false); _stopViewport(p); _showReadMsg(p, "No media - unsupported format"); };   // decode failed: readable message, not a blank box (Task F)
+        // 2026-07-03: resolve through /ocio/proxy so the Read preview plays ProRes / DNxHR / MXF too (was streaming
+        // the raw file -> browser could not decode -> "No media"). Browser codec = direct; else an H.264 proxy.
+        _resolveStreamUrl(p.box, src, () => node._ocioPrev !== p || p.streamPath !== src).then((url) => {
+            if (url == null) return;
+            p.streamUrl = url; p.video.src = url;
+        });
     }
     if (!_vpInitGL(p)) {                               // no WebGL2 -> static color-managed thumb fallback
         p.canvas.style.display = "none"; p.video.style.display = "none";
@@ -1619,24 +1623,33 @@ function _playerVideoRaf(node, p) {
 // 2026-07-03 (Ф3): resolve the streamable URL for a video source via /ocio/proxy. A browser codec (h264/vp8/vp9/
 // av1) streams directly; a ProRes / DNxHR / MXF is transcoded ONCE to a cached H.264 proxy server-side (the front
 // end shows "Building…" and polls until ready). Sets p.video.src when resolved; bails if the source was switched.
-async function _resolveStreamSrc(node, p, path, meta) {
+// Resolve a browser-playable URL for a video source: a browser codec (h264/vp8/vp9/av1) streams directly; a
+// ProRes / DNxHR / MXF is transcoded ONCE to a cached H.264 proxy (/ocio/proxy), showing a spinner while it
+// builds. SHARED by the OCIO Player (playerVideoStart) and the OCIO Read on-node preview (_startViewport) - both
+// used to stream the raw file and so failed on ProRes/MXF. `aborted()` lets the caller bail if the source was
+// switched or the node torn down mid-build. Returns the streamable URL, or null if aborted. Added 2026-07-03.
+async function _resolveStreamUrl(box, path, aborted) {
     let url = "/ocio/stream?src=" + encodeURIComponent(path);
-    _ocioBusy(p.box, true, "Processing…");                   // spinner until the stream (or its transcoded proxy) is ready (cleared by playerVideoStart's onloadedmetadata)
+    _ocioBusy(box, true, "Processing…");                     // spinner until the stream (or its transcoded proxy) is ready (cleared on the <video> loadedmetadata / onerror)
     try {
         for (let i = 0; i < 900; i++) {                      // ~15 min ceiling (1 s poll); most proxies are a few seconds
             const r = await fetch("/ocio/proxy?src=" + encodeURIComponent(path));
             const d = await r.json().catch(() => ({}));
-            if (node._ocioPlayer !== p || p._vidPath !== path) return;   // source switched / node gone -> abandon
+            if (aborted && aborted()) return null;           // source switched / node gone -> abandon
             if (d && d.ready && d.url) { url = d.url; break; }
             if (d && d.building) {
-                _ocioBusy(p.box, true, "Building H.264 proxy (transcoding ProRes / DNxHR)…");
+                _ocioBusy(box, true, "Building H.264 proxy (transcoding ProRes / DNxHR)…");
                 await new Promise((res) => setTimeout(res, 1000));
                 continue;
             }
             break;                                           // error/unknown -> fall back to the direct URL (onerror explains if truly undecodable)
         }
     } catch (e) { /* network error -> fall back to the direct URL */ }
-    if (node._ocioPlayer !== p || p._vidPath !== path) return;
+    return (aborted && aborted()) ? null : url;
+}
+async function _resolveStreamSrc(node, p, path, meta) {
+    const url = await _resolveStreamUrl(p.box, path, () => node._ocioPlayer !== p || p._vidPath !== path);
+    if (url == null) return;
     p._vidUrl = url;
     p.empty.style.display = "none"; p.canvas.style.display = "";   // ready -> show the viewport (the busy overlay clears on the <video> loadedmetadata)
     p.video.src = url;

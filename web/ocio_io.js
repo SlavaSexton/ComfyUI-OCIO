@@ -2017,9 +2017,14 @@ app.registerExtension({
             nodeType.prototype.onNodeCreated = function () {
                 const rr = _ocLabel ? _ocLabel.apply(this, arguments) : undefined;
                 const relabel = () => {
-                    for (const s of (this.inputs || [])) if (s.type === "IMAGE" && (s.name === "image" || s.name === "images")) s.label = "img/seq/vid";
-                    for (const s of (this.inputs || [])) if (s.type === "VIDEO") s.label = "Load Video Node";   // OCIO Player: the VIDEO input takes a Load Video node (streamed, not materialized)
-                    for (const s of (this.outputs || [])) if (s.type === "IMAGE") s.label = "img/seq/vid";
+                    // 2026-07-04 (owner): the IMAGE socket is our sequence path, the VIDEO socket is ComfyUI's native
+                    // video pipeline. Name them so on EVERY OCIO node - input and output, both sides. Labels ONLY;
+                    // slot names are untouched so connections/saved graphs resolve. Covers OCIO Read's VIDEO output
+                    // and OCIO Player's VIDEO input renames too (they are just VIDEO sockets on OCIO nodes).
+                    for (const s of (this.inputs || [])) if (s.type === "IMAGE" && (s.name === "image" || s.name === "images")) s.label = "Image Sequence Video";
+                    for (const s of (this.inputs || [])) if (s.type === "VIDEO") s.label = "ComfyUI Video";
+                    for (const s of (this.outputs || [])) if (s.type === "IMAGE") s.label = "Image Sequence Video";
+                    for (const s of (this.outputs || [])) if (s.type === "VIDEO") s.label = "ComfyUI Video";
                     this.setDirtyCanvas(true, true);
                 };
                 relabel(); setTimeout(relabel, 0);                 // now + after slots finish populating

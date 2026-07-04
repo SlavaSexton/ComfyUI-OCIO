@@ -28,6 +28,55 @@ try:
 except Exception:
     _HAS_OCIO = False
 
+from fractions import Fraction
+
+# 2026-07-04: ComfyUI-native VIDEO support so our color nodes slot straight into the native video pipeline
+# (Load Video -> our OCIO node -> Video Combine). Each color node grows a second IMAGE-vs-VIDEO input/output pair;
+# the front end (web/ocio_video_io.js) makes the two INPUTS mutually exclusive and the output mirror the active
+# input. Guarded: an old ComfyUI without comfy_api's video type just falls back to IMAGE-only (VIDEO slot stays None).
+try:
+    from comfy_api.latest import InputImpl as _CA_IMPL, Types as _CA_TYPES
+    _HAS_VIDEO_API = True
+except Exception:
+    _HAS_VIDEO_API = False
+
+
+def _video_unwrap(video):
+    """ComfyUI VIDEO -> (images tensor [N,H,W,C], frame_rate float, audio-or-None)."""
+    comp = video.get_components()
+    try:
+        fr = float(comp.frame_rate)
+    except Exception:
+        fr = 24.0
+    return comp.images, (fr if fr > 0 else 24.0), getattr(comp, "audio", None)
+
+
+def _video_wrap(images, frame_rate, audio=None):
+    """IMAGE batch (+fps, +audio) -> ComfyUI VIDEO. None if the video API is unavailable."""
+    if not _HAS_VIDEO_API or images is None:
+        return None
+    r = float(frame_rate) if frame_rate and float(frame_rate) > 0 else 24.0
+    fr = Fraction(r).limit_denominator(600000)
+    try:
+        return _CA_IMPL.VideoFromComponents(_CA_TYPES.VideoComponents(images=images, frame_rate=fr, audio=audio))
+    except Exception:
+        try:
+            return _CA_IMPL.VideoFromComponents(_CA_TYPES.VideoComponents(images=images, frame_rate=fr))
+        except Exception:
+            return None
+
+
+def _dual_io(apply_fn, image, video):
+    """Mirror-input dual IMAGE/VIDEO for a color node: process whichever socket is connected; the matching output
+    carries data, the other is None (the front end auto-disconnects the inactive socket, so it is 'either/or' end to
+    end). apply_fn(image_tensor) -> image_tensor. Returns (IMAGE_out, VIDEO_out)."""
+    if video is not None:
+        frames, fr, audio = _video_unwrap(video)
+        return (None, _video_wrap(apply_fn(frames), fr, audio))
+    if image is not None:
+        return (apply_fn(image), None)
+    raise ValueError("Connect an image / sequence to 'Image Sequence Video', OR a movie to 'ComfyUI Video'.")
+
 try:
     import folder_paths  # ComfyUI path helper (present only inside ComfyUI)
 except Exception:
@@ -500,22 +549,21 @@ class OCIOLogConvert:
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
-            "image": ("IMAGE",),
             "operation": (["Linear to Log", "Log to Linear"], {"default": "Linear to Log"}),
             "curve": (["Cineon", "ACEScct", "ACEScc", "ARRI LogC3", "ARRI LogC4", "Sony S-Log3",
                        "Panasonic V-Log", "Canon Log 3", "RED Log3G10", "DaVinci Intermediate"],
                       {"default": "Cineon",
                       "tooltip": "Cineon = Nuke flat film log (black 0.0928). ACEScct = ACES log with a toe (0.0729). ACEScc = pure ACES log. ARRI LogC3 = ARRI LogC3 EI800, the LTX-2 HDR curve (ceiling ~55 linear). ARRI LogC4 = ARRI LogC4, wider headroom (ceiling ~469.8 linear), the LumiPic V10 *_logc4_* curve. Sony S-Log3 = Sony S-Log3 (18% grey -> code 420/1023). Panasonic V-Log = Panasonic V-Log (18% grey -> code 433/1023). Canon Log 3 = Canon Log 3, three-piece curve with a linear mid segment around 0. RED Log3G10 = RED Log3G10 (18% grey -> 1/3, 10 stops over grey -> 1.0). DaVinci Intermediate = Blackmagic DaVinci Intermediate OETF (18% grey -> 0.336043). All are camera-native transfer curves only: Log to Linear decodes the plate to linear in the camera's own primaries; pair with a camera-gamut -> ACEScg ColorSpace step, not the config's same-named colorspace."}),
             "mix": _mix_input(),
-        }}
+        }, "optional": {"image": ("IMAGE",), "video": ("VIDEO",)}}
 
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("image/sequence/video",)
+    RETURN_TYPES = ("IMAGE", "VIDEO")
+    RETURN_NAMES = ("image/sequence/video", "ComfyUI Video")
     OUTPUT_TOOLTIPS = ("Image with the lin<->log curve applied.",)
     FUNCTION = "run"
     CATEGORY = "OCIO"
 
-    def run(self, image, operation, curve, mix=1.0):
+    def run(self, operation, curve, mix=1.0, image=None, video=None):
         # 2026-07-04: dropdowns now show Title-Case labels (Sony S-Log3, Linear to Log). Map back to the machine keys,
         # and still accept the OLD keys (cineon / lin_to_log) so saved graphs and the swap button keep working.
         curve_map = {"Cineon": "cineon", "ACEScct": "acescct", "ACEScc": "acescc", "ARRI LogC3": "logc3",
@@ -527,10 +575,13 @@ class OCIOLogConvert:
         op_key = op_map.get(operation, "lin_to_log")
         f_lin2log, f_log2lin = _CURVES[curve_key]
         fn = f_lin2log if op_key == "lin_to_log" else f_log2lin
-        arr = image.detach().cpu().numpy().astype(np.float32)
-        out = arr.copy()
-        out[..., :3] = fn(arr[..., :3])
-        return (_blend(image, torch.from_numpy(out).to(image.device, image.dtype), mix),)
+
+        def _apply(img):
+            arr = img.detach().cpu().numpy().astype(np.float32)
+            out = arr.copy()
+            out[..., :3] = fn(arr[..., :3])
+            return _blend(img, torch.from_numpy(out).to(img.device, img.dtype), mix)
+        return _dual_io(_apply, image, video)
 
     @classmethod
     def VALIDATE_INPUTS(cls, curve=None, operation=None):
@@ -555,26 +606,26 @@ class OCIOColorSpace:
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
-            "image": ("IMAGE",),
             "in_colorspace": _cs_input("ACES2065-1"),
             "out_colorspace": _cs_input("ACEScg"),
             "mix": _mix_input(),
-        }, "optional": {"config_path": _config_input()}}
+        }, "optional": {"image": ("IMAGE",), "video": ("VIDEO",), "config_path": _config_input()}}
 
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("image/sequence/video",)
-    OUTPUT_TOOLTIPS = ("Image converted from in_colorspace to out_colorspace.",)
+    RETURN_TYPES = ("IMAGE", "VIDEO")
+    RETURN_NAMES = ("image/sequence/video", "ComfyUI Video")
+    OUTPUT_TOOLTIPS = ("Image converted from in_colorspace to out_colorspace.",
+                       "Same conversion as a ComfyUI VIDEO (carries data only when a VIDEO is fed in).")
     FUNCTION = "convert"
     CATEGORY = "OCIO"
 
-    def convert(self, image, in_colorspace, out_colorspace, mix=1.0, config_path=BUILTIN):
+    def convert(self, in_colorspace, out_colorspace, mix=1.0, config_path=BUILTIN, image=None, video=None):
         _require_ocio()
         cfg, cfg_key = _config_from_choice_keyed(config_path)
         if cfg is None:
             raise RuntimeError("No OCIO config found.")
         tf_key = ("colorspace", in_colorspace, out_colorspace)
         cpu = _cached_cpu_processor(cfg_key, tf_key, lambda: cfg.getProcessor(in_colorspace, out_colorspace))
-        return (_blend(image, _apply_processor(image, cpu), mix),)
+        return _dual_io(lambda img: _blend(img, _apply_processor(img, cpu), mix), image, video)
 
 
 class OCIODisplay:
@@ -583,7 +634,6 @@ class OCIODisplay:
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
-            "image": ("IMAGE",),
             "in_colorspace": _cs_input("ACES2065-1"),
             "display": _display_input(),
             "view": _view_input(),
@@ -591,15 +641,15 @@ class OCIODisplay:
                       "label_on": "Inverse (display -> scene)", "label_off": "Forward (scene -> display)",
                       "tooltip": "Invert (display-referred back to the input colorspace)."}),
             "mix": _mix_input(),
-        }, "optional": {"config_path": _config_input()}}
+        }, "optional": {"image": ("IMAGE",), "video": ("VIDEO",), "config_path": _config_input()}}
 
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("image/sequence/video",)
+    RETURN_TYPES = ("IMAGE", "VIDEO")
+    RETURN_NAMES = ("image/sequence/video", "ComfyUI Video")
     OUTPUT_TOOLTIPS = ("Image with the display + view transform applied (or inverted).",)
     FUNCTION = "run"
     CATEGORY = "OCIO"
 
-    def run(self, image, in_colorspace, display, view, invert_direction=False, mix=1.0, config_path=BUILTIN):
+    def run(self, in_colorspace, display, view, invert_direction=False, mix=1.0, config_path=BUILTIN, image=None, video=None):
         _require_ocio()
         cfg, cfg_key = _config_from_choice_keyed(config_path)
         if cfg is None:
@@ -612,7 +662,7 @@ class OCIODisplay:
             return cfg.getProcessor(t)
 
         cpu = _cached_cpu_processor(cfg_key, tf_key, build)
-        return (_blend(image, _apply_processor(image, cpu), mix),)
+        return _dual_io(lambda img: _blend(img, _apply_processor(img, cpu), mix), image, video)
 
 
 class OCIOCDLTransform:
@@ -622,23 +672,22 @@ class OCIOCDLTransform:
     def INPUT_TYPES(cls):
         f = lambda d: ("FLOAT", {"default": d, "min": -10.0, "max": 10.0, "step": 0.001})
         return {"required": {
-            "image": ("IMAGE",),
             "slope_r": f(1.0), "slope_g": f(1.0), "slope_b": f(1.0),
             "offset_r": f(0.0), "offset_g": f(0.0), "offset_b": f(0.0),
             "power_r": f(1.0), "power_g": f(1.0), "power_b": f(1.0),
             "saturation": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 4.0, "step": 0.001}),
             "direction": (["forward", "inverse"], {"default": "forward"}),
             "mix": _mix_input(),
-        }}
+        }, "optional": {"image": ("IMAGE",), "video": ("VIDEO",)}}
 
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("image/sequence/video",)
+    RETURN_TYPES = ("IMAGE", "VIDEO")
+    RETURN_NAMES = ("image/sequence/video", "ComfyUI Video")
     OUTPUT_TOOLTIPS = ("Image with the ASC CDL grade applied.",)
     FUNCTION = "run"
     CATEGORY = "OCIO"
 
-    def run(self, image, slope_r, slope_g, slope_b, offset_r, offset_g, offset_b,
-            power_r, power_g, power_b, saturation, direction, mix=1.0):
+    def run(self, slope_r, slope_g, slope_b, offset_r, offset_g, offset_b,
+            power_r, power_g, power_b, saturation, direction, mix=1.0, image=None, video=None):
         _require_ocio()
         cfg, cfg_key = _resolve_config_keyed("")
         if cfg is None:
@@ -656,7 +705,7 @@ class OCIOCDLTransform:
             return cfg.getProcessor(t)
 
         cpu = _cached_cpu_processor(cfg_key, tf_key, build)
-        return (_blend(image, _apply_processor(image, cpu), mix),)
+        return _dual_io(lambda img: _blend(img, _apply_processor(img, cpu), mix), image, video)
 
 
 class OCIOFileTransform:
@@ -665,20 +714,19 @@ class OCIOFileTransform:
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
-            "image": ("IMAGE",),
             "file_path": _lut_input(),
             "interpolation": (["linear", "nearest", "tetrahedral", "best"], {"default": "linear"}),
             "direction": (["forward", "inverse"], {"default": "forward"}),
             "mix": _mix_input(),
-        }}
+        }, "optional": {"image": ("IMAGE",), "video": ("VIDEO",)}}
 
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("image/sequence/video",)
+    RETURN_TYPES = ("IMAGE", "VIDEO")
+    RETURN_NAMES = ("image/sequence/video", "ComfyUI Video")
     OUTPUT_TOOLTIPS = ("Image with the LUT / CCC / CDL file transform applied.",)
     FUNCTION = "run"
     CATEGORY = "OCIO"
 
-    def run(self, image, file_path, interpolation, direction, mix=1.0):
+    def run(self, file_path, interpolation, direction, mix=1.0, image=None, video=None):
         _require_ocio()
         path = _lut_path(file_path)
         if not (path and os.path.isfile(path)):
@@ -697,7 +745,7 @@ class OCIOFileTransform:
             return cfg.getProcessor(t)
 
         cpu = _cached_cpu_processor(cfg_key, tf_key, build)
-        return (_blend(image, _apply_processor(image, cpu), mix),)
+        return _dual_io(lambda img: _blend(img, _apply_processor(img, cpu), mix), image, video)
 
 
 class OCIOLookTransform:
@@ -706,22 +754,21 @@ class OCIOLookTransform:
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
-            "image": ("IMAGE",),
             "in_colorspace": _cs_input("ACES2065-1"),
             "out_colorspace": _cs_input("sRGB - Display"),
             "look": _looks_input(),
             "invert_direction": ("BOOLEAN", {"default": False,
                       "label_on": "Inverse (out -> in)", "label_off": "Forward (in -> out)"}),
             "mix": _mix_input(),
-        }, "optional": {"config_path": _config_input()}}
+        }, "optional": {"image": ("IMAGE",), "video": ("VIDEO",), "config_path": _config_input()}}
 
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("image/sequence/video",)
+    RETURN_TYPES = ("IMAGE", "VIDEO")
+    RETURN_NAMES = ("image/sequence/video", "ComfyUI Video")
     OUTPUT_TOOLTIPS = ("Image with the OCIO look applied (or inverted).",)
     FUNCTION = "run"
     CATEGORY = "OCIO"
 
-    def run(self, image, in_colorspace, out_colorspace, look, invert_direction=False, mix=1.0, config_path=BUILTIN):
+    def run(self, in_colorspace, out_colorspace, look, invert_direction=False, mix=1.0, config_path=BUILTIN, image=None, video=None):
         _require_ocio()
         cfg, cfg_key = _config_from_choice_keyed(config_path)
         if cfg is None:
@@ -735,7 +782,7 @@ class OCIOLookTransform:
             return cfg.getProcessor(t)
 
         cpu = _cached_cpu_processor(cfg_key, tf_key, build)
-        return (_blend(image, _apply_processor(image, cpu), mix),)
+        return _dual_io(lambda img: _blend(img, _apply_processor(img, cpu), mix), image, video)
 
 
 NODE_CLASS_MAPPINGS = {

@@ -226,6 +226,22 @@ function _adoptAspect(node, p, mw, mh) {
     p._aspectFitting = true;
     try { node.setSize([node.size[0], node.computeSize()[1]]); } finally { p._aspectFitting = false; }
 }
+// R1 self-determining output: OCIO Read/Player always declare BOTH an IMAGE and a VIDEO output (backend
+// RETURN_TYPES), but we SHOW the VIDEO slot only when the loaded content is a video, and hide it otherwise - so a
+// still/sequence looks IMAGE-only and a video exposes the VIDEO output. VIDEO is the LAST output, so add/remove it
+// never shifts the IMAGE/MASK/FLOAT/STRING indices (backend maps by index). A wired VIDEO slot is kept (don't yank a
+// saved / user connection). Owner spec 2026-07-03 (R1; the true single self-determining slot would be a V3 MatchType port).
+function _setVideoOutput(node, show) {
+    if (!node || !node.outputs) return;
+    let idx = -1;
+    for (let i = 0; i < node.outputs.length; i++) if (node.outputs[i].type === "VIDEO") { idx = i; break; }
+    if (show) {
+        if (idx < 0) { node.addOutput("video", "VIDEO"); node.setDirtyCanvas(true, true); }
+    } else if (idx >= 0) {
+        const o = node.outputs[idx];
+        if (!(o.links && o.links.length)) { node.removeOutput(idx); node.setDirtyCanvas(true, true); }   // keep a connected slot
+    }
+}
 function ensureReadPreview(node) {
     if (node._ocioPrev) return node._ocioPrev;
     const box = document.createElement("div");
@@ -868,7 +884,7 @@ async function updateReadMeta(node) {
 }
 
 async function fillRange(node, source) {
-    if (!source) { applyReadVis(node); updateReadPreview(node); return; }   // empty source: hide the frame controls (still-image default)
+    if (!source) { applyReadVis(node); updateReadPreview(node); _setVideoOutput(node, false); return; }   // empty source: hide the frame controls (still-image default) + the VIDEO output
     try {
         const r = await fetch("/ocio/seq_range", {
             method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source }),
@@ -878,6 +894,7 @@ async function fillRange(node, source) {
         // auto-set the visible Frame Mode to the detected kind (owner E3): still->single, sequence->sequence, video->video
         const fmMap = { still: "single", sequence: "sequence", video: "video" };
         if (d && fmMap[d.kind]) setWSilent(node, "frame_mode", fmMap[d.kind]);
+        _setVideoOutput(node, !!(d && d.kind === "video"));    // R1: expose the VIDEO output only for a video source
         const pv = node._ocioPrev;
         if (d && (d.kind === "sequence" || d.kind === "video")) {
             setWSilent(node, "start_frame", d.start | 0);
@@ -1641,11 +1658,13 @@ function playerOnExecuted(node, message) {
     if (vpath) {
         const vres = first(message.video_res) || "", vfps = parseFloat(first(message.video_fps)) || 24, vframes = parseInt(first(message.video_frames), 10) || 0;
         p.videoSrc = { path: vpath, res: vres, fps: vfps, frames: vframes };
+        _setVideoOutput(node, true);                                        // R1: video source -> expose the VIDEO output
         renderPlayerMeta(node, { resolution: vres, total: vframes, cached: vframes, fps: vfps, input_cs: first(message.input_cs) });
         playerVideoStart(node, p, vpath, { fps: vfps, frames: vframes });   // stream the whole clip (native decode + exposure/LUT shader)
         return;
     }
     if (p.videoMode) { p.videoMode = false; try { p.video.pause(); } catch (e) {} if (p.raf) { cancelAnimationFrame(p.raf); p.raf = 0; } }   // was streaming a video, now a float batch -> stop the stream
+    _setVideoOutput(node, false);                            // R1: float batch (image/sequence) -> hide the VIDEO output
     const dir = first(message && message.player_dir);
     const total = parseInt(first(message && message.player_total) || "0", 10);
     const cached = parseInt(first(message && message.player_cached) || "0", 10);
@@ -1971,6 +1990,7 @@ app.registerExtension({
                 }
                 const _bw = W(this, "base");                          // 'base' = hidden frontend->backend channel (source first-frame number). Hide WITHOUT the type-swap: showWidget's type swap breaks value serialization -> '' -> crashed prompt validation. hidden+zeroed computeSize preserves the value (same as OCIO Read's setVisibleWidgets).
                 if (_bw) { _bw.hidden = true; _bw.computeSize = () => [0, -4]; }
+                _setVideoOutput(this, false);                        // R1: hide the VIDEO output until a video is rendered (playerOnExecuted re-adds it)
                 this._ocioAllWidgets = this.widgets.slice();
                 return r;
             };

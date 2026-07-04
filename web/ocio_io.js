@@ -398,6 +398,9 @@ function _ensureRaf(node, p) {                          // one rAF loop drives b
 }
 function _startViewport(node, p, src) {
     p.pb.seqMode = false;                              // leaving any image-sequence mode
+    // 1-based video numbering on THIS Read's own timeline: mirror its frame_shift / start_frame (1 for a plain video)
+    const _rs = Math.round(W(node, "frame_shift")?.value || 0), _st = Math.round(W(node, "start_frame")?.value || (node._ocioSeq && node._ocioSeq.start) || 0);
+    p.videoBase = _rs > 0 ? _rs : (_st > 0 ? _st : 1);
     if (p.streamPath !== src) {
         p.streamPath = src; p.video.loop = false; p.pb.playing = false; p.pb.dir = 1; p.pb.revAnchor = null;
         p.video.onloadeddata = () => { if (!p.pb.playing) { try { p.video.pause(); p.video.currentTime = 0; } catch (e) {} } };   // load paused, but never fight an explicit play
@@ -579,7 +582,7 @@ function _seqBase(p) { return (p.pb && p.pb.seqMode && p.seq) ? (p.seq.origStart
 // numbers live here as a display-only offset, learned from the upstream OCIO Read (syncPlayerFromUpstream). Timeline
 // labels + the frame field use _dispBase; the widget<->index math (_pbIn/_pbSetIn) keeps using _seqBase (base 0 for Player).
 function _dispBase(p) {
-    if (p && p.videoMode && p.videoBase) return p.videoBase | 0;   // streamed video: 1-based (or the upstream Read's re-based numbering) - the <video> clock is a 0-based index, videoBase maps it to frame numbers
+    if (p && p.videoBase && p.pb && !p.pb.seqMode) return p.videoBase | 0;   // a VIDEO preview (OCIO Read _startViewport OR the streamed Player): the <video> clock is a 0-based index, videoBase maps it to 1-based (or the Read's re-based) frame numbers
     return _seqBase(p) + ((p.player && p.player.base) ? (p.player.base | 0) : 0);
 }
 function _pbCur(p) {
@@ -1688,6 +1691,8 @@ function playerVideoStart(node, p, path, meta) {
         };
         p.video.onerror = () => { _ocioBusy(p.box, false); p.videoMode = false; p.canvas.style.display = "none"; p.empty.style.display = "flex"; p.empty.firstChild.textContent = "Video: browser cannot decode this codec (a ProRes / DNxHR proxy could not be built)"; };
         _resolveStreamSrc(node, p, path, meta);              // Ф3: stream a browser codec directly, or build+stream an H.264 proxy for ProRes/DNxHR/MXF
+    } else {
+        _ocioBusy(p.box, false);                             // SAME video already loaded (Refresh of the same file): no reload -> no onloadedmetadata to clear the spinner the Refresh click showed, so clear it here (fixes the "Processing…" ring spinning forever)
     }
     p.pb.seqMode = false;                                    // shared transport now runs the <video> clock
     p.pb.fileFrames = Math.max(1, meta.frames || 0);

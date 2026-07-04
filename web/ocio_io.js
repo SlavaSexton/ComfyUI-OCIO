@@ -271,6 +271,7 @@ function _adoptAspect(node, p, mw, mh) {
 // never shifts the IMAGE/MASK/FLOAT/STRING indices (backend maps by index). A wired VIDEO slot is kept (don't yank a
 // saved / user connection). Owner spec 2026-07-03 (R1; the true single self-determining slot would be a V3 MatchType port).
 function _setVideoOutput(node, show) {
+    if (node && node.type === "OCIOPlayer") return;   // 2026-07-04: the Player is INPUT-ONLY (no outputs), so never add/remove a VIDEO slot on it
     if (!node || !node.outputs) return;
     let idx = -1;
     for (let i = 0; i < node.outputs.length; i++) if (node.outputs[i].type === "VIDEO") { idx = i; break; }

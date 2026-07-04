@@ -1229,12 +1229,13 @@ class OCIOPlayer:
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
 
-    RETURN_TYPES = ("IMAGE", "MASK", "FLOAT", "STRING", "VIDEO")
-    RETURN_NAMES = ("image/sequence/video", "alpha", "fps", "info", "video")   # VIDEO appended (index 4); indices 0-3 unchanged
-    OUTPUT_NODE = True   # 2026-07-03: always execute on queue (a viewer), so its Refresh/Render populates it even as a terminal node
-    OUTPUT_TOOLTIPS = ("Batch converted input->output colorspace and trimmed to [start,end]. Exposure is view-only, NOT baked here.",
-                       "Alpha for the trimmed range.", "fps (passed through).", "What the node did.",
-                       "The output batch as a VIDEO object, to feed VIDEO-typed edit/save nodes.")
+    # 2026-07-04 (owner): the Player is a pure VIEWER - INPUT ONLY, NO outputs (like Preview Image). It branches
+    # OFF the graph to preview; nothing passes THROUGH it. Wiring its output back INTO the flow used to break it
+    # (stuck on frame 1, endless Refresh) and tempted people to route data through a viewer, so the outputs are
+    # gone. OUTPUT_NODE keeps it running on queue so its viewport updates.
+    RETURN_TYPES = ()
+    RETURN_NAMES = ()
+    OUTPUT_NODE = True
     FUNCTION = "play"
     CATEGORY = "OCIO"
 
@@ -1267,46 +1268,18 @@ class OCIOPlayer:
                     vframes = int(round(float(pi["duration"]) * vfps))
             except Exception:
                 pass
-            if images is not None:                                  # still pass images through to the OUTPUT (no float cache built)
-                out = images if raw_data else _convert(images, input_colorspace, output_colorspace)
-                mask = torch.ones((out.shape[0], out.shape[1], out.shape[2]), dtype=torch.float32)
-            else:
-                out = torch.zeros((1, 1, 1, 3), dtype=torch.float32)
-                mask = torch.ones((1, 1, 1), dtype=torch.float32)
-            info = f"player: streaming video {os.path.basename(vpath)} ({vw}x{vh}, {vframes} frame(s))"
             return {"ui": {"video_path": [vpath], "video_res": [f"{vw}x{vh}"], "video_fps": [str(vfps)],
                            "video_frames": [str(vframes)], "input_cs": [input_colorspace]},
-                    "result": (out, mask, float(fps), info, _make_video(out, fps))}
-        if images is None:                                          # nothing connected -> valid empty output (OUTPUT_NODE)
-            out = torch.zeros((1, 1, 1, 3), dtype=torch.float32)
-            mask = torch.ones((1, 1, 1), dtype=torch.float32)
-            return {"ui": {}, "result": (out, mask, float(fps), "player: no input", _make_video(out, fps))}
-        n = int(images.shape[0])
-        cache_dir, total, cached, h, w = _player_cache(unique_id, images, alpha)
-        # start_frame/end_frame are SOURCE frame numbers (so the node's fields match the upstream OCIO Read + the
-        # viewer timeline); subtract base to get 0-based batch indices for the actual trim. base 0 = already indices.
-        try:
-            b = max(0, int(float(str(base).strip() or "0")))   # STRING / blank-safe: a bad or empty base is treated as 0 (legacy indices), never crashes
-        except (TypeError, ValueError):
-            b = 0
-        sf, ef = int(start_frame), int(end_frame)
-        s = max(0, min(sf - b, n - 1)) if sf > 0 else 0
-        e = max(s, min(ef - b, n - 1)) if (ef > 0 and (ef - b) >= s) else n - 1
-        sub = images[s:e + 1].contiguous()
-        out = sub if raw_data else _convert(sub, input_colorspace, output_colorspace)
-        if alpha is not None:
-            a = alpha[None] if alpha.ndim == 2 else alpha
-            mask = a[min(s, a.shape[0] - 1):min(e + 1, a.shape[0])].contiguous()
-            if mask.shape[0] != out.shape[0]:
-                mask = torch.ones((out.shape[0], out.shape[1], out.shape[2]), dtype=torch.float32)
-        else:
-            mask = torch.ones((out.shape[0], out.shape[1], out.shape[2]), dtype=torch.float32)
+                    "result": ()}                               # INPUT-ONLY viewer: nothing flows out
+        if images is None:                                          # nothing connected -> empty viewer
+            return {"ui": {}, "result": ()}
+        cache_dir, total, cached, h, w = _player_cache(unique_id, images, alpha)   # cache the input as float .npy for the viewport (INPUT-ONLY: no trim, no output)
         cs = "raw" if raw_data else f"{input_colorspace} -> {output_colorspace}"
         cap_note = f", viewer capped at {cached}" if cached < total else ""
-        info = f"player: {total} frame(s) in{cap_note}; out [{s + b}-{e + b}] = {out.shape[0]} frame(s), {w}x{h}, {cs}"
+        info = f"player: {total} frame(s) in{cap_note}, {w}x{h}, {cs}"
         return {"ui": {"player_dir": [cache_dir], "player_total": [str(total)], "player_cached": [str(cached)],
                        "resolution": [f"{w}x{h}"], "fps": [str(float(fps))], "input_cs": [input_colorspace]},
-                "result": (out, mask, float(fps), info, _make_video(out, fps))}
+                "result": ()}
 
 
 NODE_CLASS_MAPPINGS = {"OCIORead": OCIORead, "OCIOWrite": OCIOWrite, "OCIOPlayer": OCIOPlayer}

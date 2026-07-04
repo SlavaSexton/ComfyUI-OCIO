@@ -1,4 +1,4 @@
-"""Histogram comparison via cv2.compareHist - the exact tool Sam Hodge linked.
+"""Histogram comparison via cv2.compareHist - the exact tool an external review linked.
 
 Answers the review question "did you check colour dithering/quantisation? ... if you don't measure it's only a
 guess" with HIS OWN method: per-channel cv2.compareHist (Correlation / Chi-Square / Intersection / Bhattacharyya)
@@ -25,7 +25,7 @@ import _common as C
 
 IN_CS = "sRGB - Display"      # ComfyUI working space (the file's space for a PNG); confirmed io_nodes.WORKING
 MID_CS = "ACEScg"             # ACES working space
-DISP_CS = "sRGB - Display"    # the display target Sam's "->(display)" refers to; confirmed in config (query above)
+DISP_CS = "sRGB - Display"    # the display target the reviewer's "->(display)" refers to; confirmed in config (query above)
 
 NYC = os.path.join(os.path.dirname(C.__file__), "..", "..", "example_workflows", "nyc_skyline.png")
 BINS = 256
@@ -170,7 +170,7 @@ def make_chart(panels):
             cell.set_facecolor("#20202b" if rr else "#2c3350")
             cell.set_text_props(color="#dde")
 
-    fig.suptitle("cv2.compareHist (Sam Hodge's method): OUR OCIO node output vs independent raw PyOpenColorIO\n"
+    fig.suptitle("cv2.compareHist: OUR OCIO node output vs independent raw PyOpenColorIO\n"
                  "sRGB -> ACEScg -> display, per channel  |  corr->1.0 & bhat->0.0 = identical distributions",
                  fontsize=10, color="#e8ecff")
     fig.tight_layout(rect=[0, 0, 1, 0.95])

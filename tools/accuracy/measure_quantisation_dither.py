@@ -1,6 +1,6 @@
-"""Quantisation / dithering audit of io_nodes._save_still (Sam Hodge's direct ask 2026-07-03).
+"""Quantisation / dithering audit of io_nodes._save_still (the reviewer's direct ask 2026-07-03).
 
-Sam: "did you check colour dithering/quantisation?" This MEASURES the shipped float->file write path.
+A reviewer: "did you check colour dithering/quantisation?" This MEASURES the shipped float->file write path.
 
 We write the smooth ramp2d and ramp_linear fixtures through the REAL io_nodes._save_still at:
   - PNG  8-bit  (io_nodes.py:594  arr8 = (clip(rgb,0,1)*255).astype(uint8)         -- TRUNCATING cast, PIL)

@@ -1,6 +1,6 @@
 """Round-trip accuracy + Read/Write I/O measurement for the ComfyUI-OCIO pack (2026-07-03).
 
-Answers Sam Hodge's "how did you test accuracy?" for the DIMENSION: Round-trip A->B->A + Read/Write I/O.
+Answers the reviewer's "how did you test accuracy?" for the DIMENSION: Round-trip A->B->A + Read/Write I/O.
 
 Every number here is MEASURED against the shipped code path (io_nodes._convert / _save_still / _read_still),
 using the shared, self-tested harness in _common.py. No placeholders.

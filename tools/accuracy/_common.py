@@ -6,7 +6,7 @@ Answers the review question "how did you test accuracy?" with MEASUREMENTS, not 
   - error metrics (max abs / RMS / PSNR)
   - colour science implemented here on numpy (no external colour-science dep): sRGB EOTF, sRGB->XYZ->Lab,
     CIE dE76 and dE2000 (Sharma 2005), self-tested against the published Sharma test pairs
-  - cv2 histogram comparison (the method Sam Hodge linked: cv2.compareHist) - Correlation / Chi-Square /
+  - cv2 histogram comparison (the method an external review linked: cv2.compareHist) - Correlation / Chi-Square /
     Intersection / Bhattacharyya
   - quantisation / banding metrics for the float->8/16-bit write path
   - a plots dir + a savefig helper (matplotlib Agg)
@@ -149,9 +149,9 @@ def delta_e_2000(lab1, lab2, kL=1.0, kC=1.0, kH=1.0):
                    + Rt * (dCp / (kC * Sc)) * (dHp / (kH * Sh)))
 
 
-# --------------------------------------------------------------------------- cv2 histogram compare (Sam's link)
+# --------------------------------------------------------------------------- cv2 histogram compare (the linked cv2.compareHist method)
 def hist_compare(a, b, bins=256, rng=(0.0, 1.0)):
-    """Per-channel histogram comparison via cv2.compareHist - the exact tool Sam Hodge linked. Inputs are
+    """Per-channel histogram comparison via cv2.compareHist - the exact tool an external review linked. Inputs are
     float [...,3] in `rng`. Returns {channel: {metric: value}} for Correlation / Chi-Square / Intersection /
     Bhattacharyya. Correlation 1.0 and Bhattacharyya 0.0 mean identical distributions."""
     import cv2

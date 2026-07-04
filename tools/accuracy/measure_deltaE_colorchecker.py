@@ -1,6 +1,6 @@
 """Perceptual dE2000 on the 24 X-Rite ColorChecker patches (OCIO color-accuracy audit, 2026-07-03).
 
-Answers the reviewer (Sam Hodge): "how did you test accuracy?" with dE2000 MEASUREMENTS, not vibes.
+Answers the reviewer (external review): "how did you test accuracy?" with dE2000 MEASUREMENTS, not vibes.
 
 Two measurements, both through the SHIPPED pack path (io_nodes._convert), scored in CIELAB dE2000:
 

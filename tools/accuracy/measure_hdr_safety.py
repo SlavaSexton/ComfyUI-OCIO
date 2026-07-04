@@ -1,6 +1,6 @@
 """HDR-safety measurement (2026-07-03): do negatives and >1 scene-linear values SURVIVE?
 
-Reviewer (Sam Hodge) asked "how did you test accuracy? did you check dithering/quantisation? vibe-coding
+Reviewer (external review) asked "how did you test accuracy? did you check dithering/quantisation? vibe-coding
 color maths without regression testing is bold." This module answers the HDR-safety slice with MEASUREMENTS,
 by the REAL node/function entry paths, not by reasoning about the code:
 

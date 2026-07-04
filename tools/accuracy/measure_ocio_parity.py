@@ -1,6 +1,6 @@
 """OCIO parity vs reference (2026-07-03).
 
-Answers Sam Hodge's "vibe-coding color maths without regression testing is bold": prove the pack's
+Answers the reviewer's "vibe-coding color maths without regression testing is bold": prove the pack's
 OCIO-backed transforms match a RAW PyOpenColorIO CPU processor built independently of the node wrapper,
 so a wiring bug in the node cannot hide behind the node's own code path.
 

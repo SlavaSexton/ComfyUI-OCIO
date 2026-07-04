@@ -1,6 +1,6 @@
 """Measure the 10 log curves in nodes._CURVES (2026-07-03).
 
-Answers Sam Hodge's "how did you test accuracy / did you regression test the colour maths?" for the
+Answers the reviewer's "how did you test accuracy / did you regression test the colour maths?" for the
 LogConvert transfer curves specifically:
 
   (a) ROUND-TRIP identity  lin -> log -> lin  over a wide range (fixtures/hdr_ramp.npy -0.25..16 plus a

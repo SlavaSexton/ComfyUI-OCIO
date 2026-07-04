@@ -360,7 +360,7 @@ def _seq_fps(files):
 # A whole 4K clip decoded to a raw batch is enormous (65 s x 3840x2160 x rgb48le ~= 155 GB) - piping that through
 # subprocess stdout OOMs / hangs the box. Cap the raw decode to this many bytes; adapts to resolution (fewer 4K
 # frames, more 1080p). An over-budget / unbounded request returns the first N that fit + info['capped']=True.
-_VIDEO_DECODE_BUDGET = 2 * 1024 ** 3   # ~2 GB raw rgb48le (~43 frames at 4K, ~160 at 1080p): OOM-safe + bounded decode time (a 4K frame is ~0.5 s to pipe as rgb48le, so this stays well under a minute)
+_VIDEO_DECODE_BUDGET = 6 * 1024 ** 3   # ~6 GB raw rgb48le. 2026-07-04: bumped 2->6 GB so a full HD clip decodes WHOLE (a 451-frame 1920x800 = ~4.2 GB fits; owner wanted frame 451 of 451 accessible, not capped at ~233). At 4K (~47 MB/frame) this still caps ~135 frames = OOM protection. On a 128 GB box the peak (rgb48le buffer + the float32 batch) is fine; a still only needs one frame, so set the Read start=end=that frame to avoid decoding the whole clip.
 def _read_video(path, frame_start, frame_count):
     """Decode a video -> float32 RGB [N,H,W,3] (0..1) via ffmpeg piping 16-bit rgb48le, from frame_start. BOUNDED:
     never buffers more than _VIDEO_DECODE_BUDGET of raw pixels (a long 4K clip would otherwise OOM); an unbounded

@@ -198,6 +198,13 @@ function _showReadMsg(p, text) {
     p.img.style.display = "none"; p.video.style.display = "none"; p.canvas.style.display = "none";
 }
 function _hideReadMsg(p) { if (p && p.msg) p.msg.style.display = "none"; }
+// Fully blank the preview <img>: hide it, drop the src, AND reset the fill sizing back to intrinsic. Without the
+// size reset a no-src <img> that still carries width/height:100% (from a prior onload) renders the broken-image
+// icon. Use this everywhere the src is cleared. Added 2026-07-03 (fix: broken viewport on empty / guarded source).
+function _blankReadImg(p) {
+    if (!p || !p.img) return;
+    p.img.style.display = "none"; p.img.style.width = ""; p.img.style.height = ""; p.img.removeAttribute("src");
+}
 // Preview/viewport height that SCALES with the node width, keeping the media's aspect - so stretching the node
 // stretches the image instead of pinning it to a fixed-height letterbox (like the native Load Image node). p.aspect =
 // mediaW/mediaH, set when media loads (default 16:9 until known); clamped so it never collapses or runs away.
@@ -224,11 +231,11 @@ function ensureReadPreview(node) {
     const box = document.createElement("div");
     box.style.cssText = "width:100%;height:100%;position:relative;display:flex;justify-content:center;align-items:center;overflow:hidden;";
     const img = document.createElement("img");
-    img.style.cssText = "width:100%;height:100%;object-fit:contain;display:none;";   // FILL the box (width/height 100%, not max-*): a small proxy thumb must upscale to the node size, like the Player's full-res canvas. object-fit:contain keeps aspect
+    img.style.cssText = "max-width:100%;max-height:100%;object-fit:contain;display:none;";   // default INTRINSIC sizing so an empty / pending / broken src shows NOTHING (not a broken-image icon); onload switches to 100%/100% so a small proxy still upscales to fill the node
     // a still/frame that fails to decode (server 404/400, or a non-media path that got through) shows the readable
     // "No media" message instead of a blank box. Added 2026-07-03 (Task F: format guard).
-    img.onerror = () => { img.style.display = "none"; _showReadMsg(node._ocioPrev, "No media - unsupported format"); };
-    img.onload = () => _adoptAspect(node, node._ocioPrev, img.naturalWidth, img.naturalHeight);   // learn the media aspect -> node refits so the image scales with width
+    img.onerror = () => { img.style.display = "none"; img.style.width = ""; img.style.height = ""; _showReadMsg(node._ocioPrev, "No media - unsupported format"); };   // reset to intrinsic sizing so a later empty state cannot show a broken-image icon
+    img.onload = () => { img.style.width = "100%"; img.style.height = "100%"; _adoptAspect(node, node._ocioPrev, img.naturalWidth, img.naturalHeight); };   // valid image loaded -> fill (upscale a small proxy) + learn aspect so the node refits
     const video = document.createElement("video");
     video.muted = true; video.loop = true; video.playsInline = true; video.setAttribute("playsinline", "");
     video.style.display = "none";
@@ -801,13 +808,13 @@ function _drawAudioMeter(p) {
 function updateReadPreview(node) {
     const p = ensureReadPreview(node);
     const src = (W(node, "source")?.value || "").trim();
-    if (!src) { _stopSeq(p); _stopViewport(p); _hideReadMsg(p); p.img.style.display = "none"; p.img.removeAttribute("src"); return; }
+    if (!src) { _stopSeq(p); _stopViewport(p); _hideReadMsg(p); _blankReadImg(p); return; }
     const seq = node._ocioSeq;
     // Format guard (Task F): a non-media / unsupported path (a .txt, code file, unknown container) never reaches
     // the decode routes - it would 404/400 and blank the box. Surface a readable message and stop. A folder path
     // (sequence dir) passes the guard; the server resolves its frames. A resolved sequence (seq.kind) is trusted.
     if (!(seq && (seq.kind === "sequence" || seq.kind === "video")) && !isKnownMediaPath(src)) {
-        _stopSeq(p); _stopViewport(p); p.img.removeAttribute("src");
+        _stopSeq(p); _stopViewport(p); _blankReadImg(p);
         _showReadMsg(p, "No media - unsupported format");
         return;
     }

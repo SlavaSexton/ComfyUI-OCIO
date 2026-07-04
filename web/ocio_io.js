@@ -1501,6 +1501,70 @@ function _playerStop(p) {
 // The Player's preview-state object `p` mirrors the shape the shared transport helpers read (p.node, p.pb, p.gl,
 // p.canvas, p.transport, p.exposure). pb.seqMode is TRUE so _pbCur / _pbSeek use the frame-index path (there is
 // no <video>), but _seqBase stays 0 (p.seq === null) so start_frame/end_frame are read as plain 0-based indices.
+// ---- Ф1b: stream a VIDEO source in the OCIO Player (Load Video -> Player.video, or a video OCIO Read traced to a
+// file). A hidden <video> decodes natively (browser GPU, hardware) and streams the WHOLE clip - NO materialization,
+// NO frame cap. Each frame is drawn through the SAME exposure + OCIO-LUT float shader as the float path (uploaded as
+// an 8-bit texture, sampled as float in-shader, then exposure * 2^stops + display LUT). Big frames are downscaled
+// before the per-rAF GPU upload (a raw 4K upload every frame stalls playback - the Nuke/Vimeo proxy trick). The
+// shared transport (seqMode=false) drives the <video> for play/scrub/reverse, mapping currentTime<->frame.
+function _playerVideoDraw(p) {
+    const g = p.gl; if (!g || !p.video) return; const gl = g.gl, v = p.video;
+    if (!(v.videoWidth > 0) || v.readyState < 2) return;
+    let src = v, sw = v.videoWidth, sh = v.videoHeight;
+    const cap = 1920;
+    if (Math.max(sw, sh) > cap) {
+        const s = cap / Math.max(sw, sh), pw = Math.max(1, Math.round(sw * s)), ph = Math.max(1, Math.round(sh * s));
+        if (!p.vproxy) { p.vproxy = document.createElement("canvas"); p.vproxyCtx = p.vproxy.getContext("2d"); }
+        if (p.vproxy.width !== pw || p.vproxy.height !== ph) { p.vproxy.width = pw; p.vproxy.height = ph; }
+        try { p.vproxyCtx.drawImage(v, 0, 0, pw, ph); } catch (e) { return; }
+        src = p.vproxy; sw = pw; sh = ph;
+    }
+    if (p.canvas.width !== sw || p.canvas.height !== sh) { p.canvas.width = sw; p.canvas.height = sh; }
+    p.texW = sw; p.texH = sh;
+    gl.viewport(0, 0, p.canvas.width, p.canvas.height);
+    gl.useProgram(g.prog);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, g.imgTex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    try { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src); } catch (e) { return; }
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_3D, g.lutTex);
+    gl.uniform1f(g.locs.uN, p.lutN || 33); gl.uniform1f(g.locs.uOn, p.lutReady ? 1 : 0);
+    gl.uniform1f(g.locs.uExposure, p.exposure || 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+}
+function _playerVideoRaf(node, p) {
+    if (p.raf) return;
+    const loop = (now) => {
+        if (node._ocioPlayer !== p || !p.videoMode) { p.raf = 0; return; }
+        _tickPlayback(p, now || 0);                          // shared video clock (seqMode=false -> drives p.video)
+        _playerVideoDraw(p);
+        _syncTransport(p);
+        p.raf = requestAnimationFrame(loop);
+    };
+    p.raf = requestAnimationFrame(loop);
+}
+function playerVideoStart(node, p, path, meta) {
+    _playerStop(p);                                          // leave the float path (cancels its rAF, frees textures)
+    p.videoMode = true; p.player = null;
+    const url = "/ocio/stream?src=" + encodeURIComponent(path);
+    if (p._vidUrl !== url) {
+        p._vidUrl = url; p.video.loop = false; p.pb.playing = false; p.pb.dir = 1; p.pb.revAnchor = null;
+        p.video.src = url;
+        p.video.onseeked = () => { if (p.videoMode) _playerVideoDraw(p); };   // reverse / scrub: paint each settled seek
+        p.video.onloadedmetadata = () => { if (p.video.videoWidth) _adoptAspect(node, p, p.video.videoWidth, p.video.videoHeight); };
+        p.video.onerror = () => { p.videoMode = false; p.canvas.style.display = "none"; p.empty.style.display = "flex"; p.empty.firstChild.textContent = "Video: browser cannot decode this codec (ProRes / DNxHR need an H.264 proxy)"; };
+    }
+    p.pb.seqMode = false;                                    // shared transport now runs the <video> clock
+    p.pb.fileFrames = Math.max(1, meta.frames || 0);
+    p.pb.fps = meta.fps || 24;
+    p.pb.seqFrame = 0; p.pb.seqAnchor = null;
+    if (!_playerInitGL(p)) { p.canvas.style.display = "none"; p.empty.style.display = "flex"; p.empty.firstChild.textContent = "WebGL2 unavailable - cannot show the viewport"; return; }
+    _playerRefreshLut(node, p);                              // bake the in_cs -> out_cs display LUT
+    p.empty.style.display = "none"; p.canvas.style.display = "";
+    p.pb.showTransport = true; if (p.transport) { p.transport.bar.style.display = "flex"; if (p.transport.audioRow) p.transport.audioRow.style.display = "none"; }
+    if (p.refreshOverlay) p.refreshOverlay.style.display = "none";
+    node.setSize([node.size[0], node.computeSize()[1]]);
+    _playerVideoRaf(node, p);
+}
 function ensurePlayer(node) {
     if (node._ocioPlayer) return node._ocioPlayer;
     const box = document.createElement("div");
@@ -1530,7 +1594,9 @@ function ensurePlayer(node) {
     refreshOverlay.onclick = () => app.queuePrompt(0, 1);
     // Exposure control now lives HORIZONTALLY in the transport strip (between the viewport and the timeline), built
     // in _ensureTransport when p.isPlayer is set. No slider inside the viewport anymore. Owner spec 2026-07-03 (Task C).
-    box.append(empty, canvas, refreshOverlay);
+    const video = document.createElement("video");           // Ф1b: hidden <video> for streaming a video source into the WebGL viewport (exposure + LUT shader)
+    video.muted = true; video.loop = false; video.playsInline = true; video.setAttribute("playsinline", ""); video.style.display = "none";
+    box.append(empty, canvas, refreshOverlay, video);
     const w = node.addDOMWidget("player", "div", box, { serialize: false });
     w.computeSize = (width) => [0, (node._ocioPlayer && node._ocioPlayer.player) ? _previewH(node, node._ocioPlayer, width) : 90];   // scale with node width (aspect-locked), like Load Image
     w._ocioAlwaysVisible = true;
@@ -1541,6 +1607,7 @@ function ensurePlayer(node) {
              seqAnchor: null, fileFrames: 1 };
     node._ocioPlayer = p;
     p.refreshOverlay = refreshOverlay;
+    p.video = video;                                     // Ф1b: streamed-video element (drawn via the exposure+LUT shader)
     _ensureTransport(node, p);                           // shared transport bar (exposure strip + playback), drives seqFrame via _pbSeek/_playerShow
     node.onRemoved = (orig => function () { _playerStop(node._ocioPlayer); return orig && orig.apply(this, arguments); })(node.onRemoved);
     // Show the auto-Refresh overlay when an INPUT connection changes (a node plugged in / rewired upstream) - the
@@ -1574,14 +1641,11 @@ function playerOnExecuted(node, message) {
     if (vpath) {
         const vres = first(message.video_res) || "", vfps = parseFloat(first(message.video_fps)) || 24, vframes = parseInt(first(message.video_frames), 10) || 0;
         p.videoSrc = { path: vpath, res: vres, fps: vfps, frames: vframes };
-        console.log("[OCIO Player] video source:", vpath, vres, vfps + "fps", vframes + " frames");
-        _playerStop(p); p.player = null;                          // not the float path
-        p.canvas.style.display = "none"; p.empty.style.display = "flex";
-        p.empty.firstChild.textContent = `Video ${vres} ${vframes}f @ ${vfps} - WebCodecs stream (building)`;
-        if (p.refreshOverlay) p.refreshOverlay.style.display = "none";
         renderPlayerMeta(node, { resolution: vres, total: vframes, cached: vframes, fps: vfps, input_cs: first(message.input_cs) });
+        playerVideoStart(node, p, vpath, { fps: vfps, frames: vframes });   // stream the whole clip (native decode + exposure/LUT shader)
         return;
     }
+    if (p.videoMode) { p.videoMode = false; try { p.video.pause(); } catch (e) {} if (p.raf) { cancelAnimationFrame(p.raf); p.raf = 0; } }   // was streaming a video, now a float batch -> stop the stream
     const dir = first(message && message.player_dir);
     const total = parseInt(first(message && message.player_total) || "0", 10);
     const cached = parseInt(first(message && message.player_cached) || "0", 10);

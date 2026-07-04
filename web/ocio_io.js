@@ -1661,7 +1661,7 @@ app.registerExtension({
                 const rr = _ocLabel ? _ocLabel.apply(this, arguments) : undefined;
                 const relabel = () => {
                     for (const s of (this.inputs || [])) if (s.type === "IMAGE" && (s.name === "image" || s.name === "images")) s.label = "img/seq/vid";
-                    for (const s of (this.inputs || [])) if (s.type === "VIDEO") s.label = "Load Video";   // OCIO Player: the VIDEO input takes a Load Video node (streamed, not materialized)
+                    for (const s of (this.inputs || [])) if (s.type === "VIDEO") s.label = "Load Video Node";   // OCIO Player: the VIDEO input takes a Load Video node (streamed, not materialized)
                     for (const s of (this.outputs || [])) if (s.type === "IMAGE") s.label = "img/seq/vid";
                     this.setDirtyCanvas(true, true);
                 };

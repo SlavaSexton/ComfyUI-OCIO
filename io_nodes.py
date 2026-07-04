@@ -360,10 +360,22 @@ def _seq_fps(files):
 # A whole 4K clip decoded to a raw batch is enormous (65 s x 3840x2160 x rgb48le ~= 155 GB) - piping that through
 # subprocess stdout OOMs / hangs the box. Cap the raw decode to this many bytes; adapts to resolution (fewer 4K
 # frames, more 1080p). An over-budget / unbounded request returns the first N that fit + info['capped']=True.
-_VIDEO_DECODE_BUDGET = 6 * 1024 ** 3   # ~6 GB raw rgb48le. 2026-07-04: bumped 2->6 GB so a full HD clip decodes WHOLE (a 451-frame 1920x800 = ~4.2 GB fits; owner wanted frame 451 of 451 accessible, not capped at ~233). At 4K (~47 MB/frame) this still caps ~135 frames = OOM protection. On a 128 GB box the peak (rgb48le buffer + the float32 batch) is fine; a still only needs one frame, so set the Read start=end=that frame to avoid decoding the whole clip.
+def _video_decode_budget():
+    """Bytes of raw rgb48le ONE video decode may buffer - ADAPTIVE to the machine's FREE RAM so it is safe on a
+    small box and generous on a big one (this is a repo-wide default, not tuned to one user). ~1/4 of currently
+    available RAM (the decode also holds the downstream float32 batch, ~2x the rgb48le buffer, so 1/4 leaves
+    headroom), clamped to [2 GB, 16 GB]. 2026-07-04: was a flat 2 GB (capped a full HD clip on every machine); now
+    a 128 GB box gets the 16 GB ceiling (a whole HD/2K clip decodes at once) while a 16 GB box stays ~2-4 GB (no
+    OOM). psutil ships with ComfyUI; if it is somehow missing, fall back to 4 GB."""
+    try:
+        import psutil
+        avail = int(psutil.virtual_memory().available)
+        return min(16 * 1024 ** 3, max(2 * 1024 ** 3, avail // 4))
+    except Exception:
+        return 4 * 1024 ** 3
 def _read_video(path, frame_start, frame_count):
     """Decode a video -> float32 RGB [N,H,W,3] (0..1) via ffmpeg piping 16-bit rgb48le, from frame_start. BOUNDED:
-    never buffers more than _VIDEO_DECODE_BUDGET of raw pixels (a long 4K clip would otherwise OOM); an unbounded
+    never buffers more than _video_decode_budget() of raw pixels (a long 4K clip would otherwise OOM); an unbounded
     or over-budget request is capped, info['capped']=True. Uses -ss input seeking so a deep frame_start does not
     decode the whole head into memory."""
     _require_ffmpeg()
@@ -375,7 +387,8 @@ def _read_video(path, frame_start, frame_count):
     if not (w and h):
         raise RuntimeError(f"ffprobe could not read {path}: {probe.stderr[:200]}")
     per_frame = max(1, w * h * 3 * 2)                       # raw rgb48le bytes per frame
-    cap = max(1, int(_VIDEO_DECODE_BUDGET // per_frame))    # frames that fit the budget at this resolution
+    budget = _video_decode_budget()                         # adaptive to free RAM (repo-wide safe), [2..16] GB
+    cap = max(1, int(budget // per_frame))                  # frames that fit the budget at this resolution
     want = frame_count if frame_count > 0 else 10 ** 9      # 0 = unbounded (the whole clip)
     eff = min(want, cap)
     capped = eff < want
@@ -396,7 +409,7 @@ def _read_video(path, frame_start, frame_count):
     info["capped"] = capped
     if capped:
         print(f"[OCIO] video decode capped at {eff} frames (of {want if want < 10**9 else info.get('nb_frames','?')}) "
-              f"to fit the ~{_VIDEO_DECODE_BUDGET // 1024**3} GB budget at {w}x{h}; set start_frame/end_frame to view another range.")
+              f"to fit the ~{budget // 1024**3} GB budget (adaptive to free RAM) at {w}x{h}; set start_frame/end_frame to view another range.")
     return arr, info
 
 

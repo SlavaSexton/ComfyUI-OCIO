@@ -198,25 +198,48 @@ function _showReadMsg(p, text) {
     p.img.style.display = "none"; p.video.style.display = "none"; p.canvas.style.display = "none";
 }
 function _hideReadMsg(p) { if (p && p.msg) p.msg.style.display = "none"; }
+// Preview/viewport height that SCALES with the node width, keeping the media's aspect - so stretching the node
+// stretches the image instead of pinning it to a fixed-height letterbox (like the native Load Image node). p.aspect =
+// mediaW/mediaH, set when media loads (default 16:9 until known); clamped so it never collapses or runs away.
+// Shared by OCIO Read (preview) and OCIO Player (viewport).
+function _previewH(node, p, width) {
+    const aspect = (p && p.aspect && isFinite(p.aspect) && p.aspect > 0.05) ? p.aspect : (16 / 9);
+    const w = (width && width > 0) ? width : ((node.size && node.size[0]) || 300);
+    return Math.max(120, Math.min(2000, Math.round(w / aspect)));
+}
+// Learn the media's aspect (from a decoded still / video / float frame) and refit the node once, so the viewport
+// keeps the real proportions and the image scales with the node width. Skips unchanged aspects (every seq frame
+// reports the same one -> no resize churn) and guards against the setSize -> onResize -> _adoptAspect recursion.
+function _adoptAspect(node, p, mw, mh) {
+    if (!p || !(mw > 0) || !(mh > 0)) return;
+    const a = mw / mh;
+    if (Math.abs((p.aspect || 0) - a) < 0.002) return;
+    p.aspect = a;
+    if (p._aspectFitting) return;
+    p._aspectFitting = true;
+    try { node.setSize([node.size[0], node.computeSize()[1]]); } finally { p._aspectFitting = false; }
+}
 function ensureReadPreview(node) {
     if (node._ocioPrev) return node._ocioPrev;
     const box = document.createElement("div");
     box.style.cssText = "width:100%;height:100%;display:flex;justify-content:center;align-items:center;overflow:hidden;";
     const img = document.createElement("img");
-    img.style.cssText = "max-width:100%;max-height:200px;object-fit:contain;display:none;";
+    img.style.cssText = "max-width:100%;max-height:100%;object-fit:contain;display:none;";   // 100%: scale with the node (Load-Image-style), not a fixed 200px cap
     // a still/frame that fails to decode (server 404/400, or a non-media path that got through) shows the readable
     // "No media" message instead of a blank box. Added 2026-07-03 (Task F: format guard).
     img.onerror = () => { img.style.display = "none"; _showReadMsg(node._ocioPrev, "No media - unsupported format"); };
+    img.onload = () => _adoptAspect(node, node._ocioPrev, img.naturalWidth, img.naturalHeight);   // learn the media aspect -> node refits so the image scales with width
     const video = document.createElement("video");
     video.muted = true; video.loop = true; video.playsInline = true; video.setAttribute("playsinline", "");
     video.style.display = "none";
+    video.addEventListener("loadedmetadata", () => _adoptAspect(node, node._ocioPrev, video.videoWidth, video.videoHeight));
     const canvas = document.createElement("canvas");
-    canvas.style.cssText = "max-width:100%;max-height:200px;object-fit:contain;display:none;";
+    canvas.style.cssText = "max-width:100%;max-height:100%;object-fit:contain;display:none;";
     const msg = document.createElement("div");   // "No media - unsupported format" placeholder (hidden by default)
     msg.style.cssText = "display:none;color:#889;font:12px sans-serif;text-align:center;padding:24px;";
     box.append(img, video, canvas, msg);
     const w = node.addDOMWidget("preview", "div", box, { serialize: false });
-    w.computeSize = () => [0, 210];
+    w.computeSize = (width) => [0, node._ocioReadCollapsed ? 0 : _previewH(node, node._ocioPrev, width)];   // scale with node width (aspect-locked); 0 when the Viewer is collapsed
     w._ocioAlwaysVisible = true;                      // always shown, regardless of source kind
     node._ocioPrev = { img, video, canvas, msg, gl: null, lutN: 33, lutReady: false, raf: 0, streamUrl: "" };
     node._ocioPrev.pb = { playing: false, dir: 1, mode: "loop", fps: 24, showTransport: false, lastT: 0 };
@@ -288,6 +311,7 @@ function _ensureRaf(node, p) {                          // one rAF loop drives b
     if (p.raf) return;
     const loop = (now) => {
         if (node._ocioPrev !== p) { p.raf = 0; return; }
+        if ((node.mode === 2 || node.mode === 4) && p.seqCache && p.seqCache.size) _seqClearCache(p);   // muted / bypassed -> drop the decoded-frame blob cache
         _tickPlayback(p, now || 0);
         if (!p.pb.seqMode) _drawViewport(p);           // a sequence shows its color-managed thumb in <img> (no WebGL)
         _syncTransport(p);
@@ -1334,6 +1358,7 @@ async function _playerFetch(p, idx, show) {
         else { try { gl.deleteTexture(tex); } catch (x) {} }         // lost a race for this idx -> keep the existing entry
         _playerTouch(p, idx); _playerEvict(p);
         p.texW = w; p.texH = h;
+        _adoptAspect(node, p, w, h);                                 // learn media aspect on the first frame -> node refits, image scales with width
         if (show && (p.pb.seqFrame | 0) === idx) _playerDraw(p);     // only draw if this is still the frame on screen
     } catch (e) { if (p._playerFirstErr == null) { p._playerFirstErr = String(e); console.error("[OCIO Player] frame:", e); } }
     finally { p.playerInflight.delete(idx); }
@@ -1384,6 +1409,7 @@ function _playerEnsureRaf(node, p) {
     if (p.raf) return;
     const loop = (now) => {
         if (node._ocioPlayer !== p) { p.raf = 0; return; }
+        if ((node.mode === 2 || node.mode === 4) && p.texCache && p.texCache.size) { _playerClearTex(p); _playerDraw(p); }   // muted / bypassed -> free the frame textures from VRAM
         _playerTick(p, now || 0);
         _syncTransport(p);
         p.raf = requestAnimationFrame(loop);
@@ -1403,9 +1429,9 @@ function _playerStop(p) {
 function ensurePlayer(node) {
     if (node._ocioPlayer) return node._ocioPlayer;
     const box = document.createElement("div");
-    box.style.cssText = "width:100%;position:relative;display:flex;justify-content:center;align-items:center;overflow:hidden;background:#111;";
+    box.style.cssText = "width:100%;height:100%;position:relative;display:flex;justify-content:center;align-items:center;overflow:hidden;background:#111;";
     const canvas = document.createElement("canvas");
-    canvas.style.cssText = "max-width:100%;max-height:240px;object-fit:contain;display:none;";   // full width: the exposure control moved out of the viewport into the transport strip
+    canvas.style.cssText = "max-width:100%;max-height:100%;object-fit:contain;display:none;";   // 100%: scale with the node (Load-Image-style); exposure lives in the transport strip, not the viewport
     // "No media" placeholder + a Refresh affordance (the float data only exists after the graph runs -> onExecuted)
     const empty = document.createElement("div");
     empty.style.cssText = "display:flex;flex-direction:column;align-items:center;gap:8px;color:#889;font:12px sans-serif;padding:24px;";
@@ -1417,11 +1443,21 @@ function ensurePlayer(node) {
     refreshBtn.onmouseleave = () => refreshBtn.style.background = "#2b2b40";
     refreshBtn.onclick = () => app.queuePrompt(0, 1);   // == Queue: OCIOPlayer is OUTPUT_NODE, so this renders the graph + repopulates the viewport (owner: no duplicate button - this in-viewport Refresh IS the render)
     empty.append(emptyMsg, refreshBtn);
+    // Auto-Refresh overlay: floats OVER the viewport when the node's INPUT changes (a node inserted / rewired
+    // upstream, e.g. an OCIO Log Converter dropped in between) - the cached frames are then stale, so this prompts a
+    // re-render. Click = Queue (renders this OUTPUT_NODE). Hidden until an input change; hidden again on the next render.
+    const refreshOverlay = document.createElement("button");
+    refreshOverlay.textContent = "↻ Refresh (input changed)";
+    refreshOverlay.title = "The input changed - click to re-render this node";
+    refreshOverlay.style.cssText = "position:absolute;top:6px;left:50%;transform:translateX(-50%);z-index:5;display:none;padding:4px 10px;border:0;border-radius:4px;background:rgba(40,40,64,0.92);color:#cde;cursor:pointer;font:11px sans-serif;box-shadow:0 1px 4px rgba(0,0,0,0.5);";
+    refreshOverlay.onmouseenter = () => refreshOverlay.style.background = "rgba(57,57,90,0.95)";
+    refreshOverlay.onmouseleave = () => refreshOverlay.style.background = "rgba(40,40,64,0.92)";
+    refreshOverlay.onclick = () => app.queuePrompt(0, 1);
     // Exposure control now lives HORIZONTALLY in the transport strip (between the viewport and the timeline), built
     // in _ensureTransport when p.isPlayer is set. No slider inside the viewport anymore. Owner spec 2026-07-03 (Task C).
-    box.append(empty, canvas);
+    box.append(empty, canvas, refreshOverlay);
     const w = node.addDOMWidget("player", "div", box, { serialize: false });
-    w.computeSize = () => [0, (node._ocioPlayer && node._ocioPlayer.player) ? 250 : 90];
+    w.computeSize = (width) => [0, (node._ocioPlayer && node._ocioPlayer.player) ? _previewH(node, node._ocioPlayer, width) : 90];   // scale with node width (aspect-locked), like Load Image
     w._ocioAlwaysVisible = true;
     const p = { node, box, canvas, empty, isPlayer: true, gl: null, lutN: 33, lutReady: false,
                 raf: 0, exposure: 0, texW: 0, texH: 0, player: null, autoCsChecked: false, userSetCs: false };
@@ -1429,8 +1465,15 @@ function ensurePlayer(node) {
     p.pb = { playing: false, dir: 1, mode: "loop", fps: 24, showTransport: false, seqMode: true, seqFrame: 0,
              seqAnchor: null, fileFrames: 1 };
     node._ocioPlayer = p;
+    p.refreshOverlay = refreshOverlay;
     _ensureTransport(node, p);                           // shared transport bar (exposure strip + playback), drives seqFrame via _pbSeek/_playerShow
     node.onRemoved = (orig => function () { _playerStop(node._ocioPlayer); return orig && orig.apply(this, arguments); })(node.onRemoved);
+    // Show the auto-Refresh overlay when an INPUT connection changes (a node plugged in / rewired upstream) - the
+    // cached render is now stale. LiteGraph.INPUT === 1. Only once a render exists (before that, the empty-state Refresh covers it).
+    node.onConnectionsChange = (orig => function (type, idx, connected, link_info) {
+        try { const pp = node._ocioPlayer; if (type === 1 && pp && pp.player && pp.refreshOverlay) pp.refreshOverlay.style.display = ""; } catch (e) {}
+        return orig && orig.apply(this, arguments);
+    })(node.onConnectionsChange);
     return p;
 }
 // Fit the node to its content height (viewport + transport + meta), then redraw. Guarded against reentrancy:
@@ -1459,6 +1502,7 @@ function playerOnExecuted(node, message) {
     if (!dir || !(cached > 0)) { renderPlayerMeta(node, null); return; }
     p.player = { dir, total, cached, resolution };
     _playerClearTex(p);                                  // fresh render -> the old frame textures are stale, drop them
+    if (p.refreshOverlay) p.refreshOverlay.style.display = "none";   // rendered -> no longer stale, hide the input-changed prompt
     p.autoCsChecked = false;                             // re-evaluate HDR auto-cs for this fresh render
     p._playerFirstErr = null;
     p.pb.fileFrames = cached;                            // transport ruler spans the CACHED frames (0..cached-1)

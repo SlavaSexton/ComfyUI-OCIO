@@ -1599,17 +1599,19 @@ function playerVideoStart(node, p, path, meta) {
 // Refresh - so changing the Load Video file (a widget change, NOT a connection change) is picked up without recreating
 // the node, and without a backend round-trip that ComfyUI might cache. Added 2026-07-03.
 function _playerTraceVideoSrc(node, seen) {
-    seen = seen || new Set();
-    if (!node || seen.has(node.id)) return null;
-    seen.add(node.id);
-    if (node.type === "LoadVideo") { const w = W(node, "file"); return (w && w.value) ? String(w.value) : null; }
-    if (node.type === "OCIORead") { const s = W(node, "source")?.value; return (s && /\.(mov|mp4|mkv|avi|webm|mxf|m4v)$/i.test(String(s))) ? String(s) : null; }
-    for (const inp of (node.inputs || [])) {
-        if (inp.link == null) continue;
-        const link = app.graph.links[inp.link]; if (!link) continue;
-        const f = _playerTraceVideoSrc(app.graph.getNodeById(link.origin_id), seen);
-        if (f) return f;
-    }
+    try {
+        seen = seen || new Set();
+        if (!node || seen.has(node.id)) return null;
+        seen.add(node.id);
+        if (node.type === "LoadVideo") { const w = W(node, "file"); return (w && w.value) ? String(w.value) : null; }
+        if (node.type === "OCIORead") { const s = W(node, "source")?.value; return (s && /\.(mov|mp4|mkv|avi|webm|mxf|m4v)$/i.test(String(s))) ? String(s) : null; }
+        for (const inp of (node.inputs || [])) {
+            if (inp.link == null) continue;
+            const link = app.graph.links[inp.link]; if (!link) continue;
+            const f = _playerTraceVideoSrc(app.graph.getNodeById(link.origin_id), seen);
+            if (f) return f;
+        }
+    } catch (e) { console.warn("[OCIO] video trace failed:", e); }   // never let a graph-walk error kill the Refresh onclick -> it falls through to a normal render
     return null;
 }
 async function _playerVideoRefresh(node) {

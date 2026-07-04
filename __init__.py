@@ -7,17 +7,18 @@ import os
 from .nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
 from .io_nodes import (NODE_CLASS_MAPPINGS as _IO_CLASSES,
                        NODE_DISPLAY_NAME_MAPPINGS as _IO_NAMES)
-from .grade_nodes import (NODE_CLASS_MAPPINGS as _GRADE_CLASSES,
-                          NODE_DISPLAY_NAME_MAPPINGS as _GRADE_NAMES)
+# 2026-07-04: OCIO Grade / Grade Match / Apply Grade DISABLED per owner (not in use yet). The code stays in
+# grade_nodes.py; re-enable by uncommenting this import AND the two .update() calls below.
+# from .grade_nodes import (NODE_CLASS_MAPPINGS as _GRADE_CLASSES,
+#                           NODE_DISPLAY_NAME_MAPPINGS as _GRADE_NAMES)
 
 # Read / Write IO nodes live in io_nodes.py; merge their mappings in.
 NODE_CLASS_MAPPINGS.update(_IO_CLASSES)
 NODE_DISPLAY_NAME_MAPPINGS.update(_IO_NAMES)
 
-# Grade / Grade Match / Apply Grade nodes live in grade_nodes.py; merge their mappings in too, before
-# the version-suffix pass below so the Grade nodes' titles also get " - v<version>".
-NODE_CLASS_MAPPINGS.update(_GRADE_CLASSES)
-NODE_DISPLAY_NAME_MAPPINGS.update(_GRADE_NAMES)
+# OCIO Grade / Grade Match / Apply Grade disabled 2026-07-04 (see above) - NOT registered:
+# NODE_CLASS_MAPPINGS.update(_GRADE_CLASSES)
+# NODE_DISPLAY_NAME_MAPPINGS.update(_GRADE_NAMES)
 
 # Front-end assets: the 'swap' button, the 'upload' buttons, and the Read/Write IO helpers (auto-colorspace,
 # Render button, folder browse, colorspace label).
@@ -48,10 +49,9 @@ def _pack_version():
 
 __version__ = _pack_version()
 
-# Show the pack version on every node, in the display name ("OCIO Write - v1.0.1"): a front-end corner badge
-# is invisible on Vue-nodes frontends (they do not draw onDrawForeground); the title renders everywhere.
-# The node TYPE (class key) stays stable, so saved workflows and node search are unaffected.
-NODE_DISPLAY_NAME_MAPPINGS = {k: f"{v} - v{__version__}" for k, v in NODE_DISPLAY_NAME_MAPPINGS.items()}
+# 2026-07-04 (owner): node display names carry NO version suffix - clean titles ("OCIO Write", not
+# "OCIO Write - v1.2.0"). __version__ stays available for the /ocio/version route; the node TYPE (class key)
+# is unchanged, so saved workflows and node search are unaffected.
 
 
 # --- server routes (only inside ComfyUI) --------------------------------------------------------------------

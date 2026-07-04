@@ -1342,8 +1342,8 @@ function openFolderDialog(node) {   // Write output folder
     return openBrowser(node, { widget: "output_folder", forOutput: true });
 }
 
-// (The pack version is shown in every node's display name, set server-side in __init__.py: a canvas-corner
-// badge is invisible on Vue-nodes frontends, which do not draw onDrawForeground, so the title carries it.)
+// (2026-07-04: node titles carry NO version suffix anymore - owner wanted clean names. __version__ is still
+// exposed via the /ocio/version route; the display name is just "OCIO Read" / "OCIO Write" / etc.)
 
 // ============================================================================================================
 // OCIO Player: on-node WebGL2 FLOAT viewport. Added 2026-07-03.

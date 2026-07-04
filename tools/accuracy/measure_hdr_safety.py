@@ -117,7 +117,7 @@ def main():
     node = N.OCIOLogConvert()
     for cname in N._CURVES:
         for op in ("lin_to_log", "log_to_lin"):
-            (out_t,) = node.run(_to_bhwc(hdr), op, cname, mix=1.0)   # REAL node run
+            (out_t, _v) = node.run(_to_bhwc(hdr), op, cname, mix=1.0)   # REAL node run (dual IMAGE/VIDEO out; take IMAGE)
             results["curves"][f"{cname}:{op}"] = _range_stats(hdr, _from_bhwc(out_t))
 
     # ---------------------------------------------------------------- 3. Grade nodes
@@ -216,7 +216,7 @@ def _plot(hdr, results, N, IO, G):
     node = N.OCIOLogConvert()
     m = hdr[:, 0] <= 1.5   # zoom on the toe region where the floor shows
     for cname, col in [("cineon", "#f85"), ("logc3", "#fb5"), ("slog3", "#5cf"), ("acescct", "#9c6")]:
-        (o,) = node.run(_to_bhwc(hdr), "lin_to_log", cname, 1.0)
+        (o, _v) = node.run(_to_bhwc(hdr), "lin_to_log", cname, 1.0)
         ax.scatter(hdr[m, 0], _from_bhwc(o)[m, 0], s=10, c=col, label=f"{cname} lin_to_log")
     ax.axvline(0, color="#933", lw=0.7, ls=":")
     ax.set_title("B. log ENCODE (lin_to_log), toe zoom\ncineon/logc3 FLOOR neg to black code")

@@ -563,7 +563,7 @@ class OCIOLogConvert:
     FUNCTION = "run"
     CATEGORY = "OCIO"
 
-    def run(self, operation, curve, mix=1.0, image=None, video=None):
+    def run(self, image=None, operation=None, curve=None, mix=1.0, video=None):
         # 2026-07-04: dropdowns now show Title-Case labels (Sony S-Log3, Linear to Log). Map back to the machine keys,
         # and still accept the OLD keys (cineon / lin_to_log) so saved graphs and the swap button keep working.
         curve_map = {"Cineon": "cineon", "ACEScct": "acescct", "ACEScc": "acescc", "ARRI LogC3": "logc3",
@@ -618,7 +618,7 @@ class OCIOColorSpace:
     FUNCTION = "convert"
     CATEGORY = "OCIO"
 
-    def convert(self, in_colorspace, out_colorspace, mix=1.0, config_path=BUILTIN, image=None, video=None):
+    def convert(self, image=None, in_colorspace=None, out_colorspace=None, mix=1.0, config_path=BUILTIN, video=None):
         _require_ocio()
         cfg, cfg_key = _config_from_choice_keyed(config_path)
         if cfg is None:
@@ -649,7 +649,7 @@ class OCIODisplay:
     FUNCTION = "run"
     CATEGORY = "OCIO"
 
-    def run(self, in_colorspace, display, view, invert_direction=False, mix=1.0, config_path=BUILTIN, image=None, video=None):
+    def run(self, image=None, in_colorspace=None, display=None, view=None, invert_direction=False, mix=1.0, config_path=BUILTIN, video=None):
         _require_ocio()
         cfg, cfg_key = _config_from_choice_keyed(config_path)
         if cfg is None:
@@ -686,8 +686,8 @@ class OCIOCDLTransform:
     FUNCTION = "run"
     CATEGORY = "OCIO"
 
-    def run(self, slope_r, slope_g, slope_b, offset_r, offset_g, offset_b,
-            power_r, power_g, power_b, saturation, direction, mix=1.0, image=None, video=None):
+    def run(self, image=None, slope_r=1.0, slope_g=1.0, slope_b=1.0, offset_r=0.0, offset_g=0.0, offset_b=0.0,
+            power_r=1.0, power_g=1.0, power_b=1.0, saturation=1.0, direction="forward", mix=1.0, video=None):
         _require_ocio()
         cfg, cfg_key = _resolve_config_keyed("")
         if cfg is None:
@@ -726,7 +726,7 @@ class OCIOFileTransform:
     FUNCTION = "run"
     CATEGORY = "OCIO"
 
-    def run(self, file_path, interpolation, direction, mix=1.0, image=None, video=None):
+    def run(self, image=None, file_path=None, interpolation=None, direction=None, mix=1.0, video=None):
         _require_ocio()
         path = _lut_path(file_path)
         if not (path and os.path.isfile(path)):
@@ -768,7 +768,7 @@ class OCIOLookTransform:
     FUNCTION = "run"
     CATEGORY = "OCIO"
 
-    def run(self, in_colorspace, out_colorspace, look, invert_direction=False, mix=1.0, config_path=BUILTIN, image=None, video=None):
+    def run(self, image=None, in_colorspace=None, out_colorspace=None, look=None, invert_direction=False, mix=1.0, config_path=BUILTIN, video=None):
         _require_ocio()
         cfg, cfg_key = _config_from_choice_keyed(config_path)
         if cfg is None:

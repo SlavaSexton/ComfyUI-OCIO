@@ -224,7 +224,7 @@ function ensureReadPreview(node) {
     const box = document.createElement("div");
     box.style.cssText = "width:100%;height:100%;display:flex;justify-content:center;align-items:center;overflow:hidden;";
     const img = document.createElement("img");
-    img.style.cssText = "max-width:100%;max-height:100%;object-fit:contain;display:none;";   // 100%: scale with the node (Load-Image-style), not a fixed 200px cap
+    img.style.cssText = "width:100%;height:100%;object-fit:contain;display:none;";   // FILL the box (width/height 100%, not max-*): a small proxy thumb must upscale to the node size, like the Player's full-res canvas. object-fit:contain keeps aspect
     // a still/frame that fails to decode (server 404/400, or a non-media path that got through) shows the readable
     // "No media" message instead of a blank box. Added 2026-07-03 (Task F: format guard).
     img.onerror = () => { img.style.display = "none"; _showReadMsg(node._ocioPrev, "No media - unsupported format"); };
@@ -234,7 +234,7 @@ function ensureReadPreview(node) {
     video.style.display = "none";
     video.addEventListener("loadedmetadata", () => _adoptAspect(node, node._ocioPrev, video.videoWidth, video.videoHeight));
     const canvas = document.createElement("canvas");
-    canvas.style.cssText = "max-width:100%;max-height:100%;object-fit:contain;display:none;";
+    canvas.style.cssText = "width:100%;height:100%;object-fit:contain;display:none;";   // FILL the box (see img note): scale the color-managed video to the node size
     const msg = document.createElement("div");   // "No media - unsupported format" placeholder (hidden by default)
     msg.style.cssText = "display:none;color:#889;font:12px sans-serif;text-align:center;padding:24px;";
     box.append(img, video, canvas, msg);
@@ -493,6 +493,11 @@ function _pbLast(p) { return _pbFrames(p) - 1; }
 // on a 0-based INDEX (0..count-1). _seqBase is the offset (orig_start) that maps between them; 0 for a video (its
 // widgets are already 0-based indices), so every formula below reduces to the old video behaviour when base = 0.
 function _seqBase(p) { return (p.pb && p.pb.seqMode && p.seq) ? (p.seq.origStart | 0) : 0; }
+// DISPLAY frame numbering. OCIO Read: same as _seqBase (its widgets already hold frame numbers). OCIO Player: the
+// backend start_frame/end_frame are 0-based BATCH indices and must stay so (the trim uses them), so the source frame
+// numbers live here as a display-only offset, learned from the upstream OCIO Read (syncPlayerFromUpstream). Timeline
+// labels + the frame field use _dispBase; the widget<->index math (_pbIn/_pbSetIn) keeps using _seqBase (base 0 for Player).
+function _dispBase(p) { return _seqBase(p) + ((p.player && p.player.base) ? (p.player.base | 0) : 0); }
 function _pbCur(p) {
     if (p.pb && p.pb.seqMode) return Math.max(0, Math.min(_pbLast(p), p.pb.seqFrame | 0));
     const v = p.video, d = v && v.duration, last = _pbLast(p); if (!(d > 0) || last < 1) return 0;
@@ -595,7 +600,7 @@ function _drawTimeline(p) {
     g.fillStyle = "#7a8a99"; g.strokeStyle = "#3a3a3a"; g.font = "8px monospace"; g.textAlign = "center";
     for (let f = 0; f <= last; f += step) {
         const x = X(f); g.beginPath(); g.moveTo(x, H - 6); g.lineTo(x, H - 9); g.stroke();
-        g.fillText(String(f + _seqBase(p)), Math.max(7, Math.min(Wd - 7, x)), H - 11);   // real frame number for a sequence
+        g.fillText(String(f + _dispBase(p)), Math.max(7, Math.min(Wd - 7, x)), H - 11);   // real source frame number (Read: orig_start; Player: mirrored from upstream Read)
     }
     g.strokeStyle = "#333"; g.beginPath(); g.moveTo(PAD, H - 6); g.lineTo(Wd - PAD, H - 6); g.stroke();
     const handle = (x, d) => { g.fillStyle = "#4cc3ff"; g.fillRect(x - 0.5, 2, 1, H - 6); g.beginPath(); g.moveTo(x, 2); g.lineTo(x + d * 5, 2); g.lineTo(x, 7); g.closePath(); g.fill(); };
@@ -606,7 +611,7 @@ function _drawTimeline(p) {
 function _syncTransport(p) {
     const t = p.transport; if (!t) return;
     const cur = _pbCur(p), pb = p.pb;
-    if (document.activeElement !== t.frame) t.frame.value = String(cur + _seqBase(p));   // display the real frame number
+    if (document.activeElement !== t.frame) t.frame.value = String(cur + _dispBase(p));   // display the real source frame number
     // Play buttons never turn into a pause (owner spec): the icon stays play / reverse; a green inset ring just
     // shows which direction is currently running. Stop is the only pause.
     t.play.style.boxShadow = (pb.playing && pb.dir > 0) ? "inset 0 0 0 2px #4caf50" : "";
@@ -632,7 +637,7 @@ function _ensureTransport(node, p) {
     const stop = mkBtn(_SVG.stop, "Stop (pause here)", () => _pbStop(node, p));
     const frame = document.createElement("input"); frame.type = "number"; frame.value = "0"; frame.title = "Current frame (type a number to jump)";
     frame.style.cssText = "width:44px;height:16px;text-align:center;background:#101010;color:#cfe;border:1px solid #333;border-radius:2px;font:11px monospace;margin:0 3px;";
-    frame.addEventListener("change", () => { const f = (parseInt(frame.value, 10) || 0) - _seqBase(p); _pbSet(node, p, false, 1); _pbSeek(p, f); _drawTimeline(p); });   // user types a frame number -> index
+    frame.addEventListener("change", () => { const f = (parseInt(frame.value, 10) || 0) - _dispBase(p); _pbSet(node, p, false, 1); _pbSeek(p, f); _drawTimeline(p); });   // user types a source frame number -> index
     const play = mkBtn(_SVG.play, "Play forward", () => _pbSet(node, p, true, 1));   // always play forward (NOT a toggle); pause is the Stop button only
     const sf = mkBtn(_SVG.stepF, "Step forward one frame", () => _pbStep(node, p, 1));
     const last = mkBtn(_SVG.last, "Go to last frame of range (out)", () => { _pbSet(node, p, false, 1); _pbSeek(p, _pbOut(p)); _drawTimeline(p); });
@@ -928,6 +933,24 @@ function resyncAllWrites() {
     for (const nd of (app.graph && app.graph._nodes) || []) {
         if (nd.type === "OCIOWrite") syncWriteFromUpstream(nd);
     }
+}
+// OCIO Player mirrors the SAME source frame numbering + fps as the upstream OCIO Read, traced back through any chain
+// of nodes (findUpstreamRead). The Player's own start_frame/end_frame stay 0-based batch indices (the backend trim
+// needs them); this only sets the DISPLAY base (p.player.base) + the fps, so the viewer reads frames [first .. first+N-1]
+// at the source fps - matching OCIO Read even through 10-20 nodes. frame_shift on the Read re-bases the numbering.
+function syncPlayerFromUpstream(node) {
+    const p = node._ocioPlayer; if (!p || !p.player) return;
+    const read = findUpstreamRead(node);
+    if (!read) { p.player.base = 0; return; }              // no OCIO Read upstream -> plain 0-based numbering
+    const seq = read._ocioSeq;
+    const rSF = W(read, "start_frame")?.value || 0;
+    const rShift = W(read, "frame_shift")?.value || 0;
+    const rFps = W(read, "fps")?.value || 0;
+    const s0 = rSF > 0 ? rSF : ((seq && seq.start != null) ? (seq.start | 0) : 0);
+    const first = rShift > 0 ? rShift : s0;                // same rule OCIO Write uses
+    p.player.base = first | 0;
+    if (rFps > 0) { p.pb.fps = rFps; setWSilent(node, "fps", rFps); }   // fps must match the source, not the Player default
+    node.setDirtyCanvas(true, true);
 }
 // ---- auto colorspace: wired from LTX's HDR decode node -> set Linear Rec.709 -> ACEScg automatically ---------
 function findUpstreamType(node, typeName, seen) {
@@ -1508,13 +1531,14 @@ function playerOnExecuted(node, message) {
     p.pb.fileFrames = cached;                            // transport ruler spans the CACHED frames (0..cached-1)
     p.pb.seqFrame = Math.max(0, Math.min(cached - 1, p.pb.seqFrame | 0));
     if (fps) { p.pb.fps = fps; }
+    syncPlayerFromUpstream(node);                        // mirror source frame numbering (base) + fps from the upstream OCIO Read, through any chain of nodes
     // show the viewport, hide the placeholder; show the transport bar
     p.empty.style.display = "none"; p.canvas.style.display = "";
     p.pb.showTransport = true; if (p.transport) { p.transport.bar.style.display = "flex"; if (p.transport.audioRow) p.transport.audioRow.style.display = "none"; }
     if (!_playerInitGL(p)) {                             // no WebGL2 -> message, no viewport
         p.canvas.style.display = "none"; p.empty.style.display = "flex";
         p.empty.firstChild.textContent = "WebGL2 unavailable - cannot show float viewport";
-        renderPlayerMeta(node, { resolution, total, cached, fps, input_cs: inputCs });
+        renderPlayerMeta(node, { resolution, total, cached, fps: p.pb.fps, input_cs: inputCs });   // p.pb.fps = source fps after syncPlayerFromUpstream
         return;
     }
     _playerLayout(node);
@@ -1522,12 +1546,12 @@ function playerOnExecuted(node, message) {
     _playerShow(p);                                      // upload + draw the current frame
     _playerPrefetch(p);                                  // warm the rest of [in,out] into the texture cache (teal bar shows progress)
     _playerEnsureRaf(node, p);
-    renderPlayerMeta(node, { resolution, total, cached, fps, input_cs: inputCs });
+    renderPlayerMeta(node, { resolution, total, cached, fps: p.pb.fps, input_cs: inputCs });   // p.pb.fps = source fps after syncPlayerFromUpstream
 }
 
 // ---- Player metadata panel: resolution / frames / fps / colorspace, from the onExecuted payload + widgets.
 const PLAYER_META_ROWS = [
-    ["resolution", "Resolution"], ["frames", "Frames"], ["fps", "FPS"],
+    ["resolution", "Resolution"], ["frames", "Frames"], ["range", "Range"], ["fps", "FPS"],
     ["input_colorspace", "Input CS"], ["output_colorspace", "Output CS"],
 ];
 function ensurePlayerMeta(node) {
@@ -1544,9 +1568,13 @@ function renderPlayerMeta(node, data) {
     const box = ensurePlayerMeta(node);
     if (!data) { box.innerHTML = ""; return; }
     const framesTxt = data.cached < data.total ? `${data.total} (viewer capped at ${data.cached})` : String(data.total);
+    const pp = node._ocioPlayer;
+    const base = (pp && pp.player && pp.player.base) ? (pp.player.base | 0) : 0;   // source frame numbering (mirrored from upstream OCIO Read)
+    const rangeTxt = `${base}-${base + Math.max(1, data.cached || 1) - 1}`;
     const values = {
         resolution: data.resolution || "-",
         frames: framesTxt,
+        range: rangeTxt,
         fps: data.fps ? data.fps.toFixed(3) : (parseFloat(W(node, "fps")?.value) || 0).toFixed(3),
         input_colorspace: W(node, "input_colorspace")?.value || data.input_cs || "-",
         output_colorspace: W(node, "output_colorspace")?.value || "-",

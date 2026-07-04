@@ -273,6 +273,56 @@ def _video_fps(info):
         return 0.0
 
 
+def _video_frame_count(info):
+    """Frame count of a video from its ffprobe dict. Prefers the exact nb_frames; when absent or 'N/A' (MXF and
+    some ProRes do not expose a stream frame count - int('N/A') used to raise and mis-flag the clip as a lone
+    still, so the Read would not play it at all), derives it from duration x fps. 0 when neither is available.
+    Added 2026-07-03 (video metadata: MXF frame-count fix)."""
+    try:
+        n = int(info.get("nb_frames", ""))
+        if n > 0:
+            return n
+    except (TypeError, ValueError):
+        pass
+    fps = _video_fps(info)
+    try:
+        dur = float(info.get("duration", "") or 0)
+    except (TypeError, ValueError):
+        dur = 0.0
+    return int(round(dur * fps)) if (fps > 0 and dur > 0) else 0
+
+
+def _video_input_cs(info):
+    """OCIO input colorspace for a video, mapped from its ffprobe color metadata (color_primaries /
+    color_transfer / color_space), GUARDED to names that exist in the active config; falls back to the working
+    default when the tags are absent / unknown / unmappable. Owner ask 2026-07-03: read the colorspace from the
+    video metadata instead of always assuming sRGB. A bt709-tagged SDR video is Rec.709 display-referred
+    (BT.1886), not the sRGB piecewise curve; PQ / HLG transfers map to the Rec.2100 displays. Added 2026-07-03."""
+    prim = (info.get("color_primaries", "") or "").lower()
+    trc = (info.get("color_transfer", "") or "").lower()
+    spc = (info.get("color_space", "") or "").lower()
+    names = set(_colorspace_names())
+    def pick(*cands):
+        for c in cands:
+            if c in names:
+                return c
+        return None
+    cs = None
+    if trc == "smpte2084":                                       # PQ HDR transfer
+        cs = pick("Rec.2100-PQ - Display", "ST2084-P3-D65 - Display")
+    elif trc == "arib-std-b67":                                  # HLG HDR transfer
+        cs = pick("Rec.2100-HLG - Display")
+    elif trc == "iec61966-2-1":                                  # explicit sRGB transfer
+        cs = pick("sRGB - Display")
+    elif prim == "bt2020" or spc in ("bt2020nc", "bt2020c"):
+        cs = pick("Rec.2100-PQ - Display", "Rec.2100-HLG - Display")
+    elif prim == "bt709" or spc == "bt709":                      # Rec.709 gamut SDR -> BT.1886 display
+        cs = pick("Rec.1886 Rec.709 - Display", "Gamma 2.2 Rec.709 - Display", "sRGB - Display")
+    elif prim in ("smpte170m", "bt470bg", "bt601"):              # SD Rec.601 -> nearest available Rec.709 display
+        cs = pick("Rec.1886 Rec.709 - Display", "sRGB - Display")
+    return cs or WORKING
+
+
 def _exr_fps(path):
     """The OpenEXR `framesPerSecond` rational attribute as a float, or None if absent/unreadable. OpenEXR is
     NOT a hard dependency of this pack (requirements ship cv2/tifffile/PIL for pixels; ffprobe does NOT read the
@@ -437,11 +487,16 @@ def _seq_range(source):
     ext = os.path.splitext(s)[1].lower()
     if ext in VIDEO_EXTS:
         pr = subprocess.run([_FFPROBE, "-v", "error", "-select_streams", "v:0", "-show_entries",
-                             "stream=nb_frames,r_frame_rate", "-of", "default=noprint_wrappers=1", s],
+                             "stream=nb_frames,r_frame_rate,avg_frame_rate,duration,"
+                             "color_primaries,color_transfer,color_space",
+                             "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1", s],
                             capture_output=True, text=True)
+        # stream + format sections flatten to one key=value dict; format's duration is printed last, so it wins
+        # over an absent/N-A stream duration (needed for MXF, whose stream carries no nb_frames or duration).
         info = dict(line.split("=", 1) for line in pr.stdout.strip().splitlines() if "=" in line)
-        nb = int(info.get("nb_frames", 0) or 0)
-        return {"kind": "video", "start": 0, "end": max(0, nb - 1), "count": nb, "fps": _video_fps(info)}
+        nb = _video_frame_count(info)   # robust: nb_frames, or duration x fps when nb_frames is 'N/A' (MXF)
+        return {"kind": "video", "start": 0, "end": max(0, nb - 1), "count": nb, "fps": _video_fps(info),
+                "input_cs": _video_input_cs(info)}   # colorspace from the video's color metadata (owner ask)
     files = _frame_files(s)
     if not files and os.path.isfile(s):
         files = _sequence_siblings(s)
@@ -506,7 +561,7 @@ def read_meta(source):
             return {"kind": "video", "resolution": f"{w}x{h}", "format": ext.lstrip("."),
                     "codec": info.get("codec_name", "") or "", "pix_fmt": pix_fmt,
                     "start": rng.get("start", 0), "end": rng.get("end", 0), "count": rng.get("count", 0),
-                    "fps": rng.get("fps", 0.0), "input_colorspace": _auto_input_cs(s),
+                    "fps": rng.get("fps", 0.0), "input_colorspace": _video_input_cs(info),
                     "alpha": pix_fmt.endswith("a") or "argb" in pix_fmt or "rgba" in pix_fmt,
                     "color_primaries": info.get("color_primaries", "") or "",
                     "color_transfer": info.get("color_transfer", "") or ""}

@@ -241,7 +241,7 @@ function ensureReadPreview(node) {
     const w = node.addDOMWidget("preview", "div", box, { serialize: false });
     w.computeSize = (width) => [0, node._ocioReadCollapsed ? 0 : _previewH(node, node._ocioPrev, width)];   // scale with node width (aspect-locked); 0 when the Viewer is collapsed
     w._ocioAlwaysVisible = true;                      // always shown, regardless of source kind
-    node._ocioPrev = { img, video, canvas, msg, gl: null, lutN: 33, lutReady: false, raf: 0, streamUrl: "" };
+    node._ocioPrev = { box, img, video, canvas, msg, gl: null, lutN: 33, lutReady: false, raf: 0, streamUrl: "" };
     node._ocioPrev.pb = { playing: false, dir: 1, mode: "loop", fps: 24, showTransport: false, lastT: 0 };
     _ensureTransport(node, node._ocioPrev);           // transport bar widget (sits under the canvas, video only)
     node.onRemoved = (orig => function () { const pp = node._ocioPrev; _stopViewport(pp); _stopSeq(pp); if (pp && pp.audio) { try { pp.audio.source.disconnect(); pp.audio.gain.disconnect(); pp.audio.splitter.disconnect(); } catch (e) {} } return orig && orig.apply(this, arguments); })(node.onRemoved);
@@ -695,7 +695,7 @@ function _ensureTransport(node, p) {
     }
     bar.append(...(expRow ? [expRow] : []), tl, row, audioRow);
     const w = node.addDOMWidget("transport", "div", bar, { serialize: false });
-    w.computeSize = () => [0, (p.pb && p.pb.showTransport) ? (54 + (p.isPlayer ? 22 : 0)) : 0];   // +22 for the exposure strip on the Player
+    w.computeSize = () => [0, node._ocioReadCollapsed ? 0 : ((p.pb && p.pb.showTransport) ? (54 + (p.isPlayer ? 22 : 0)) : 0)];   // +22 for the exposure strip on the Player; 0 when the Read Viewer is collapsed
     w._ocioAlwaysVisible = true;
     // timeline scrub + in/out drag
     tl.addEventListener("mousedown", (e) => {
@@ -819,7 +819,7 @@ function ensureReadMeta(node) {
     const box = document.createElement("div");
     box.style.cssText = "width:100%;font:10px/1.4 monospace;color:#9cf;background:#1a1a1a;padding:4px 6px;box-sizing:border-box;overflow:hidden;white-space:nowrap;";
     const w = node.addDOMWidget("meta", "div", box, { serialize: false });
-    w.computeSize = () => [0, 16 * META_ROWS.length + 8];
+    w.computeSize = () => [0, node._ocioReadCollapsed ? 0 : (16 * META_ROWS.length + 8)];   // 0 when the Read Viewer is collapsed
     w._ocioAlwaysVisible = true;                      // always shown, regardless of source kind
     node._ocioMeta = box;
     return box;
@@ -1627,6 +1627,20 @@ app.registerExtension({
                 // Open Files). Tooltip clarifies it is not a duplicate of the button. Added 2026-07-03.
                 const srcW = W(this, "source");
                 if (srcW) srcW.tooltip = "Path to a file / sequence / video - type it here, or use Open Files. This is the source; the button just fills it.";
+                // Collapsible Viewer (OCIO Read only): a disclosure toggle that folds the whole preview + transport +
+                // metadata block away and back (owner spec 2026-07-03). Default expanded; runtime-only, not serialized.
+                const self = this;
+                const viewerToggle = this.addWidget("button", "▾ Viewer", null, () => {
+                    const c = self._ocioReadCollapsed = !self._ocioReadCollapsed;
+                    viewerToggle.name = (c ? "▸" : "▾") + " Viewer";
+                    const p = self._ocioPrev;
+                    if (p && p.box) p.box.style.display = c ? "none" : "flex";
+                    if (self._ocioMeta) self._ocioMeta.style.display = c ? "none" : "";
+                    if (p && p.transport) p.transport.bar.style.display = c ? "none" : ((p.pb && p.pb.showTransport) ? "flex" : "none");
+                    self.setSize([self.size[0], self.computeSize()[1]]);
+                    self.setDirtyCanvas(true, true);
+                }, { serialize: false });
+                viewerToggle._ocioAlwaysVisible = true;
                 ensureReadPreview(this);                                          // instant preview at the bottom
                 ensureReadMeta(this);                                             // metadata panel, under the preview
                 this._ocioAllWidgets = this.widgets.slice();                      // full ordered list, captured once

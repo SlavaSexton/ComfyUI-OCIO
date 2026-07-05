@@ -53,7 +53,8 @@ def cube_boundary_rgb(n=9):
 
 
 def gamut_hull_volume(cfg, cs_name):
-    """RGB cube boundary -> OCIO -> XYZ-D65 -> Lab, then the convex hull (points + volume in Lab units^3)."""
+    """RGB cube boundary -> OCIO -> XYZ-D65 -> Lab, then the convex hull (points + volume in Lab units^3).
+    This is the TRUE, unclipped hull - its .volume is the honest number reported in the console and JSON."""
     from scipy.spatial import ConvexHull
     rgb = cube_boundary_rgb()
     x = np.ascontiguousarray(rgb.astype(np.float32).reshape(1, -1, 3))
@@ -63,6 +64,20 @@ def gamut_hull_volume(cfg, cs_name):
     lab = C.xyz_to_lab(xyz)
     hull = ConvexHull(lab)
     return lab, hull
+
+
+def view_hull(lab, window):
+    """A SEPARATE hull, built from `lab` clamped into `window` (per-axis np.clip), for the CHART GEOMETRY only.
+    matplotlib's 3D axes do not actually clip plotted polygons to set_xlim/ylim/zlim - a triangle that extends
+    past the box still gets drawn in full, hanging outside the walls. Clamping the source points first (so
+    ACES2065-1 / ARRI Wide Gamut 3's imaginary-primary corners are pulled flush against the box faces instead of
+    poking through them) is what actually keeps the rendered shape inside the frame. The TRUE hull's .volume
+    (from gamut_hull_volume) is what gets reported - this one is for the picture only."""
+    from scipy.spatial import ConvexHull
+    lo = np.array([window["L"][0], window["a"][0], window["b"][0]])
+    hi = np.array([window["L"][1], window["a"][1], window["b"][1]])
+    clamped = np.clip(lab, lo, hi)
+    return clamped, ConvexHull(clamped)
 
 
 def main():
@@ -80,23 +95,31 @@ def main():
 
     computed = []
     for label, cs_name, color in SPACES:
-        lab, hull = gamut_hull_volume(cfg, cs_name)
+        lab, hull = gamut_hull_volume(cfg, cs_name)                    # TRUE hull -> the honest reported volume
+        lab_view, hull_view = view_hull(lab, LAB_WINDOW)                # clamped hull -> what actually gets drawn
         results["spaces"][label] = {"colorspace": cs_name, "hull_volume_Lab_units3": float(hull.volume),
                                      "L_range": [float(lab[:, 0].min()), float(lab[:, 0].max())],
                                      "a_range": [float(lab[:, 1].min()), float(lab[:, 1].max())],
                                      "b_range": [float(lab[:, 2].min()), float(lab[:, 2].max())]}
-        computed.append((label, cs_name, color, lab, hull))
+        computed.append((label, cs_name, color, lab_view, hull_view, hull.volume))
 
     # draw LARGEST hull first, SMALLEST last (on top), so a small gamut like sRGB isn't buried under bigger ones.
     # No per-triangle edge outline (edgecolor="none") - with ~400 hull triangles per space, drawing every edge
     # turned the chart into a tangle of wire that hid the shapes; flat translucent faces read as solids instead.
-    computed.sort(key=lambda t: t[4].volume, reverse=True)
-    for label, cs_name, color, lab, hull in computed:
-        alpha = 0.35 if hull.volume < 1_500_000 else 0.16
-        for simplex in hull.simplices:
-            tri = lab[simplex]
+    computed.sort(key=lambda t: t[5], reverse=True)
+    for label, cs_name, color, lab_view, hull_view, true_volume in computed:
+        alpha = 0.35 if true_volume < 1_500_000 else 0.16
+        for simplex in hull_view.simplices:
+            tri = lab_view[simplex]
+            # clamping can collapse a triangle onto a box corner/edge/face - coincident OR collinear vertices in
+            # the (a*,b*) projection - either way plot_trisurf's own Delaunay chokes on it (~0-area triangle
+            # anyway, safe to skip). Check the actual 2D triangle area via the cross product, not just point identity.
+            (ax1, ay1), (ax2, ay2), (ax3, ay3) = tri[:, 1:3]
+            area2 = abs((ax2 - ax1) * (ay3 - ay1) - (ax3 - ax1) * (ay2 - ay1))
+            if area2 < 1e-6:
+                continue
             ax.plot_trisurf(tri[:, 1], tri[:, 2], tri[:, 0], color=color, alpha=alpha, edgecolor="none", shade=False)
-        ax.plot([], [], color=color, label=f"{label}  (vol={hull.volume:,.0f} Lab³)")
+        ax.plot([], [], color=color, label=f"{label}  (vol={true_volume:,.0f} Lab³)")
 
     ax.set_xlabel("a*  (green -> red)")
     ax.set_ylabel("b*  (blue -> yellow)")
@@ -104,8 +127,8 @@ def main():
     ax.set_xlim(*LAB_WINDOW["a"]); ax.set_ylim(*LAB_WINDOW["b"]); ax.set_zlim(*LAB_WINDOW["L"])
     ax.set_title("RGB gamut volume in CIE L*a*b* (via OCIO's own XYZ-D65 interchange)\n"
                   "bigger hull = wider gamut - this is why we grade in ACEScg / ACES2065-1, not sRGB\n"
-                  "(axes clipped to the real-color range - ACES2065-1 / ARRI WG3 have imaginary primaries that "
-                  "extend far beyond it)", pad=14, fontsize=11)
+                  "(shapes clamped to the real-color range for legibility - ACES2065-1 / ARRI WG3 have imaginary "
+                  "primaries that extend far beyond it; true volumes in the legend)", pad=14, fontsize=11)
     ax.legend(loc="upper left", fontsize=8, facecolor="#191922", labelcolor="#dde")
     ax.view_init(elev=18, azim=-55)
 

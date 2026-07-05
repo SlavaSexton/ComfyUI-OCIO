@@ -8,7 +8,9 @@
 <br>
 **Read a sequence, grade in ACES, write ProRes - fully color-managed.**
 <br>
-**Now on ComfyUI's native VIDEO wire: color-manage HDR, LTX, Flux, Cineon and 10-bit clips inside a native video graph.**
+**Now on ComfyUI's native VIDEO wire:**
+<br>
+**Color-Manage HDR, LTX, Flux, Cineon and 10-bit clips inside a native video graph.**
 
 **By [AI VFX NEWS](https://t.me/AI_VFX_NEWS) · Slava Sexton.**
 

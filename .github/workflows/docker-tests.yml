@@ -29,7 +29,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Standalone tests + node-registration smoke
-          run: docker run --rm comfyui-ocio:ci bash custom_nodes/ComfyUI-OCIO/docker/run_tests.sh
+        run: docker run --rm comfyui-ocio:ci bash custom_nodes/ComfyUI-OCIO/docker/run_tests.sh
 
       - name: Marcie round-trip color-accuracy test
         run: |

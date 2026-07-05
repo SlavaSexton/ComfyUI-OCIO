@@ -19,13 +19,23 @@ import _common as C
 XYZ_D65 = "CIE XYZ-D65 - Display-referred"
 
 # (label, OCIO colorspace name, matplotlib color) - a representative spread: web/display, ACES scene-linear
-# (the pack's default working space), the wide-gamut interchange, and a camera-native gamut.
+# (the pack's default working space), the wide-gamut interchange, and a camera-native gamut. Colors are spread
+# ~90 degrees apart on the hue wheel (cyan / orange / green / magenta) so the four overlapping hulls stay
+# visually distinct instead of blending into each other where they overlap.
 SPACES = [
-    ("sRGB (Rec.709)", "sRGB - Display", "#5cf"),
-    ("ACEScg", "ACEScg", "#fb5"),
-    ("ACES2065-1", "ACES2065-1", "#f85"),
-    ("ARRI Wide Gamut 3", "Linear ARRI Wide Gamut 3", "#9c6"),
+    ("sRGB (Rec.709)", "sRGB - Display", "#29b6f6"),                        # cyan
+    ("ACEScg", "ACEScg", "#ffa726"),                                        # orange
+    ("ACES2065-1", "ACES2065-1", "#66bb6a"),                                # green
+    ("ARRI Wide Gamut 3", "Linear ARRI Wide Gamut 3", "#ec407a"),           # magenta/pink
 ]
+
+# CIE Lab display window: real, humanly-visible colors stay roughly in this box (confirmed - sRGB's own full
+# range is a*[-86,98] b*[-108,94], well inside it). ACES2065-1 and ARRI Wide Gamut 3 have IMAGINARY primaries
+# (outside the visible spectral locus by design, so they can hold any real color plus headroom) - their RGB
+# cube corners project to Lab values far outside this box (confirmed: ACES2065-1 L* down to -60, ARRI Wide
+# Gamut 3 a* up to +623). Full extents are in the JSON; the chart axes are clipped to this box so the
+# meaningful, real-color comparison isn't squashed into a sliver by one imaginary corner.
+LAB_WINDOW = {"L": (0, 100), "a": (-130, 130), "b": (-140, 140)}
 
 
 def cube_boundary_rgb(n=9):
@@ -77,23 +87,27 @@ def main():
                                      "b_range": [float(lab[:, 2].min()), float(lab[:, 2].max())]}
         computed.append((label, cs_name, color, lab, hull))
 
-    # draw LARGEST hull first, SMALLEST last (on top), so a small gamut like sRGB isn't buried under bigger ones;
-    # its alpha also scales up a bit for the same reason (a thin sliver needs more opacity to read against the rest)
+    # draw LARGEST hull first, SMALLEST last (on top), so a small gamut like sRGB isn't buried under bigger ones.
+    # No per-triangle edge outline (edgecolor="none") - with ~400 hull triangles per space, drawing every edge
+    # turned the chart into a tangle of wire that hid the shapes; flat translucent faces read as solids instead.
     computed.sort(key=lambda t: t[4].volume, reverse=True)
     for label, cs_name, color, lab, hull in computed:
-        alpha = 0.20 if hull.volume < 1_500_000 else 0.09
+        alpha = 0.35 if hull.volume < 1_500_000 else 0.16
         for simplex in hull.simplices:
             tri = lab[simplex]
-            ax.plot_trisurf(tri[:, 1], tri[:, 2], tri[:, 0], color=color, alpha=alpha, edgecolor=color, linewidth=0.25)
+            ax.plot_trisurf(tri[:, 1], tri[:, 2], tri[:, 0], color=color, alpha=alpha, edgecolor="none", shade=False)
         ax.plot([], [], color=color, label=f"{label}  (vol={hull.volume:,.0f} Lab³)")
 
     ax.set_xlabel("a*  (green -> red)")
     ax.set_ylabel("b*  (blue -> yellow)")
     ax.set_zlabel("L*  (black -> white)")
+    ax.set_xlim(*LAB_WINDOW["a"]); ax.set_ylim(*LAB_WINDOW["b"]); ax.set_zlim(*LAB_WINDOW["L"])
     ax.set_title("RGB gamut volume in CIE L*a*b* (via OCIO's own XYZ-D65 interchange)\n"
-                  "bigger hull = wider gamut - this is why we grade in ACEScg / ACES2065-1, not sRGB", pad=14)
+                  "bigger hull = wider gamut - this is why we grade in ACEScg / ACES2065-1, not sRGB\n"
+                  "(axes clipped to the real-color range - ACES2065-1 / ARRI WG3 have imaginary primaries that "
+                  "extend far beyond it)", pad=14, fontsize=11)
     ax.legend(loc="upper left", fontsize=8, facecolor="#191922", labelcolor="#dde")
-    ax.view_init(elev=20, azim=-60)
+    ax.view_init(elev=18, azim=-55)
 
     order = sorted(results["spaces"].items(), key=lambda kv: kv[1]["hull_volume_Lab_units3"])
     print("Gamut volume in CIE Lab (smallest -> largest), all via OCIO's own XYZ-D65 role, no hand-rolled matrices:")

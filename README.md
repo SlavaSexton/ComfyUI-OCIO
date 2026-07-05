@@ -130,7 +130,13 @@ inside a native ComfyUI video graph, without bouncing frames out to a folder and
 
 ---
 
-## The eight nodes
+## The nine nodes
+
+<div align="center">
+
+<img src="docs/assets/read_write_player.png" width="880" alt="OCIO Read, OCIO Write and two OCIO Player instances on a live ComfyUI graph: Read's viewer scrubbing a 451-frame clip, Write's video preview playing after a render, two Players at different exposure settings">
+
+</div>
 
 ### OCIO Read
 
@@ -197,6 +203,16 @@ colorspace by hand switches `profile` back to `none`. `Seedance 4K 10-bit` is a 
 right NCLC color tags (primaries / transfer / matrix) from `output_colorspace`, so it does not gamma-shift between
 players. Video defaults to `sRGB - Display` to match the ComfyUI preview; switch it to `Rec.1886 Rec.709 - Display`
 for a broadcast 2.4 master, or `Rec.2100-PQ` for HDR video.
+
+### OCIO Player
+
+An on-node **float viewport** for scrubbing a graded result, input-only (like Preview Image - nothing flows
+out, so wiring it never breaks the graph downstream). Takes an **OCIO Img/Seq/Vid** batch or a **ComfyUI Video**
+(mutually exclusive, same as the color nodes). **input_colorspace -> output_colorspace** bakes the display
+transform live on the GPU; **raw_data** shows the pixels untouched. **start_frame / end_frame** and **fps** set
+the playback range, with a transport bar (play / step / loop) and an **exposure** slider (view-only, never
+baked into the graph). Full-res HALF-float, HDR-safe: exposure and the display LUT run on the real values, not
+a pre-baked 8-bit preview.
 
 ### OCIO ColorSpace
 

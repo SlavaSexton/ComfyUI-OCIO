@@ -6,3 +6,6 @@ Thumbs.db
 
 # Local asset generators (they depend on the private herogen; only the rendered PNGs in docs/assets ship)
 tools/assets/
+
+# Docker test-env working dir: downloaded inputs (Marcie), round-trip outputs, server logs
+data/

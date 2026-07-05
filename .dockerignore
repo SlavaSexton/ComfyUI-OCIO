@@ -1,0 +1,12 @@
+# Keep the build context (and the COPY into custom_nodes) small.
+.git
+.gitignore
+data/
+docs/assets/
+example_workflows/*.png
+tools/accuracy/fixtures/
+tools/accuracy/plots/
+tools/accuracy/results/
+**/__pycache__/
+**/*.pyc
+.DS_Store

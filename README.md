@@ -92,6 +92,21 @@ The only external dependency for VIDEO is **ffmpeg** on your `PATH` (see above);
 `OPENCV_IO_ENABLE_OPENEXR=1` before ComfyUI starts. Neither is platform-specific: set them once on Windows, macOS
 or Linux and the nodes behave identically.
 
+### Docker test environment
+
+A containerized, CPU-only ComfyUI with this pack installed lets you run and verify the nodes
+programmatically — no GPU and no model downloads. It builds native arm64 on an Apple-silicon Mac and
+amd64 in CI from one `docker/Dockerfile`:
+
+```bash
+docker compose build
+docker compose run --rm roundtrip   # round-trips the Kodak "Marcie" image and checks the color math with OpenCV histograms
+docker compose run --rm test        # standalone tools/test_*.py + node-registration smoke
+docker compose up comfyui           # interactive headless server on http://localhost:8188
+```
+
+See **[docs/DOCKER.md](docs/DOCKER.md)** for the full round-trip test design and configuration.
+
 ## Colorspaces, the short version
 
 ComfyUI has no color management: it holds images as plain gamma-encoded **sRGB** in `0..1`. These nodes add the

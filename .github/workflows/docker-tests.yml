@@ -29,13 +29,13 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Standalone tests + node-registration smoke
-        run: docker run --rm comfyui-ocio:ci bash docker/run_tests.sh
+        run: docker run --rm comfyui-ocio:ci bash $OCIO_PACK_DIR/docker/run_tests.sh
 
       - name: Marcie round-trip color-accuracy test
         run: |
           mkdir -p data
           docker run --rm -v "${{ github.workspace }}/data:/data" \
-            comfyui-ocio:ci python docker/roundtrip_test.py
+            comfyui-ocio:ci python $OCIO_PACK_DIR/docker/roundtrip_test.py
 
       - name: Upload round-trip outputs
         if: always()

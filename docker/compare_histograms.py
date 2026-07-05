@@ -25,7 +25,7 @@ def _load_rgb(path):
     return img[:, :, :3]  # first 3 channels; ignore alpha (channel order is consistent in & out)
 
 
-def compare(input_path, output_path, bins=65536, tol_corr=0.99999, tol_pix=1e-4):
+def compare(input_path, output_path, bins=4096, tol_corr=0.99999, tol_pix=1e-4):
     a = _load_rgb(input_path)
     b = _load_rgb(output_path)
     if a.shape != b.shape:

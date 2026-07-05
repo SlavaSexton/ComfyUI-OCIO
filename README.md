@@ -21,10 +21,11 @@
 
 ---
 
-Eight color-management nodes for ComfyUI, modelled on **The Foundry Nuke's OCIO node set** and backed by
+Nine color-management nodes for ComfyUI, modelled on **The Foundry Nuke's OCIO node set** and backed by
 **OpenColorIO** with the built-in **ACES** config. Convert between colorspaces, grade with ASC CDL, apply a
-display transform or a LUT, and - the two big ones - **Read** any still / image sequence / video off disk and
-**Write** it back out color-managed, in EXR / TIFF / PNG / JPEG or ProRes / DNxHR / h264 / hevc.
+display transform or a LUT, scrub the result in an on-node viewer, and - the two big ones - **Read** any
+still / image sequence / video off disk and **Write** it back out color-managed, in EXR / TIFF / PNG / JPEG
+or ProRes / DNxHR / h264 / hevc.
 
 Every node is a standard ComfyUI node, so it interoperates with the whole ecosystem on plain `IMAGE` / `MASK` /
 `FLOAT` / `STRING` types: pipe **OCIO Read** into any node, and any node into **OCIO Write**. The six color nodes
@@ -111,8 +112,9 @@ the ACES 2.0 output, which reads slightly different from an ACES 1.x setup.
 These nodes are pure color and light operators, so they belong anywhere in a graph, on stills or on a moving
 clip. Each of the six color nodes (ColorSpace, LogConvert, Display, CDLTransform, FileTransform, LookTransform)
 carries two inputs side by side: an IMAGE input labelled **"OCIO Img/Seq/Vid"** and a VIDEO input labelled
-**"ComfyUI Video"**. They are mutually exclusive. Connect one and the other auto-disconnects; the output mirrors
-whichever input is live, so a VIDEO in gives you a VIDEO out and an IMAGE in gives you an IMAGE out.
+**"ComfyUI Video"**. They are mutually exclusive: connect one and the other auto-disconnects. Only the socket
+that matches the live input carries real data; the other stays empty (`None`) at runtime, so a VIDEO in gives
+you a VIDEO out and an IMAGE in gives you an IMAGE out. Wire the input before the output and this is automatic.
 
 The VIDEO type is ComfyUI's **native** video (the `comfy_api` `VideoFromComponents`, the same type **Load Video**
 emits), not a custom wrapper. So the nodes talk directly to **Load Video**, **Save Video**, **Video Combine**,
@@ -183,6 +185,8 @@ Color-manage an IMAGE batch and **write it to disk** (Nuke: *Write*).
   the base name; numbering and extension are added automatically.
 - **alpha** (optional) - wire a MASK here to write **RGBA** (EXR / TIFF / PNG). **fps** (optional) - wire OCIO
   Read's `fps` to carry the source rate.
+- **video** (optional, mutually exclusive with the image input) - wire a **ComfyUI Video** (Load Video or any
+  native VIDEO source) to record it with all of these settings; the container inherits the clip's own frame rate.
 - **raw_data** - write the pixels as-is, skipping the conversion.
 
 The node **previews the first written frame** in its output colorspace (a wrong colorspace pick looks visibly
@@ -218,6 +222,7 @@ a pre-baked 8-bit preview.
 
 Convert between two OCIO colorspaces (Nuke: *OCIOColorSpace*). **in_colorspace -> out_colorspace**, a **mix**
 blend with the original, and an optional **config_path**. The **swap** button flips in / out in one press.
+Also takes a **ComfyUI Video** input, mutually exclusive with the image (see *Image and Video* above).
 
 ### OCIO LogConvert
 
@@ -233,30 +238,35 @@ Linear <-> log (Nuke: *OCIOLogConvert*), **dependency-free** (no OCIO needed). *
 
 The **swap** button flips the direction. For **ARRI LogC3 / LogC4**, `Log to Linear` decodes the plate to linear; keep
 the Rec.709 primaries, then convert Rec.709 -> ACEScg with **OCIO ColorSpace** (do not use a config "ARRI LogC3 /
-LogC4" colorspace - that assumes ARRI Wide Gamut and would shift the gamut).
+LogC4" colorspace - that assumes ARRI Wide Gamut and would shift the gamut). Also takes a **ComfyUI Video** input,
+mutually exclusive with the image (see *Image and Video* above).
 
 ### OCIO Display
 
 Apply a **display + view** transform (Nuke: *OCIODisplay*). **in_colorspace**, **display** and **view**
 (pickers from the active config), **invert_direction**, **mix**. This is the scene-referred -> display-referred
-step (e.g. ACEScg -> the ACES SDR view on an sRGB monitor).
+step (e.g. ACEScg -> the ACES SDR view on an sRGB monitor). Also takes a **ComfyUI Video** input, mutually
+exclusive with the image (see *Image and Video* above).
 
 ### OCIO CDLTransform
 
 An **ASC CDL** grade (Nuke: *OCIOCDLTransform*): **slope**, **offset**, **power** per channel (R / G / B) plus
-**saturation**, a **direction** (forward / inverse), and **mix**. The industry-standard primary grade.
+**saturation**, a **direction** (forward / inverse), and **mix**. The industry-standard primary grade. Also
+takes a **ComfyUI Video** input, mutually exclusive with the image (see *Image and Video* above).
 
 ### OCIO FileTransform
 
 Apply a **LUT / CCC / CDL file** (Nuke: *OCIOFileTransform*). **file_path** is a picker of LUTs in your input
 folder (`.cube`, `.3dl`, `.spi1d`, `.spi3d`, `.csp`, `.ccc`, `.cdl`, `.clf`, ...); the **upload** button adds one
-from your machine. **interpolation** (linear / nearest / tetrahedral / best), **direction**, **mix**.
+from your machine. **interpolation** (linear / nearest / tetrahedral / best), **direction**, **mix**. Also takes
+a **ComfyUI Video** input, mutually exclusive with the image (see *Image and Video* above).
 
 ### OCIO LookTransform
 
 Apply an **OCIO look** (Nuke: *OCIOLookTransform*). **in_colorspace -> out_colorspace** through a named **look**
 from the config (e.g. *ACES 1.3 Reference Gamut Compression*), **invert_direction**, **mix**. The **swap** button
-flips in / out.
+flips in / out. Also takes a **ComfyUI Video** input, mutually exclusive with the image (see *Image and Video*
+above).
 
 ---
 

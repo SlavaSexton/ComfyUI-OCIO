@@ -252,9 +252,13 @@ the error instead of trusting the label.
 
 <div align="center">
 
-<img src="docs/assets/accuracy/ocio_parity.png" width="880" alt="OCIO parity: OCIOColorSpace, Display and CDL versus the raw OCIO CPU processor, worst max-abs error 0.000e+00 across 9 transforms and 4 fixtures">
+<img src="docs/assets/accuracy/gamut_volume_3d.png" width="880" alt="RGB gamut volume of sRGB, ACEScg, ACES2065-1 and ARRI Wide Gamut 3 rendered as 3D hulls in CIE L*a*b*, via OCIO's own XYZ-D65 interchange - this is why the pack grades in ACEScg / ACES2065-1, not sRGB">
 
 </div>
+
+That gamut chart is why this pack exists: sRGB (the small hull) is what ComfyUI natively works in; ACEScg,
+ACES2065-1 and camera-native gamuts like ARRI Wide Gamut 3 cover far more of what a real plate or an HDR
+generation actually contains. Grading in sRGB throws that range away before you even start.
 
 Latest run:
 
@@ -264,12 +268,13 @@ Latest run:
   quiet clip to the `0..1` box.
 - **Rec.709 -> ACEScg parity: 0.00e+00.** The exact path the LTX and Flux HDR recipes rely on.
 
-The suite renders its evidence to `docs/assets/accuracy/`: `ocio_parity.png` (node output vs the raw OCIO CPU
-processor), `log_curves.png` (log round-trips and vendor-spec anchors), `hdr_safety.png` (negatives and >1 values
-across conversions, curves and grade), `roundtrip.png` (A->B->A plus real EXR/PNG write/read loops),
-`deltaE_colorchecker.png` (ΔE2000 on the 24 X-Rite patches), `quantisation_dither.png` (8/16-bit and EXR
-write/read-back banding), `histogram_compare.png` (ours vs reference by `cv2.compareHist`). See
-`tools/accuracy/README.md` to run it yourself.
+The suite renders its evidence to `docs/assets/accuracy/`: `gamut_volume_3d.png` (the RGB gamut hulls above, all
+via OCIO's own colorspace conversions, no hand-rolled matrices), `ocio_parity.png` (node output vs the raw OCIO
+CPU processor, per transform), `log_curves.png` (log round-trips and vendor-spec anchors), `hdr_safety.png`
+(negatives and >1 values across conversions, curves and grade), `roundtrip.png` (A->B->A plus real EXR/PNG
+write/read loops), `deltaE_colorchecker.png` (ΔE2000 on the 24 X-Rite patches), `quantisation_dither.png`
+(8/16-bit and EXR write/read-back banding), `histogram_compare.png` (ours vs reference by `cv2.compareHist`).
+See `tools/accuracy/README.md` to run it yourself.
 
 ---
 

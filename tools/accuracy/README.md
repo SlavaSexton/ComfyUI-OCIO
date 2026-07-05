@@ -25,6 +25,7 @@ metrics to `results/`. `fixtures/`, `plots/`, `results/` are generated and git-i
 | `measure_hdr_safety.py`         | negatives and values > 1 survive conversions/curves/grade (silent-clamp count) |
 | `measure_histogram_compare.py`  | `cv2.compareHist` (Correlation / Chi-Square / Bhattacharyya) ours vs reference |
 | `measure_deltaE_colorchecker.py`| perceptual ΔE2000 on the 24 X-Rite patches vs a 1.0 JND |
+| `measure_gamut_volume.py`       | RGB gamut volume of sRGB / ACEScg / ACES2065-1 / ARRI Wide Gamut 3, as 3D hulls in CIE Lab via OCIO's own XYZ-D65 interchange - why sRGB isn't enough |
 
 ## The harness (`_common.py`)
 

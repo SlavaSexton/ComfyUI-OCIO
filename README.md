@@ -310,9 +310,11 @@ Latest run:
   This is the accuracy number: our node output does not alter what OCIO computes.
 - **End-to-end round-trip, verified through a real headless ComfyUI.** In the containerized test harness
   (`docker/`, run in CI), a full `ACEScg -> ARRI LogC -> linear Rec.709 -> back` round-trip returns to the source
-  at **max abs error 4.5e-6, mean 3.1e-8** - reversible to floating-point precision. The residual is OCIO's
-  single-precision LUT interpolation, the same in Nuke / Resolve / any OCIO tool, and it sits **above half-float
-  EXR storage precision**, so it is lossless for any real delivery.
+  at **max abs error 4.5e-6, mean 3.1e-8**. The residual is OCIO's single-precision LUT interpolation, the same
+  in Nuke / Resolve / any OCIO tool. It is **not** bit-for-bit lossless (nothing through an OCIO LUT is), but the
+  error (~2^-17.8) is about 100x finer than one half-float (EXR 16f) step near 1.0 (~2^-11), so a half-float
+  delivery never resolves it. In bit terms: light is non-negative, so half-float's sign bit is unused and its
+  usable range is ~15 bits — the round-trip holds ~14.6 of them, a sub-half-bit shortfall against the container.
 - **HDR safety: 0 silent clamps.** Negatives and values above 1.0 survive the conversions, curves and grades. No
   quiet clip to the `0..1` box.
 - **Rec.709 -> ACEScg parity: 0.00e+00.** The exact path the LTX and Flux HDR recipes rely on.

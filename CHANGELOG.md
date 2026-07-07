@@ -20,7 +20,8 @@ verify the color math end-to-end through a real ComfyUI, plus an honest accuracy
 ### Changed
 - **Honest accuracy story in the README.** The per-transform bit-exact parity (0.000e+00) is stated as the
   accuracy number; the end-to-end round-trip figure is added (4.5e-6 max, the residual being OCIO's
-  single-precision LUT interpolation, above half-float EXR storage precision); `histogram_compare.png` is
+  single-precision LUT interpolation — not bit-for-bit lossless, but ~100x finer than one half-float EXR step
+  near 1.0, i.e. below the storage grid a half-float delivery resolves); `histogram_compare.png` is
   recaptioned as a distribution shape sanity-check, not an accuracy proof.
 
 ### Verified

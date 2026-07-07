@@ -66,8 +66,9 @@ def resolve_names(config=None):
     """Return the colorspace/display/view names the chains use. Raises if a required one is absent.
 
     Two distinct sRGB/Rec.709 roles, because they behave very differently on HDR input:
-      srgb_linear  - LINEAR Rec.709/sRGB primaries (gamut only, NO transfer curve): fully invertible,
-                     round-trips HDR values >1 losslessly. Used by the gated "perfect" chain.
+      srgb_linear  - LINEAR Rec.709/sRGB primaries (gamut only, NO transfer curve): a pure primaries
+                     matrix, so it round-trips HDR values >1 WITHOUT clipping, invertible to float
+                     precision (~1e-7, not bit-exact). Used by the gated "perfect" chain.
       srgb_texture - the display-range sRGB *encoding* (sRGB transfer, clamps to [0,1]): clips HDR.
                      Used by an informational chain to show that display-range encoding is lossy.
     """

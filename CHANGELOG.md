@@ -1,5 +1,32 @@
 # Changelog
 
+## Independently-verified accuracy and a reproducible test harness
+
+A patch release: no node behavior changes. Adds a reproducible, cross-platform test environment and CI that
+verify the color math end-to-end through a real ComfyUI, plus an honest accuracy write-up.
+
+### Added
+- **Dockerized, CPU-only ComfyUI test environment** (`docker/`, `docker-compose.yml`): builds native arm64 on
+  Apple Silicon and amd64 in CI, installs the pack, and drives the nodes headless through the real ComfyUI HTTP
+  API. No GPU, no model downloads. (PR #1, Sam Hodge.)
+- **End-to-end round-trip color-accuracy test** (`docker/roundtrip_test.py`): round-trips the Kodak "Marcie" EXR
+  `ACEScg -> ARRI LogC -> Rec.709 -> back` in raw 32-bit float and compares output vs input. Gates on the
+  genuinely-invertible chain (max abs error 4.5e-6, reversible to floating-point precision) and reports the
+  display-range encoding chains as informational (they clip HDR by design).
+- **GitHub Actions CI** (`.github/workflows/docker-tests.yml`): builds the image and runs the standalone tests +
+  node-registration smoke + the round-trip on every push and PR.
+- `docs/DOCKER.md`: the test-environment and round-trip design.
+
+### Changed
+- **Honest accuracy story in the README.** The per-transform bit-exact parity (0.000e+00) is stated as the
+  accuracy number; the end-to-end round-trip figure is added (4.5e-6 max, the residual being OCIO's
+  single-precision LUT interpolation, above half-float EXR storage precision); `histogram_compare.png` is
+  recaptioned as a distribution shape sanity-check, not an accuracy proof.
+
+### Verified
+- CI-confirmed on every commit: all 9 OCIO nodes register in ComfyUI; every standalone test passes; the gated
+  round-trip chain returns to source at 4.5e-6 max / 3.1e-8 mean absolute pixel error.
+
 ## Native ComfyUI VIDEO pipeline
 
 A big feature release: the color nodes, Read, Write and Player now live on ComfyUI's native video wire.

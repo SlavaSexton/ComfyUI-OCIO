@@ -1,0 +1,49 @@
+# ComfyUI-OCIO containerized test environment.
+#
+#   docker compose build                 # build the image (native arm64 on Apple silicon)
+#   docker compose run --rm roundtrip     # download Marcie + prove the OCIO round-trip color math
+#   docker compose run --rm test          # run the standalone tests + node-registration smoke
+#   docker compose up comfyui             # interactive headless server on http://localhost:8188
+#
+# ./data is bind-mounted to /data so downloaded inputs and written outputs are visible on the host.
+
+x-image: &image
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+    # args:
+    #   COMFYUI_REF: v0.3.68          # pin a different ComfyUI version here
+  image: comfyui-ocio:local
+  working_dir: /opt/ComfyUI/custom_nodes/ComfyUI-OCIO
+  volumes:
+    - ./data:/data
+
+services:
+  # Interactive / API-drivable headless ComfyUI (CPU). Uses the image's default CMD.
+  comfyui:
+    <<: *image
+    working_dir: /opt/ComfyUI
+    ports:
+      - "8188:8188"
+    # Uncomment to live-edit the pack from the host without rebuilding:
+    # volumes:
+    #   - ./data:/data
+    #   - ./:/opt/ComfyUI/custom_nodes/ComfyUI-OCIO
+
+  # Standalone tools/test_*.py + "do the nodes register in ComfyUI?" smoke.
+  test:
+    <<: *image
+    command: ["bash", "docker/run_tests.sh"]
+    environment:
+      RUN_ACCURACY: "${RUN_ACCURACY:-0}"
+
+  # Flagship: Marcie round-trip color-accuracy test (OpenCV histogram comparison).
+  roundtrip:
+    <<: *image
+    command: ["python", "docker/roundtrip_test.py"]
+    environment:
+      INPUT_IMAGE_URL: "${INPUT_IMAGE_URL:-}"
+      CHAINS: "${CHAINS:-colorspace,srgb,display}"
+      GATE_CHAINS: "${GATE_CHAINS:-colorspace}"
+      TOL_CORR: "${TOL_CORR:-0.99999}"
+      TOL_PIX: "${TOL_PIX:-1e-4}"

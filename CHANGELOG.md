@@ -1,5 +1,19 @@
 # Changelog
 
+## Corrected accuracy wording (round-trip vs half-float)
+
+A docs-only patch: no node or test changes. Fixes an inaccurate line in the v1.2.1 accuracy write-up.
+
+### Fixed
+- The round-trip was described as sitting "above half-float EXR storage precision, so lossless for any real
+  delivery." That is wrong: half-float is 16 bits and the `ACEScg -> LogC -> Rec.709 -> back` round-trip
+  resolves ~14.6, so it is neither above half-float nor lossless. Corrected after Sam Hodge's review on PR #1:
+  light is non-negative, so half-float's sign bit is unused and its usable range is ~15 bits; the round-trip
+  holds ~14.6 of them (a sub-half-bit shortfall), and the per-pixel error (4.5e-6, ~2^-17.8) is ~100x finer than
+  one half-float step near 1.0 (~2^-11), so a 16f EXR delivery never resolves it. Not bit-for-bit lossless;
+  small enough not to matter for delivery. Also softened the `ocio_names` `srgb_linear` docstring ("losslessly"
+  -> "without clipping, invertible to float precision ~1e-7, not bit-exact").
+
 ## Independently-verified accuracy and a reproducible test harness
 
 A patch release: no node behavior changes. Adds a reproducible, cross-platform test environment and CI that

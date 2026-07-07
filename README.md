@@ -95,7 +95,7 @@ or Linux and the nodes behave identically.
 ### Docker test environment
 
 A containerized, CPU-only ComfyUI with this pack installed lets you run and verify the nodes
-programmatically — no GPU and no model downloads. It builds native arm64 on an Apple-silicon Mac and
+programmatically - no GPU and no model downloads. It builds native arm64 on an Apple-silicon Mac and
 amd64 in CI from one `docker/Dockerfile`:
 
 ```bash
@@ -305,8 +305,14 @@ generation actually contains. Grading in sRGB throws that range away before you 
 
 Latest run:
 
-- **Bit-exact OCIO parity.** OCIOColorSpace, Display and CDL match the raw OCIO CPU processor bit for bit: worst
-  max-abs error **0.000e+00** across 9 transforms x 4 fixtures, 0 results over the 1e-4 threshold.
+- **Bit-exact OCIO parity, per transform.** OCIOColorSpace, Display and CDL match the raw OCIO CPU processor bit
+  for bit: worst max-abs error **0.000e+00** across 9 transforms x 4 fixtures, 0 results over the 1e-4 threshold.
+  This is the accuracy number: our node output does not alter what OCIO computes.
+- **End-to-end round-trip, verified through a real headless ComfyUI.** In the containerized test harness
+  (`docker/`, run in CI), a full `ACEScg -> ARRI LogC -> linear Rec.709 -> back` round-trip returns to the source
+  at **max abs error 4.5e-6, mean 3.1e-8** - reversible to floating-point precision. The residual is OCIO's
+  single-precision LUT interpolation, the same in Nuke / Resolve / any OCIO tool, and it sits **above half-float
+  EXR storage precision**, so it is lossless for any real delivery.
 - **HDR safety: 0 silent clamps.** Negatives and values above 1.0 survive the conversions, curves and grades. No
   quiet clip to the `0..1` box.
 - **Rec.709 -> ACEScg parity: 0.00e+00.** The exact path the LTX and Flux HDR recipes rely on.
@@ -316,8 +322,10 @@ via OCIO's own colorspace conversions, no hand-rolled matrices), `ocio_parity.pn
 CPU processor, per transform), `log_curves.png` (log round-trips and vendor-spec anchors), `hdr_safety.png`
 (negatives and >1 values across conversions, curves and grade), `roundtrip.png` (A->B->A plus real EXR/PNG
 write/read loops), `deltaE_colorchecker.png` (ΔE2000 on the 24 X-Rite patches), `quantisation_dither.png`
-(8/16-bit and EXR write/read-back banding), `histogram_compare.png` (ours vs reference by `cv2.compareHist`).
-See `tools/accuracy/README.md` to run it yourself.
+(8/16-bit and EXR write/read-back banding), and `histogram_compare.png` (a per-channel distribution match vs the
+reference - a shape sanity-check, not the accuracy number; the max-abs errors above are the accuracy number).
+See `tools/accuracy/README.md` to run it yourself, or `docs/DOCKER.md` for the end-to-end round-trip in a
+container.
 
 ---
 

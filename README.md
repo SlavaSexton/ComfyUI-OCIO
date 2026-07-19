@@ -232,8 +232,10 @@ out, so wiring it never breaks the graph downstream). Takes an **OCIO Img/Seq/Vi
 (mutually exclusive, same as the color nodes). **input_colorspace -> output_colorspace** bakes the display
 transform live on the GPU; **raw_data** shows the pixels untouched. **start_frame / end_frame** and **fps** set
 the playback range, with a transport bar (play / step / loop) and an **exposure** slider (view-only, never
-baked into the graph). Full-res HALF-float, HDR-safe: exposure and the display LUT run on the real values, not
-a pre-baked 8-bit preview.
+baked into the graph). Full-res HALF-float: exposure and the display LUT run on the real values, scene-linear
+values above 1.0 included, not on a pre-baked 8-bit preview. The panel itself presents through the browser's
+standard SDR canvas, like any SDR viewer, so what the float buys you is an accurate exposure and colorspace
+check, not a brighter display.
 
 ### OCIO ColorSpace
 

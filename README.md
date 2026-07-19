@@ -12,7 +12,7 @@
 <br>
 **Color-Manage HDR, LTX, Flux, Cineon and 10-bit clips inside a native video graph.**
 
-**By [AI VFX NEWS](https://t.me/AI_VFX_NEWS) · Slava Sexton.**
+**By [AI VFX NEWS](https://t.me/addlist/Ace2XqUflo9jYjFk) · Slava Sexton.**
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-FFD27D.svg)
 ![ComfyUI](https://img.shields.io/badge/ComfyUI-custom_nodes-5BAEE3.svg)
@@ -423,4 +423,4 @@ basis.
 Modelled on **The Foundry Nuke's** OCIO node set, powered by the **Academy Software Foundation's OpenColorIO**
 and the **ACES** reference config. Full credits and licenses in **[ATTRIBUTION.md](ATTRIBUTION.md)**.
 
-MIT licensed. By **[AI VFX NEWS](https://t.me/AI_VFX_NEWS)**, authored by **Slava Sexton**.
+MIT licensed. By **[AI VFX NEWS](https://t.me/addlist/Ace2XqUflo9jYjFk)**, authored by **Slava Sexton**.

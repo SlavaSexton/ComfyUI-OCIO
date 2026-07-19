@@ -2,7 +2,7 @@
 
 The **ComfyUI-OCIO** node code (`nodes.py`, `io_nodes.py`, `__init__.py`, the `web/` front-end, the example
 workflow) is original and MIT-licensed - see [`LICENSE`](LICENSE). Author: **Slava Sexton**, for
-**[AI VFX NEWS](https://t.me/AI_VFX_NEWS)**.
+**[AI VFX NEWS](https://t.me/addlist/Ace2XqUflo9jYjFk)**.
 
 ## Reuse and credit
 

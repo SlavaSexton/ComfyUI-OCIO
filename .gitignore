@@ -9,3 +9,7 @@ tools/assets/
 
 # Docker test-env working dir: downloaded inputs (Marcie), round-trip outputs, server logs
 data/
+
+# local working dirs - never publish (boot logs leak private node packs)
+scratchpad/
+.agents/

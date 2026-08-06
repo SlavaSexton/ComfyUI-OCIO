@@ -279,7 +279,7 @@ try:
         directly. A ProRes / DNxHR / MXF (undecodable in a <video>) is transcoded ONCE to a cached H.264 proxy
         (downscaled to 1920) and the proxy is streamed instead. Non-blocking: the first call for an undecodable
         source kicks off the ffmpeg transcode and returns {building:true}; the front end polls until {ready:true}.
-        Same local-single-user trust as /ocio/stream. Added 2026-07-03 (owner: ProRes/MXF won't play)."""
+        Same local-single-user trust as /ocio/stream. Added 2026-07-03, because ProRes and MXF do not play natively in the browser."""
         import subprocess as _sp
         from urllib.parse import quote as _quote
         from .io_nodes import _input_dir, VIDEO_EXTS, _needs_proxy, _proxy_path, _proxy_transcode_cmd

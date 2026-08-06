@@ -17,7 +17,7 @@ object -> fresh processor, NOT by calling the node, so the node's own path is wh
 Reports max abs + RMS error per (transform x fixture) and per transform aggregated across fixtures.
 Chart: bar of aggregate max-abs error per transform, log y, with a 1e-4 threshold line.
 
-Run:  E:/ComfyUI/ComfyUI/ComfyUI/.venv/Scripts/python.exe measure_ocio_parity.py
+Run:  python tools/accuracy/measure_ocio_parity.py
 """
 import os
 import numpy as np
@@ -116,7 +116,9 @@ hdr = np.load(os.path.join(FIX, "hdr_ramp.npy")).astype(np.float32)             
 
 # real nyc image (sRGB display 0..1)
 import cv2  # noqa: E402
-nyc_path = r"D:\n8n\projects\ComfyUI-OCIO\example_workflows\nyc_skyline.png"
+# Resolved from this file, not from where it was written: the image ships in the repo.
+nyc_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..",
+                        "example_workflows", "nyc_skyline.png")
 nyc_bgr = cv2.imread(nyc_path, cv2.IMREAD_UNCHANGED)
 if nyc_bgr is None:
     raise RuntimeError(f"could not read {nyc_path}")

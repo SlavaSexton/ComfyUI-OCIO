@@ -11,7 +11,7 @@ Method (confirmed, not invented): each colorspace's unit RGB cube boundary (216 
 (_common.xyz_to_lab). No colorspace math is hand-rolled here; OCIO does every conversion. The plotted surface
 is the convex hull of those boundary points (scipy), a standard gamut-volume visualization.
 
-Run:  E:/ComfyUI/ComfyUI/ComfyUI/.venv/Scripts/python.exe D:/n8n/projects/ComfyUI-OCIO/tools/accuracy/measure_gamut_volume.py
+Run:  python tools/accuracy/measure_gamut_volume.py
 """
 import numpy as np
 import _common as C

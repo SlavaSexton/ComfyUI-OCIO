@@ -95,7 +95,10 @@ def main():
     # point at the shipped real image
     nyc = os.path.abspath(os.path.join(HERE, "..", "..", "example_workflows", "nyc_skyline.png"))
     man["real_image"] = nyc if os.path.isfile(nyc) else "MISSING"
-    man["real_exr_seq"] = r"D:\Projects\Red_Sky_Studios\The_Shift\0531\precomp\LeftGirl.v01"
+    # An EXR sequence to measure against, wherever this happens to run. Deliberately NOT hardcoded: an
+    # absolute path here is somebody's project on disk and this file is public. Point
+    # OCIO_ACCURACY_EXR_SEQ at a directory of frames to enable the sequence measurements.
+    man["real_exr_seq"] = os.environ.get("OCIO_ACCURACY_EXR_SEQ", "NOT SET (see OCIO_ACCURACY_EXR_SEQ)")
 
     with open(os.path.join(FIXT, "manifest.json"), "w", encoding="utf-8") as f:
         json.dump(man, f, indent=2)

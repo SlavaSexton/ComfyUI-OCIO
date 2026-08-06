@@ -15,7 +15,7 @@ For each we report input min/max vs output min/max and COUNT how many out-of-ran
 clamped to the [0,1] boundary (should be 0 for any scene-linear transform), plus below-black SIGN loss on
 log encode and inf/NaN on log decode. Chart: input-vs-output scatter with the y=x line.
 
-Run:  E:/ComfyUI/ComfyUI/ComfyUI/.venv/Scripts/python.exe D:/n8n/projects/ComfyUI-OCIO/tools/accuracy/measure_hdr_safety.py
+Run:  python tools/accuracy/measure_hdr_safety.py
 """
 import os
 import numpy as np

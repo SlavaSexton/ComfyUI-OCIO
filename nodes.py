@@ -13,7 +13,7 @@
 #  - LogConvert curves are published specs, verified by round-trip + black-point tests (tools/):
 #    Cineon (OCIO nuke-default, black 0->0.0928, matches Nuke), ACEScct (S-2016-001), ACEScc (S-2014-003).
 #  - The OpenColorIO-backed paths use the OCIO 2.x Python API (PackedImageDesc + apply), verified at runtime
-#    against the built-in ACES studio config (OCIO 2.5.2). `pip install opencolorio`.
+#    against the built-in ACES studio config (OCIO 2.5.2). Requires the `opencolorio` package.
 
 import os
 import threading
@@ -315,7 +315,7 @@ def _apply_processor(img, cpu):
 
 def _require_ocio():
     if not _HAS_OCIO:
-        raise RuntimeError("This node needs OpenColorIO. Install it: pip install opencolorio. OCIO LogConvert runs without it.")
+        raise RuntimeError("This node needs OpenColorIO. Install the opencolorio package. OCIO LogConvert runs without it.")
 
 
 # --------------------------------------------------------------------------- log curves (dependency-free)

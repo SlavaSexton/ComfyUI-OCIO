@@ -2,7 +2,9 @@
 name = "comfyui-ocio"
 description = "Nuke-style OpenColorIO color nodes for ComfyUI. Read a still/sequence/video, grade in ACES, write EXR/TIFF/PNG/JPEG or ProRes/DNxHR/h264/hevc - fully color-managed, now on ComfyUI's native VIDEO wire. Nine nodes: Read, Write, Player, ColorSpace, LogConvert, Display, CDLTransform, FileTransform, LookTransform."
 version = "1.2.3"
-license = { file = "LICENSE" }
+# Both forms are valid per the Registry spec, but the site renders this field raw: { file = ... } shows up
+# as the literal dict. The LICENSE file ships in the archive either way, so the readable form loses nothing.
+license = { text = "MIT License" }
 requires-python = ">=3.9"
 dependencies = [
     "opencolorio>=2.2",

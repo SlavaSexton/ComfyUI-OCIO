@@ -30,7 +30,7 @@ function extOf(name) { return (String(name || "").toLowerCase().split(".").pop()
 function isExr(name) { const e = extOf(name); return e === "exr" || e === "hdr"; }
 function shorten(cs) { return String(cs || "").replace(" - Display", "").replace(" - Texture", ""); }
 
-// ---- "Processing…" busy overlay + CSS spinner (owner spec 2026-07-03) -----------------------------------------
+// ---- "Processing…" busy overlay + CSS spinner -----------------------------------------
 // A centered spinner + message painted OVER a preview viewport (OCIO Read + OCIO Player) while a refresh / queue /
 // proxy-build is in flight, so the user sees work is happening. Pure CSS spinner (no external gif, self-contained).
 // The overlay sits on the viewport box only (position:absolute inset:0), so the timeline + its cache/buffer bar
@@ -219,7 +219,7 @@ function _vpCompile(gl, type, src) {
 }
 // Known media extensions the OCIO Read viewport can actually decode (stills, sequence frames, video). A source
 // whose extension is not here (a .txt, a code file, an unknown container) is surfaced as "No media - unsupported
-// format" up front, instead of firing a 404/400 that blanks the box silently. Added 2026-07-03 (Task F).
+// format" up front, instead of firing a 404/400 that blanks the box silently.
 const READ_STILL_EXTS = new Set(["exr", "hdr", "tif", "tiff", "png", "jpg", "jpeg", "bmp", "dpx"]);
 const READ_VIDEO_EXTS = new Set(["mov", "mp4", "mkv", "avi", "webm", "mxf", "m4v"]);
 function isKnownMediaPath(src) {
@@ -265,11 +265,11 @@ function _adoptAspect(node, p, mw, mh) {
     p._aspectFitting = true;
     try { node.setSize([node.size[0], node.computeSize()[1]]); } finally { p._aspectFitting = false; }
 }
-// R1 self-determining output: OCIO Read/Player always declare BOTH an IMAGE and a VIDEO output (backend
+// Self-determining output: OCIO Read/Player always declare BOTH an IMAGE and a VIDEO output (backend
 // RETURN_TYPES), but we SHOW the VIDEO slot only when the loaded content is a video, and hide it otherwise - so a
 // still/sequence looks IMAGE-only and a video exposes the VIDEO output. VIDEO is the LAST output, so add/remove it
 // never shifts the IMAGE/MASK/FLOAT/STRING indices (backend maps by index). A wired VIDEO slot is kept (don't yank a
-// saved / user connection). Owner spec 2026-07-03 (R1; the true single self-determining slot would be a V3 MatchType port).
+// saved / user connection). The true single self-determining slot would be a V3 MatchType port.
 function _setVideoOutput(node, show) {
     if (node && node.type === "OCIOPlayer") return;   // 2026-07-04: the Player is INPUT-ONLY (no outputs), so never add/remove a VIDEO slot on it
     if (!node || !node.outputs) return;
@@ -289,7 +289,7 @@ function ensureReadPreview(node) {
     const img = document.createElement("img");
     img.style.cssText = "max-width:100%;max-height:100%;object-fit:contain;display:none;";   // default INTRINSIC sizing so an empty / pending / broken src shows NOTHING (not a broken-image icon); onload switches to 100%/100% so a small proxy still upscales to fill the node
     // a still/frame that fails to decode (server 404/400, or a non-media path that got through) shows the readable
-    // "No media" message instead of a blank box. Added 2026-07-03 (Task F: format guard).
+    // "No media" message instead of a blank box (format guard).
     img.onerror = () => { _ocioBusy(node._ocioPrev && node._ocioPrev.box, false); img.style.display = "none"; img.style.width = ""; img.style.height = ""; _showReadMsg(node._ocioPrev, "No media - unsupported format"); };   // reset to intrinsic sizing so a later empty state cannot show a broken-image icon
     img.onload = () => { _ocioBusy(node._ocioPrev && node._ocioPrev.box, false); img.style.width = "100%"; img.style.height = "100%"; _adoptAspect(node, node._ocioPrev, img.naturalWidth, img.naturalHeight); };   // valid image loaded -> fill (upscale a small proxy) + learn aspect so the node refits
     const video = document.createElement("video");
@@ -301,7 +301,7 @@ function ensureReadPreview(node) {
     const msg = document.createElement("div");   // "No media - unsupported format" placeholder (hidden by default)
     msg.style.cssText = "display:none;color:#889;font:12px sans-serif;text-align:center;padding:24px;";
     // Proxy / Original tag (top-left, faint): the preview is a downscaled 512px PROXY by default (fast); click to
-    // read the source at full resolution (ORIGINAL, as-is), click again to go back. Owner spec 2026-07-03.
+    // read the source at full resolution (ORIGINAL, as-is), click again to go back.
     const proxyTag = document.createElement("div");
     proxyTag.textContent = "proxy";
     proxyTag.title = "Preview resolution - proxy (fast, 512px) or original (full-res, as-is). Click to toggle.";
@@ -409,7 +409,7 @@ function _startViewport(node, p, src) {
         // once the seek settles, and the rAF _drawViewport skips while readyState dips mid-seek - so the viewport
         // looked frozen while the playhead moved. Draw on every completed seek so reverse (and any scrub) updates.
         p.video.onseeked = () => { if (!p.pb.seqMode) _drawViewport(p); };
-        p.video.onerror = () => { _ocioBusy(p.box, false); _stopViewport(p); _showReadMsg(p, "No media - unsupported format"); };   // decode failed: readable message, not a blank box (Task F)
+        p.video.onerror = () => { _ocioBusy(p.box, false); _stopViewport(p); _showReadMsg(p, "No media - unsupported format"); };   // decode failed: readable message, not a blank box
         // 2026-07-03: resolve through /ocio/proxy so the Read preview plays ProRes / DNxHR / MXF too (was streaming
         // the raw file -> browser could not decode -> "No media"). Browser codec = direct; else an H.264 proxy.
         _resolveStreamUrl(p.box, src, () => node._ocioPrev !== p || p.streamPath !== src).then((url) => {
@@ -707,7 +707,7 @@ function _syncTransport(p) {
     const t = p.transport; if (!t) return;
     const cur = _pbCur(p), pb = p.pb;
     if (document.activeElement !== t.frame) t.frame.value = String(cur + _dispBase(p));   // display the real source frame number
-    // Play buttons never turn into a pause (owner spec): the icon stays play / reverse; a green inset ring just
+    // Play buttons never turn into a pause: the icon stays play / reverse; a green inset ring just
     // shows which direction is currently running. Stop is the only pause.
     t.play.style.boxShadow = (pb.playing && pb.dir > 0) ? "inset 0 0 0 2px #4caf50" : "";
     t.playR.style.boxShadow = (pb.playing && pb.dir < 0) ? "inset 0 0 0 2px #4caf50" : "";
@@ -754,7 +754,7 @@ function _ensureTransport(node, p) {
     // between the viewport image (the player DOM widget above) and the numbered timeline (tl, below). It replaces
     // the old vertical-right slider. The number field is EDITABLE (type e.g. +2.5, Enter/blur applies, clamp
     // -16..+16); the slider mirrors it. VIEW-ONLY: sets p.exposure -> shader uExposure via _playerDraw, never sent
-    // to the node / backend. Double-click the field or hit reset -> 0. Owner spec 2026-07-03 (Task C).
+    // to the node / backend. Double-click the field or hit reset -> 0.
     let expRow = null, expSlider = null, expNum = null;
     if (p.isPlayer) {
         const clampExp = (v) => Math.max(-16, Math.min(16, isFinite(v) ? v : 0));
@@ -775,7 +775,7 @@ function _ensureTransport(node, p) {
         expSlider.style.cssText = "flex:1 1 0;min-width:40px;height:14px;cursor:ew-resize;";
         expSlider.oninput = () => applyExp(parseFloat(expSlider.value) || 0, false);
         // type="text" (NOT number): a native number input REJECTS a leading "+" (".value" becomes "" for "+2.5"), so
-        // the owner's "+2.5" example would read as 0. Text + manual parse accepts +/-, shows the sign, and clamps.
+        // a "+2.5" entry would read as 0. Text + manual parse accepts +/-, shows the sign, and clamps.
         expNum = document.createElement("input");
         expNum.type = "text"; expNum.inputMode = "decimal"; expNum.value = fmtExp(0);
         expNum.title = "Exposure in stops (-16..+16) - type a value (e.g. +2.5), Enter or blur to apply. Double-click to reset to 0. VIEW ONLY, never baked.";
@@ -883,7 +883,7 @@ function updateReadPreview(node) {
     const src = (W(node, "source")?.value || "").trim();
     if (!src) { _stopSeq(p); _stopViewport(p); _hideReadMsg(p); _blankReadImg(p); _ocioBusy(p.box, false); return; }
     const seq = node._ocioSeq;
-    // Format guard (Task F): a non-media / unsupported path (a .txt, code file, unknown container) never reaches
+    // Format guard: a non-media / unsupported path (a .txt, code file, unknown container) never reaches
     // the decode routes - it would 404/400 and blank the box. Surface a readable message and stop. A folder path
     // (sequence dir) passes the guard; the server resolves its frames. A resolved sequence (seq.kind) is trusted.
     if (!(seq && (seq.kind === "sequence" || seq.kind === "video")) && !isKnownMediaPath(src)) {
@@ -951,10 +951,10 @@ async function fillRange(node, source) {
         });
         const d = await r.json();
         node._ocioSeq = d;
-        // auto-set the visible Frame Mode to the detected kind (owner E3): still->single, sequence->sequence, video->video
+        // auto-set the visible Frame Mode to the detected kind: still->single, sequence->sequence, video->video
         const fmMap = { still: "single", sequence: "sequence", video: "video" };
         if (d && fmMap[d.kind]) setWSilent(node, "frame_mode", fmMap[d.kind]);
-        _setVideoOutput(node, !!(d && d.kind === "video"));    // R1: expose the VIDEO output only for a video source
+        _setVideoOutput(node, !!(d && d.kind === "video"));    // expose the VIDEO output only for a video source
         const pv = node._ocioPrev;
         if (d && (d.kind === "sequence" || d.kind === "video")) {
             setWSilent(node, "start_frame", d.start | 0);
@@ -1056,7 +1056,7 @@ function syncPlayerFromUpstream(node) {
     const lastN = first + cached - 1;
     p.player.base = first;
     setWSilent(node, "base", String(first));               // STRING widget: backend maps SOURCE start/end numbers -> 0-based batch indices (subtracts base)
-    // 2026-07-03 (BUG A fix): start_frame/end_frame hold SOURCE numbers (so the fields match the timeline). On a
+    // start_frame/end_frame hold SOURCE numbers (so the fields match the timeline). On a
     // genuine source-range CHANGE (new first/lastN vs the last sync), snap to the full new range [first .. lastN] - a new clip shows
     // whole. On a re-render of the SAME source (exposure / colorspace change, same range) preserve the current
     // values if still a valid sub-range (keeps a user trim), else snap. Root cause of the stale-widget bug: the
@@ -1213,7 +1213,7 @@ async function uploadRead(node) {
 
 // ---- disk browser (server-side) - folders for Write output, folders + files for Read source ---------------
 let _ocioLastBrowseDir = "";   // remember the folder the browser was last in, so re-opening Open Files starts there (not the root)
-let _ocioLastOutputDir = "";   // OCIO Write: the ABSOLUTE last-CHOSEN output folder, so "Output Folder" re-opens there (owner 2026-07-04). Separate from _ocioLastBrowseDir so input browsing doesn't move the output start.
+let _ocioLastOutputDir = "";   // OCIO Write: the ABSOLUTE last-CHOSEN output folder, so "Output Folder" re-opens there. Separate from _ocioLastBrowseDir so input browsing doesn't move the output start.
 async function listDir(path, wantFiles, sequence) {
     const r = await fetch("/ocio/list_dirs", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -1244,7 +1244,7 @@ function openBrowser(node, opts) {
     const title = document.createElement("div");
     title.textContent = opts.pickFiles ? "Choose a file, or a sequence folder" : "Choose / create output folder";
     title.style.fontWeight = "600";
-    // Sequence checkbox (Read source browser, owner E1): collapse numbered frames in a folder into ONE entry per
+    // Sequence checkbox (Read source browser): collapse numbered frames in a folder into ONE entry per
     // name-prefix - PBR passes (Diffuse.#### / Normal.#### / Depth.####) each show as one named sequence. Default ON.
     let seqMode = true, seqRow = null, seqChk = null;
     if (opts.pickFiles) {
@@ -1358,7 +1358,7 @@ function openFolderDialog(node) {   // Write output folder
     return openBrowser(node, { widget: "output_folder", forOutput: true });
 }
 
-// (2026-07-04: node titles carry NO version suffix anymore - owner wanted clean names. __version__ is still
+// (2026-07-04: node titles carry NO version suffix anymore - titles stay clean. __version__ is still
 // exposed via the /ocio/version route; the display name is just "OCIO Read" / "OCIO Write" / etc.)
 
 // ============================================================================================================
@@ -1437,7 +1437,7 @@ async function _playerRefreshLut(node, p) {
     // 2026-07-04: pick the LUT's INPUT colorspace by viewport kind.
     //  - STREAMING a raw video (p.videoMode): the <video> pixels are in the FILE's SOURCE colorspace - streaming
     //    bypasses the upstream Read's conversion, so the Player's own input_colorspace does NOT describe this data.
-    //    Color-manage source -> player output (= what a direct Read(video)->Player must show; owner 2026-07-04: it
+    //    Color-manage source -> player output (= what a direct Read(video)->Player must show; it
     //    was applying player_input(ACES...) to raw sRGB video -> lifted/flat). Source = the upstream Read's input_cs.
     //  - FLOAT viewport: the cached frames ARE in the Player's input_colorspace (the Read already converted them),
     //    and may be scene-linear -> ask for the shaper (float=1).
@@ -1476,7 +1476,7 @@ function _playerDraw(p) {
 }
 // ---- Player frame cache: each frame is its own RGBA16F GPU texture kept in a bounded LRU, so playback and scrub
 // read from VRAM instead of re-fetching ~100 MB per frame over HTTP (that on-demand refetch was the slowness the
-// owner saw vs OCIO Read's tiny 8-bit thumbs). Budget-capped: a 4K RGBA16F frame ~= 116 MB, so ~17 fit in ~2 GB;
+// observed vs OCIO Read's tiny 8-bit thumbs). Budget-capped: a 4K RGBA16F frame ~= 116 MB, so ~17 fit in ~2 GB;
 // shorter clips cache in full. Over budget, the least-recently-used non-current frame is evicted. State on p:
 //   p.texCache: Map<idx,{tex,w,h,bytes}>   p.texOrder: LRU list of idx (oldest first)   p.texBytes: total bytes.
 const _PLAYER_TEX_BUDGET = 2.0e9;                                        // ~2 GB of frame textures (tunable); knob for how many frames stay warm
@@ -1616,7 +1616,7 @@ function _playerStop(p) {
 // The Player's preview-state object `p` mirrors the shape the shared transport helpers read (p.node, p.pb, p.gl,
 // p.canvas, p.transport, p.exposure). pb.seqMode is TRUE so _pbCur / _pbSeek use the frame-index path (there is
 // no <video>), but _seqBase stays 0 (p.seq === null) so start_frame/end_frame are read as plain 0-based indices.
-// ---- Ф1b: stream a VIDEO source in the OCIO Player (Load Video -> Player.video, or a video OCIO Read traced to a
+// ---- Stream a VIDEO source in the OCIO Player (Load Video -> Player.video, or a video OCIO Read traced to a
 // file). A hidden <video> decodes natively (browser GPU, hardware) and streams the WHOLE clip - NO materialization,
 // NO frame cap. Each frame is drawn through the SAME exposure + OCIO-LUT float shader as the float path (uploaded as
 // an 8-bit texture, sampled as float in-shader, then exposure * 2^stops + display LUT). Big frames are downscaled
@@ -1658,7 +1658,7 @@ function _playerVideoRaf(node, p) {
     };
     p.raf = requestAnimationFrame(loop);
 }
-// 2026-07-03 (Ф3): resolve the streamable URL for a video source via /ocio/proxy. A browser codec (h264/vp8/vp9/
+// Resolve the streamable URL for a video source via /ocio/proxy. A browser codec (h264/vp8/vp9/
 // av1) streams directly; a ProRes / DNxHR / MXF is transcoded ONCE to a cached H.264 proxy server-side (the front
 // end shows "Building…" and polls until ready). Sets p.video.src when resolved; bails if the source was switched.
 // Resolve a browser-playable URL for a video source: a browser codec (h264/vp8/vp9/av1) streams directly; a
@@ -1724,7 +1724,7 @@ function playerVideoStart(node, p, path, meta) {
             }
         };
         p.video.onerror = () => { _ocioBusy(p.box, false); p.videoMode = false; p.canvas.style.display = "none"; p.empty.style.display = "flex"; p.empty.firstChild.textContent = "Video: browser cannot decode this codec (a ProRes / DNxHR proxy could not be built)"; };
-        _resolveStreamSrc(node, p, path, meta);              // Ф3: stream a browser codec directly, or build+stream an H.264 proxy for ProRes/DNxHR/MXF
+        _resolveStreamSrc(node, p, path, meta);              // stream a browser codec directly, or build+stream an H.264 proxy for ProRes/DNxHR/MXF
     } else {
         _ocioBusy(p.box, false);                             // SAME video already loaded (Refresh of the same file): no reload -> no onloadedmetadata to clear the spinner the Refresh click showed, so clear it here (fixes the "Processing…" ring spinning forever)
     }
@@ -1746,7 +1746,7 @@ function playerVideoStart(node, p, path, meta) {
 // the input dir by /ocio/stream) or an OCIO Read with a video 'source'. Lets the Player RE-READ the current file on
 // Refresh - so changing the Load Video file (a widget change, NOT a connection change) is picked up without recreating
 // the node, and without a backend round-trip that ComfyUI might cache. Added 2026-07-03.
-// 2026-07-03 (BUG B): OCIO color-processing node types (NOT the sources Read/LoadVideo, NOT the Player). If ANY of
+// OCIO color-processing node types (NOT the sources Read/LoadVideo, NOT the Player). If ANY of
 // these sits between a video source and the Player, streaming the raw source file would silently BYPASS its color
 // transform - the Player would show the untouched video, ignoring the intermediate node. So when one is crossed, the
 // trace returns null and the caller falls through to a normal render of the PROCESSED (materialized, capped) batch.
@@ -1804,7 +1804,7 @@ function ensurePlayer(node) {
     // upstream, e.g. an OCIO Log Converter dropped in between) - the cached frames are then stale, so this prompts a
     // re-render. Click = Queue (renders this OUTPUT_NODE). Hidden until an input change; hidden again on the next render.
     // Persistent Refresh: a small SQUARE in the TOP-LEFT, always visible over any content (image / sequence / video)
-    // so the owner can re-pull the viewport anywhere - not just in video mode (owner 2026-07-04). Normally slate;
+    // so the viewport can be re-pulled anywhere - not just in video mode. Normally slate;
     // turns amber (._stale) when a node was inserted / rewired upstream so the cached frames are stale, until the next
     // render clears it. onClick: video upstream -> re-read the file; else Queue (OCIOPlayer is an OUTPUT_NODE viewer).
     const OV_BASE = "rgba(40,40,64,0.85)", OV_STALE = "rgba(150,95,20,0.92)";
@@ -1816,8 +1816,8 @@ function ensurePlayer(node) {
     refreshOverlay.onmouseleave = () => refreshOverlay.style.background = refreshOverlay._stale ? OV_STALE : OV_BASE;
     refreshOverlay.onclick = () => { const pp = node._ocioPlayer; refreshOverlay._stale = false; refreshOverlay.style.background = OV_BASE; refreshOverlay.title = "Refresh this viewport"; _ocioBusy(pp && pp.box, true, "Processing…"); if (pp && (pp.videoMode || _playerTraceVideoSrc(node))) _playerVideoRefresh(node); else app.queuePrompt(0, 1); };
     // Exposure control now lives HORIZONTALLY in the transport strip (between the viewport and the timeline), built
-    // in _ensureTransport when p.isPlayer is set. No slider inside the viewport anymore. Owner spec 2026-07-03 (Task C).
-    const video = document.createElement("video");           // Ф1b: hidden <video> for streaming a video source into the WebGL viewport (exposure + LUT shader)
+    // in _ensureTransport when p.isPlayer is set. No slider inside the viewport anymore.
+    const video = document.createElement("video");           // hidden <video> for streaming a video source into the WebGL viewport (exposure + LUT shader)
     video.muted = true; video.loop = false; video.playsInline = true; video.setAttribute("playsinline", ""); video.style.display = "none";
     box.append(empty, canvas, refreshOverlay, video);
     const w = node.addDOMWidget("player", "div", box, { serialize: false });
@@ -1830,7 +1830,7 @@ function ensurePlayer(node) {
              seqAnchor: null, fileFrames: 1 };
     node._ocioPlayer = p;
     p.refreshOverlay = refreshOverlay;
-    p.video = video;                                     // Ф1b: streamed-video element (drawn via the exposure+LUT shader)
+    p.video = video;                                     // streamed-video element (drawn via the exposure+LUT shader)
     _ensureTransport(node, p);                           // shared transport bar (exposure strip + playback), drives seqFrame via _pbSeek/_playerShow
     node.onRemoved = (orig => function () { _playerStop(node._ocioPlayer); return orig && orig.apply(this, arguments); })(node.onRemoved);
     // Show the auto-Refresh overlay when an INPUT connection changes (a node plugged in / rewired upstream) - the
@@ -1868,7 +1868,7 @@ function playerOnExecuted(node, message) {
     const first = (v) => Array.isArray(v) ? v[0] : v;
     // 2026-07-04: SKIP the re-init (which restarts playback / re-caches the batch / re-fetches frames) when this
     // execution result is IDENTICAL to the last. Rendering ANOTHER node in the same graph re-runs this OUTPUT_NODE
-    // viewer with the same result, and the viewer must NOT "re-play itself" on every unrelated render (owner). A real
+    // viewer with the same result, and the viewer must NOT "re-play itself" on every unrelated render. A real
     // change (new source, new size / frame count) has a different signature and still re-inits; onConnectionsChange
     // clears _lastExecSig so a genuine re-wire always re-inits too.
     const _sig = JSON.stringify([first(message && message.video_path), first(message && message.player_dir),
@@ -1883,13 +1883,13 @@ function playerOnExecuted(node, message) {
     if (vpath) {
         const vres = first(message.video_res) || "", vfps = parseFloat(first(message.video_fps)) || 24, vframes = parseInt(first(message.video_frames), 10) || 0;
         p.videoSrc = { path: vpath, res: vres, fps: vfps, frames: vframes };
-        _setVideoOutput(node, true);                                        // R1: video source -> expose the VIDEO output
+        _setVideoOutput(node, true);                                        // video source -> expose the VIDEO output
         renderPlayerMeta(node, { resolution: vres, total: vframes, cached: vframes, fps: vfps, input_cs: first(message.input_cs) });
         playerVideoStart(node, p, vpath, { fps: vfps, frames: vframes });   // stream the whole clip (native decode + exposure/LUT shader)
         return;
     }
     if (p.videoMode) { p.videoMode = false; try { p.video.pause(); } catch (e) {} if (p.raf) { cancelAnimationFrame(p.raf); p.raf = 0; } }   // was streaming a video, now a float batch -> stop the stream
-    _setVideoOutput(node, false);                            // R1: float batch (image/sequence) -> hide the VIDEO output
+    _setVideoOutput(node, false);                            // float batch (image/sequence) -> hide the VIDEO output
     const dir = first(message && message.player_dir);
     const total = parseInt(first(message && message.player_total) || "0", 10);
     const cached = parseInt(first(message && message.player_cached) || "0", 10);
@@ -1957,11 +1957,11 @@ function renderPlayerMeta(node, data) {
     box.innerHTML = PLAYER_META_ROWS.map(([k, label]) => `<div>${label}: ${values[k]}</div>`).join("");
 }
 
-// OCIO Write "Render" button (owner spec 2026-07-04): (1) overwrite guard - ask the server which output files this
+// OCIO Write "Render" button: (1) overwrite guard - ask the server which output files this
 // Write would create and which already exist; if any exist, confirm before overwriting (Cancel aborts). (2) bump the
 // hidden render_nonce so ComfyUI does NOT cache an identical Write - a repeat render to the SAME path actually
 // re-writes (the reported bug: 2nd click / after deleting the file wrote nothing). window.confirm = the standard
-// Overwrite / Cancel dialog the owner asked for.
+// standard Overwrite / Cancel dialog.
 async function ocioWriteRender(node) {
     try {
         const params = {
@@ -1990,7 +1990,7 @@ async function ocioWriteRender(node) {
 app.registerExtension({
     name: "ComfyUI-OCIO.io",
     async setup() {
-        // Run / Queue feedback (owner spec 2026-07-03): show the "Processing…" spinner on an OCIO Read/Player
+        // Run / Queue feedback: show the "Processing…" spinner on an OCIO Read/Player
         // viewport while THAT node is executing in the graph - covers the global Run button (the node's own Refresh
         // button shows it immediately on click). Cleared when the node's result arrives (playerOnExecuted / img
         // load / video ready) or when the queue goes idle / errors.
@@ -2011,13 +2011,13 @@ app.registerExtension({
         // Uniform slot labels on EVERY OCIO node: an IMAGE carries a still, a sequence, or a video, so show the
         // short "img/seq/vid" on all IMAGE inputs (named image/images) and IMAGE outputs. Labels ONLY - the
         // underlying slot names (run() param keys / RETURN_NAMES) are untouched, so connections still resolve.
-        // Runs for the color/grade nodes too, which have no other front-end onNodeCreated. Owner spec 2026-07-03.
+        // Runs for the color/grade nodes too, which have no other front-end onNodeCreated.
         if (nodeData.category === "OCIO" || String(nodeData.name || "").startsWith("OCIO")) {
             const _ocLabel = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 const rr = _ocLabel ? _ocLabel.apply(this, arguments) : undefined;
                 const relabel = () => {
-                    // 2026-07-04 (owner): the IMAGE socket is our sequence path, the VIDEO socket is ComfyUI's native
+                    // The IMAGE socket is our sequence path, the VIDEO socket is ComfyUI's native
                     // video pipeline. Name them so on EVERY OCIO node - input and output, both sides. Labels ONLY;
                     // slot names are untouched so connections/saved graphs resolve. Covers OCIO Read's VIDEO output
                     // and OCIO Player's VIDEO input renames too (they are just VIDEO sockets on OCIO nodes).
@@ -2046,7 +2046,7 @@ app.registerExtension({
                 const srcW = W(this, "source");
                 if (srcW) srcW.tooltip = "Path to a file / sequence / video - type it here, or use Open Files. This is the source; the button just fills it.";
                 // Collapsible Viewer (OCIO Read only): a disclosure toggle that folds the whole preview + transport +
-                // metadata block away and back (owner spec 2026-07-03). Default expanded; runtime-only, not serialized.
+                // metadata block away and back. Default expanded; runtime-only, not serialized.
                 const self = this;
                 const viewerToggle = this.addWidget("button", "▾ Viewer", null, () => {
                     const c = self._ocioReadCollapsed = !self._ocioReadCollapsed;
@@ -2276,7 +2276,7 @@ app.registerExtension({
                     onChange(this, w, () => { const p = this._ocioPlayer; if (p) { _syncTransport(p); } });
                 }
                 showWidget(this, W(this, "base"), false);            // 'base' = hidden frontend->backend channel (source first-frame number). showWidget now hides WITHOUT a type-swap (options.hidden + zeroed computeSize), so the value keeps serializing (the old type-swap once blanked it -> '' -> crashed prompt validation).
-                _setVideoOutput(this, false);                        // R1: hide the VIDEO output until a video is rendered (playerOnExecuted re-adds it)
+                _setVideoOutput(this, false);                        // hide the VIDEO output until a video is rendered (playerOnExecuted re-adds it)
                 this._ocioAllWidgets = this.widgets.slice();
                 return r;
             };

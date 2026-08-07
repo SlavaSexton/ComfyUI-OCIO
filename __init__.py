@@ -7,7 +7,7 @@ import os
 from .nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
 from .io_nodes import (NODE_CLASS_MAPPINGS as _IO_CLASSES,
                        NODE_DISPLAY_NAME_MAPPINGS as _IO_NAMES)
-# 2026-07-04: OCIO Grade / Grade Match / Apply Grade DISABLED per owner (not in use yet). The code stays in
+# 2026-07-04: OCIO Grade / Grade Match / Apply Grade DISABLED (not in use yet). The code stays in
 # grade_nodes.py; re-enable by uncommenting this import AND the two .update() calls below.
 # from .grade_nodes import (NODE_CLASS_MAPPINGS as _GRADE_CLASSES,
 #                           NODE_DISPLAY_NAME_MAPPINGS as _GRADE_NAMES)
@@ -49,7 +49,7 @@ def _pack_version():
 
 __version__ = _pack_version()
 
-# 2026-07-04 (owner): node display names carry NO version suffix - clean titles ("OCIO Write", not
+# Node display names carry NO version suffix - clean titles ("OCIO Write", not
 # "OCIO Write - v1.2.0"). __version__ stays available for the /ocio/version route; the node TYPE (class key)
 # is unchanged, so saved workflows and node search are unaffected.
 
@@ -127,7 +127,7 @@ try:
         parent = os.path.dirname(base)
         resp = {"path": base, "parent": parent if parent != base else "", "dirs": dirs,
                 "files": files, "output_root": os.path.abspath(root)}
-        # Sequence mode (owner E1): collapse numbered frames in this folder into ONE entry per name-prefix, so PBR
+        # Sequence mode: collapse numbered frames in this folder into ONE entry per name-prefix, so PBR
         # passes (Diffuse.####, Normal.####, Depth.####) each show as a single named sequence with its frame range,
         # Nuke-style. Non-numbered files stay as singles. The entry's src is the first frame; OCIO Read's frame_mode
         # grabs the whole sequence from it.

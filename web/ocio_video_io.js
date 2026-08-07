@@ -36,7 +36,7 @@ app.registerExtension({
         nodeType.prototype.onConnectionsChange = function (type, index, connected, link_info, ioSlot) {
             const r = _conn ? _conn.apply(this, arguments) : undefined;
             try {
-                // CRITICAL (owner 2026-07-04): do NOT mutate links while a graph is LOADING. On a page reload ComfyUI
+                // CRITICAL: do NOT mutate links while a graph is LOADING. On a page reload ComfyUI
                 // restores every link, firing onConnectionsChange for each; disconnecting mid-restore corrupted the
                 // whole graph (all links vanished). Two guards: skip while app.configuringGraph is set, AND only ever
                 // disconnect on a GENUINE conflict (the OTHER input already connected) - a saved graph never has both

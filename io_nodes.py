@@ -298,7 +298,7 @@ def _video_input_cs(info):
     """OCIO input colorspace for a video, mapped from its ffprobe color metadata (color_primaries /
     color_transfer / color_space), GUARDED to names that exist in the active config. Only overrides the working
     sRGB - Display default for HDR / wide-gamut sources (PQ / HLG / bt2020), where the tag genuinely matters.
-    Owner ask 2026-07-04: ordinary bt709 mp4 / mov are internet deliverables (Adobe Premiere -> web), so they
+    Ordinary bt709 mp4 / mov are internet deliverables (Adobe Premiere -> web), so they
     KEEP sRGB - Display, NOT broadcast BT.1886 Rec.709 - most viewers are on sRGB. Added 2026-07-03; SDR->sRGB 2026-07-04."""
     prim = (info.get("color_primaries", "") or "").lower()
     trc = (info.get("color_transfer", "") or "").lower()
@@ -350,7 +350,7 @@ _SEQ_FPS_DEFAULT = 23.976   # cinema base rate (24000/1001); the fallback when a
 def _seq_fps(files):
     """Sequence playback rate: the first frame's EXR `framesPerSecond` if it carries one (a comp / render EXR
     usually does - Nuke stamps it), else the cinema default 23.976 (24000/1001). Non-EXR sequences (PNG / TIFF /
-    JPEG) have no fps attribute, so they take the default. Owner spec 2026-07-03: default is 23.976, not 24."""
+    JPEG) have no fps attribute, so they take the default, which is 23.976, not 24."""
     if files:
         fps = _exr_fps(files[0])
         if fps and fps > 0:
@@ -465,7 +465,7 @@ def _read_video_frame(path):
 
 # --- H.264 proxy for the on-node Player -----------------------------------------------------------------------
 # Browsers cannot decode ProRes / DNxHR (and HEVC has no software fallback), so the Player's <video> element errors
-# on them ("ocio read не проигрывает вообще"). Transcode ONCE to a small H.264 mp4 - downscaled to _PROXY_MAX_SIDE
+# on them at all. Transcode ONCE to a small H.264 mp4 - downscaled to _PROXY_MAX_SIDE
 # (the Player already caps its display there, so no visible loss for a viewer) - cache it keyed by the source's
 # realpath+mtime+size, and stream the proxy instead. The __init__ /ocio/proxy route drives + caches the transcode;
 # these are the pure helpers. Full-res float review stays the EXR path, not video streaming. Added 2026-07-03.
@@ -585,9 +585,9 @@ def _seq_range(source):
         # over an absent/N-A stream duration (needed for MXF, whose stream carries no nb_frames or duration).
         info = dict(line.split("=", 1) for line in pr.stdout.strip().splitlines() if "=" in line)
         nb = _video_frame_count(info)   # robust: nb_frames, or duration x fps when nb_frames is 'N/A' (MXF)
-        # video frame numbering is 1-BASED (owner 2026-07-04: frame 1 is the first frame, not 0) - a 451-frame clip is 1..451
+        # video frame numbering is 1-BASED (frame 1 is the first frame, not 0) - a 451-frame clip is 1..451
         return {"kind": "video", "start": 1, "end": nb, "count": nb, "fps": _video_fps(info),
-                "input_cs": _video_input_cs(info)}   # colorspace from the video's color metadata (owner ask)
+                "input_cs": _video_input_cs(info)}   # colorspace from the video's color metadata
     files = _frame_files(s)
     if not files and os.path.isfile(s):
         files = _sequence_siblings(s)
@@ -923,7 +923,7 @@ def _lut_rgba8(in_cs, out_cs, size=33, raw=False, allow_shaper=False):
 
     SHAPER (allow_shaper, for the FLOAT OCIO Player only): when the input is SCENE-LINEAR, a plain [0,1] domain
     can only see linear 0..1 - it crushes highlights >1 and under-samples the shadow toe, so a scene-linear
-    Player looked FLAT (owner 2026-07-04). With allow_shaper the LUT's SAMPLING AXIS is ACEScct-coded: each
+    Player looked FLAT. With allow_shaper the LUT's SAMPLING AXIS is ACEScct-coded: each
     [0,1] grid coord is decoded to scene-linear via _acescct_to_lin BEFORE the transform, so the LUT spans the
     full HDR range with log resolution. The shader must apply the matching lin->ACEScct encode. The OCIO Read
     video viewport does NOT pass allow_shaper (its data is display-referred 8-bit), so it is unchanged.
@@ -1334,7 +1334,7 @@ class OCIOPlayer:
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
 
-    # 2026-07-04 (owner): the Player is a pure VIEWER - INPUT ONLY, NO outputs (like Preview Image). It branches
+    # The Player is a pure VIEWER - INPUT ONLY, NO outputs (like Preview Image). It branches
     # OFF the graph to preview; nothing passes THROUGH it. Wiring its output back INTO the flow used to break it
     # (stuck on frame 1, endless Refresh) and tempted people to route data through a viewer, so the outputs are
     # gone. OUTPUT_NODE keeps it running on queue so its viewport updates.

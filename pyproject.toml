@@ -19,5 +19,6 @@ Repository = "https://github.com/SlavaSexton/ComfyUI-OCIO"
 # Set PublisherId to your registry.comfy.org publisher handle before `comfy node publish`.
 PublisherId = ""
 DisplayName = "ComfyUI-OCIO"
-Icon = "https://raw.githubusercontent.com/SlavaSexton/ComfyUI-OCIO/main/docs/assets/cover.png"
+# Registry spec caps the icon at 800x400. cover.png is 2560x1440, so it needs its own file.
+Icon = "https://raw.githubusercontent.com/SlavaSexton/ComfyUI-OCIO/main/docs/assets/registry_icon.png"
 includes = []

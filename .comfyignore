@@ -1,0 +1,27 @@
+# Kept in git, left out of the Registry archive.
+#
+# `comfy node publish` packages every file git tracks, which here is 7.2 MB and mostly documentation
+# imagery a user installing the nodes never opens. What ships should be the nodes, the web front end, the
+# licence, the README and the example workflows. Everything below is for people reading or developing the
+# repository, not for people running it.
+#
+# Syntax matches .gitignore. Files git already ignores are excluded anyway; this layers on top.
+
+# Documentation imagery. The README reads them from GitHub, so nothing breaks by not shipping them.
+# The one exception is the registry icon, which the Registry fetches by URL rather than from the archive.
+docs/assets/
+# Documents the Docker harness above, which does not ship either.
+docs/DOCKER.md
+
+# The color-accuracy suite and its Docker harness: a contributor's tools, not a user's.
+tools/
+docker/
+docker-compose.yml
+
+# CI configuration.
+.github/
+
+# Repository-side documents.
+CHANGELOG.md
+ATTRIBUTION.md
+.comfyignore

@@ -1,5 +1,37 @@
 # Changelog
 
+## Code polish, and a compatibility check against current ComfyUI
+
+A polish release. **No node behavior changes**: the Python AST of every node file and the JavaScript with
+comments stripped are byte-identical to v1.2.2, so nothing that runs has moved.
+
+### Verified
+
+- **Compatible with ComfyUI v0.30.0**, the current release at the time of writing, checked by loading the pack
+  against a clean v0.30.0 checkout rather than by reading release notes: all **9 nodes register**, and every
+  ComfyUI API this pack depends on is present with a matching signature. `comfy_api.latest` still exports
+  `InputImpl` and `Types`; `VideoFromComponents(components, bit_depth=8)` is unchanged; `VideoComponents` still
+  carries `images`, `frame_rate` and `audio`, with `metadata` and `alpha` added alongside them, so the additions
+  are additive rather than breaking. `folder_paths` and `server` import clean.
+- **Still running on ComfyUI 0.25.1**, confirmed on a live server: `/object_info` lists all 9 OCIO nodes and the
+  boot log carries no import error from this pack.
+- Honest limit: both checks cover import and node registration. Neither runs a full render on v0.30.0, and the
+  front-end JavaScript was not exercised against frontend 1.47.11 (v0.30.0's pin) as opposed to 1.45.15. The
+  extension hooks this pack uses are unchanged in the frontend releases across that range.
+
+### Changed
+
+- Code comments now explain decisions by what the code does rather than by how the decision was arrived at.
+  Every technical fact is kept: 1-based video frame numbering, the 23.976 default for stills, why an ordinary
+  bt709 mp4 is treated as an internet deliverable, why the Player looked flat without `allow_shaper`, and the
+  warning against mutating links while a graph is loading.
+- Removed a shorthand task taxonomy that read like a code convention but resolved to nothing in this repository.
+- `tools/accuracy/gen_fixtures.py` reads the EXR sequence path from `OCIO_ACCURACY_EXR_SEQ` instead of a
+  hardcoded absolute path, so the accuracy suite runs anywhere rather than only on one machine.
+- `tools/accuracy/measure_ocio_parity.py` resolves `nyc_skyline.png` from its own location. That image ships in
+  this repository, so the script now works on a fresh clone.
+- The two README screenshots have their path fields redacted. The graphs, nodes and viewer frames are unchanged.
+
 ## Corrected accuracy wording (round-trip vs half-float)
 
 A docs-only patch: no node or test changes. Fixes an inaccurate line in the v1.2.1 accuracy write-up.

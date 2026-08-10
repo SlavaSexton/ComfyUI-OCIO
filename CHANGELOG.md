@@ -38,6 +38,13 @@ slot is never removed.
 - The workflow file's header still described the Registry push trigger as live while the block below it
   explains that it is paused.
 
+### Installing it from ComfyUI Manager
+
+In Manager's **Select Version** dialog pick **Nightly**, which tracks this repository and is what Manager
+offers by default. The numbered entries come from the Comfy Registry, which still holds only 1.2.3 and 1.2.4
+because publishing is paused while those sit flagged, so choosing `Latest` or a number there installs code
+from before these fixes.
+
 ## Values you set by hand stay set
 
 Reported as issue #3: OCIO Read re-detected the source during ordinary graph work and put the detected

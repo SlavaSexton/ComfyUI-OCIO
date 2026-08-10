@@ -200,8 +200,8 @@ Color-manage an IMAGE batch and **write it to disk** (Nuke: *Write*).
   to re-detect.
 - **first_frame / last_frame** - which frames to write. **start_number** - the number on the first output file
   (the re-base, e.g. `0086`).
-- **output_folder** - where to write (**📁 browse** picks a folder on disk, or type / create one). **filename** -
-  the base name; numbering and extension are added automatically.
+- **output_folder** - where to write (**Output Folder** picks a folder on disk, or type / create one).
+  **filename** - the base name; numbering and extension are added automatically.
 - **alpha** (optional) - wire a MASK here to write **RGBA** (EXR / TIFF / PNG). **fps** (optional) - wire OCIO
   Read's `fps` to carry the source rate.
 - **video** (optional, mutually exclusive with the image input) - wire a **ComfyUI Video** (Load Video or any

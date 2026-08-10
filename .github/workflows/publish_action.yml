@@ -2,10 +2,10 @@ name: Publish to Comfy registry
 
 # Publishes to the Comfy Registry, which is what ComfyUI-Manager reads.
 #
-# Fires on two things: a manual run, and a push to main that touches pyproject.toml. The second is the point
-# of it - the version number lives in pyproject.toml, so bumping the version IS the publish, and no API key
-# is ever typed into a console or left in a shell history. The key lives once, as the repository secret
-# REGISTRY_ACCESS_TOKEN, and nothing here can read it back out.
+# Designed to fire on two things: a manual run, and a push to main that touches pyproject.toml, so that
+# bumping the version IS the publish and no API key is ever typed into a console or left in a shell history.
+# The key lives once, as the repository secret REGISTRY_ACCESS_TOKEN, and nothing here can read it back out.
+# THE PUSH TRIGGER IS CURRENTLY OFF - see the PAUSED note above the `on:` block for why and how to restore it.
 #
 # If this fails with an authentication error, the secret is missing or was rotated; create it again at
 # Settings -> Secrets and variables -> Actions. If it fails with a duplicate-version error, the version in

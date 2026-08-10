@@ -1,5 +1,43 @@
 # Changelog
 
+## Follow-ups to 1.2.5
+
+Three things 1.2.5 got wrong, found by re-reviewing it, plus documentation that was describing buttons and
+outputs the nodes do not have.
+
+### An empty source was only half-refused
+
+1.2.5 rejected an empty `source` by looking at the string, so `.`, `./` or the path of a folder walked
+straight past the guard and produced the same fiction: every numbered file in that folder reported as one clip
+spanning the lowest to the highest number, everything in between counted as missing. On the ComfyUI input
+folder that was 2015 frames with 1980 of them "missing".
+
+The scan now groups a folder's files by frame pattern, the way it already did when you pick one frame of a
+sequence, and answers with the sequence that is actually in there. A real sequence folder is unaffected.
+
+### OCIO Player kept a trim across a change of clip
+
+The 1.2.5 rule was "keep the in/out if it still fits", and a trim of 10..50 fits any clip of 50 frames or
+more, so it followed the artist onto the next video. The stream path now keeps a trim only while the clip
+itself is unchanged, and a trim restored from a workflow is still honoured.
+
+### A fresh OCIO Read showed a VIDEO output it should not
+
+Cosmetic, introduced by 1.2.5: with no source there is no video, and the slot is hidden again. A connected
+slot is never removed.
+
+### Documentation that did not match the nodes
+
+- Two tooltips still told you to use a "browse button" that has not existed for some time. They now name
+  **Open Files** and **Output Folder**, which are the buttons on the nodes.
+- The same stale label with an emoji survived in the README's OCIO Write section.
+- OCIO Player's docstring and five of its tooltips described outputs, a conversion and a trim applied to
+  them. The node returns nothing and never has: those settings drive the viewer. Its frame fields were also
+  documented as 0-based batch indices while they hold source frame numbers, which is what the timeline shows.
+- `read_meta` now trims whitespace around a path like the other two entry points already did.
+- The workflow file's header still described the Registry push trigger as live while the block below it
+  explains that it is paused.
+
 ## Values you set by hand stay set
 
 Reported as issue #3: OCIO Read re-detected the source during ordinary graph work and put the detected
@@ -43,10 +81,15 @@ An empty `source` resolved to the ComfyUI input folder, and the sequence scan th
 file sitting in it as one invented clip - thousands of frames, nearly all of them "missing". Both the
 detect endpoint and the loader now say what is wrong instead.
 
-### Color math is untouched
+### No change to the color code
 
-No transform, curve, LUT path or conversion changed in this release; the accuracy suite reports the same
-numbers as 1.2.4.
+`nodes.py` and `grade_nodes.py` are untouched, and in `io_nodes.py` the diff is two guards on an empty source
+plus tooltip wording. No transform, curve, LUT path or conversion was edited, so the accuracy suite has
+nothing new to measure and was not re-run for this version.
+
+Worth stating plainly, because it cuts the other way too: the same saved workflow can render differently than
+it did under 1.2.4, since the values it feeds the transforms are now the ones you set rather than the ones a
+re-detect put back.
 
 ### About the Registry
 

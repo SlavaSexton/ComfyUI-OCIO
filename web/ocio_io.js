@@ -957,7 +957,11 @@ async function updateReadMeta(node) {
 // re-deriving it would drop the saved slot whenever the source is offline and the scan reports "still".)
 async function fillRange(node, source, opts) {
     const applyValues = !(opts && opts.applyValues === false);
-    if (!source) { applyReadVis(node); updateReadPreview(node); if (applyValues) _setVideoOutput(node, false); return; }   // empty source: hide the frame controls (still-image default) + the VIDEO output
+    // Empty source: hide the frame controls (still-image default) and the VIDEO output. The slot is dropped
+    // here even on a passive detect - with no source there is no video, and _setVideoOutput never removes a
+    // CONNECTED slot, so nothing a workflow restored can be lost. Gating this on applyValues left the slot
+    // showing on every freshly added node (2026-08-10).
+    if (!source) { applyReadVis(node); updateReadPreview(node); _setVideoOutput(node, false); return; }
     // Everything the artist edits from here on is remembered by name, so a slow scan (big sequence, network
     // share) that lands later overwrites only the fields nobody touched, instead of losing the edit - or,
     // worse, dropping the whole answer and leaving the node holding values from the PREVIOUS clip.
@@ -1087,12 +1091,18 @@ function syncPlayerFromUpstream(node) {
     // as "the range changed" snapped away a trim the workflow had saved, on the first render. With no history,
     // let the validity test below decide: saved values that are a valid sub-range of the clip are the artist's
     // trim and are kept; anything stale or out of range still snaps to the full clip (2026-08-10).
-    const rangeChanged = !!p._syncRange && (p._syncRange.first !== first || p._syncRange.last !== lastN);
+    // The clip is identified by the upstream SOURCE, not only by its range: two different clips of the same
+    // length produce the same first/lastN, and judging by range alone carried one clip's trim onto the next
+    // (2026-08-10). No history at all means this is the first sync of the session, where the values came from
+    // the workflow and validity is the only thing to judge them by.
+    const srcId = (W(read, "source")?.value || "");
+    const clipChanged = !!p._syncRange &&
+        (p._syncRange.src !== srcId || p._syncRange.first !== first || p._syncRange.last !== lastN);
     const curSF = Math.round(W(node, "start_frame")?.value || 0), curEF = Math.round(W(node, "end_frame")?.value || 0);
-    if (rangeChanged || !(curSF >= first && curEF <= lastN && curSF <= curEF && curEF > 0)) {
+    if (clipChanged || !(curSF >= first && curEF <= lastN && curSF <= curEF && curEF > 0)) {
         setWSilent(node, "start_frame", first); setWSilent(node, "end_frame", lastN);
     }
-    p._syncRange = { first, last: lastN };
+    p._syncRange = { src: srcId, first, last: lastN };
     if (rFps > 0) { p.pb.fps = rFps; setWSilent(node, "fps", rFps); }   // fps must match the source, not the Player default
     node.setDirtyCanvas(true, true);
 }
@@ -1737,7 +1747,14 @@ function playerVideoStart(node, p, path, meta) {
     const _vf = Math.max(1, meta.frames || 0);
     const _lo = p.videoBase, _hi = p.videoBase + _vf - 1;
     const _curS = Math.round(W(node, "start_frame")?.value || 0), _curE = Math.round(W(node, "end_frame")?.value || 0);
-    if (!(_curS >= _lo && _curE <= _hi && _curS <= _curE && _curE > 0)) {
+    // Keep a trim only when the clip did not change under it. Validity alone is not enough: a trim of 10..50
+    // fits any other clip of 50 frames or more, so judging by range let one clip's in/out follow the artist
+    // onto the next one. The stream path has no range history, so clip identity is the path itself, and
+    // p._vidPath still holds the PREVIOUS one here. Unset means this is the first stream of the session: then
+    // the values came from the workflow and are judged on validity alone, which is the point of the fix that
+    // stopped a saved in/out being wiped on load (2026-08-10).
+    const _otherClip = p._vidPath != null && p._vidPath !== path;
+    if (_otherClip || !(_curS >= _lo && _curE <= _hi && _curS <= _curE && _curE > 0)) {
         setWSilent(node, "start_frame", _lo);
         setWSilent(node, "end_frame", _hi);
     }

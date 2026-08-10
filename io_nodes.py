@@ -252,7 +252,20 @@ def _frame_files(source):
     if os.path.isdir(source):
         fs = [os.path.join(source, f) for f in os.listdir(source)
               if os.path.splitext(f)[1].lower() in STILL_EXTS]
-        return sorted(fs, key=_frame_num)
+        # A folder holds ONE sequence, not "every numbered file in it". Without this grouping, pointing at a
+        # mixed folder - the ComfyUI input directory, an output dump, or just "." - reported all of them as a
+        # single clip spanning the lowest to the highest number found, with everything between them counted as
+        # missing frames. Group by the same pattern _sequence_siblings uses (prefix + trailing suffix +
+        # extension) and answer with the sequence that is actually there (2026-08-10).
+        groups = {}
+        for f in fs:
+            sp = _split_frame(f)
+            if not sp:
+                continue
+            groups.setdefault((sp[0], sp[4], sp[3].lower()), []).append(f)
+        if not groups:
+            return []
+        return sorted(max(groups.values(), key=len), key=_frame_num)
     if "%0" in source or "#" in source:
         pat = re.sub(r"%0\d*d", "*", source)
         pat = re.sub(r"#+", "*", pat)
@@ -640,7 +653,7 @@ def read_meta(source):
     for the range/count/fps/kind (same detection the auto-fill uses) and adds the fields _seq_range does not
     need: resolution, container/codec, and alpha presence. Never raises - callers get {"error": ...} instead,
     matching /ocio/thumb's contract, since this backs a UI panel that must not 500 on a bad path."""
-    source = (source or "").rstrip("/")
+    source = (source or "").strip().rstrip("/")
     if not source:
         return {"error": "empty source"}
     s = source if os.path.isabs(source) else os.path.join(_input_dir(), source)
@@ -988,7 +1001,7 @@ class OCIORead:
     @classmethod
     def INPUT_TYPES(cls):
         return {"required": {
-            "source": ("STRING", {"default": "", "tooltip": r"Path to a still / sequence folder / frame / video, ANYWHERE on disk (absolute like D:\shots\LeftGirl.v01, or relative to the ComfyUI input folder). Use the browse button. A folder or one frame of a sequence -> the whole sequence (see frame_mode)."}),
+            "source": ("STRING", {"default": "", "tooltip": r"Path to a still / sequence folder / frame / video, ANYWHERE on disk (absolute like D:\shots\LeftGirl.v01, or relative to the ComfyUI input folder). Pick one with Open Files, or type it. A folder or one frame of a sequence -> the whole sequence (see frame_mode)."}),
             "frame_mode": (["auto", "single", "sequence", "video"], {"default": "auto",
                            "tooltip": "How to read a selected frame (Nuke's 'grab sequence'). auto: numbered file with siblings -> whole sequence; single: just this file; sequence: force-collapse its siblings; video: a movie clip (auto-detected by extension). A folder is always a sequence; a video is always its full clip. The front end sets this from the detected kind when the source changes (or on 'Detect from Source'); a value you set by hand is kept."}),
             "input_colorspace": _cs_combo(WORKING),
@@ -1138,7 +1151,7 @@ class OCIOWrite:
                          "tooltip": "Nuke 'Raw Data': write the pixels as-is, skipping the from->out colorspace conversion."}),
             "colorspace_in_name": ("BOOLEAN", {"default": True,
                                     "tooltip": "Put the output colorspace in the file name, before the frame number: name_acescg.0001.exr. Uses the sanitized output_colorspace (or 'raw' when Raw Data is on)."}),
-            "output_folder": ("STRING", {"default": "", "tooltip": "Server folder. Empty = ComfyUI output dir. Relative = under it. Use the browse button."}),
+            "output_folder": ("STRING", {"default": "", "tooltip": "Server folder. Empty = ComfyUI output dir. Relative = under it. Use the Output Folder button."}),
             "filename": ("STRING", {"default": "ocio_out", "tooltip": "Base name. Numbering / extension are added automatically."}),
             "auto_colorspace": ("BOOLEAN", {"default": True,
                                  "tooltip": "When the input is wired from LTX's LTXVHDRDecodePostprocess (SDR->HDR), auto-set from_colorspace = 'Linear Rec.709 (sRGB)' and output_colorspace = 'ACEScg', so you do not have to. Editing the colorspaces by hand still wins. Front-end only."}),
@@ -1314,8 +1327,8 @@ class OCIOPlayer:
     """In-graph float viewer + color / range pass-through (a Nuke 'Viewer' analog, OCIO-managed). Feed it an
     IMAGE batch from LoadImage / a video loader / OCIO Read / anything: the on-node float WebGL viewport shows
     it AS IS (full resolution, HDR) with a VIEW-ONLY exposure control and live colorspace + metadata, and the
-    node OUTPUTS the batch converted input_colorspace -> output_colorspace and trimmed to [start_frame,
-    end_frame]. Exposure is a viewing tool only - it never touches the output. A still is N=1, a sequence /
+    node is INPUT ONLY and returns nothing: input_colorspace -> output_colorspace and [start_frame, end_frame]
+    set what the viewer shows, not what leaves the node. Exposure is a viewing tool too. A still is N=1, a sequence /
     video is N>1; the viewer scales to the frame size either way."""
 
     @classmethod
@@ -1324,15 +1337,15 @@ class OCIOPlayer:
         return {
             "required": {
                 "input_colorspace": _combo_or_string(cs, WORKING, "The colorspace the incoming batch is in (front-end auto-guesses ACEScg for HDR / >1 data, else sRGB - Display)."),
-                "output_colorspace": _combo_or_string(cs, WORKING, "The colorspace to convert the OUTPUT to."),
+                "output_colorspace": _combo_or_string(cs, WORKING, "The colorspace the viewer converts to for display."),
                 "raw_data": ("BOOLEAN", {"default": False, "label_on": "raw (no convert)", "label_off": "color-managed",
-                                         "tooltip": "Pass pixels through untouched (no colorspace convert on the output)."}),
+                                         "tooltip": "Show pixels untouched (no colorspace conversion for display)."}),
                 "start_frame": ("INT", {"default": 0, "min": 0, "max": 100000000,
-                                        "tooltip": "First batch index to OUTPUT (0-based). The viewer always shows the whole input."}),
+                                        "tooltip": "First frame to play, in the source numbering shown on the timeline. The viewer holds the whole input."}),
                 "end_frame": ("INT", {"default": 0, "min": 0, "max": 100000000,
-                                      "tooltip": "Last batch index to output (0 = through the end)."}),
+                                      "tooltip": "Last frame to play, source numbering (0 = through the end)."}),
                 "fps": ("FLOAT", {"default": 24.0, "min": 0.0, "max": 1000.0, "step": 0.001,
-                                  "tooltip": "Playback rate for the viewer + the fps output."}),
+                                  "tooltip": "Playback rate for the viewer."}),
             },
             "optional": {
                 "images": ("IMAGE", {"tooltip": "Any IMAGE batch - still (N=1), sequence or video (N>1). Optional: connect a Load Video node to 'video' instead to stream a movie without materializing it."}),

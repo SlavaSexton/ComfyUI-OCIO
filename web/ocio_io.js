@@ -1083,7 +1083,11 @@ function syncPlayerFromUpstream(node) {
     // values if still a valid sub-range (keeps a user trim), else snap. Root cause of the stale-widget bug: the
     // old guard could not tell a previous AUTO-SET range from a user trim, so switching to a source whose range
     // CONTAINED the old values kept them (start/end widgets stale while the meta panel already showed the new range).
-    const rangeChanged = !p._syncRange || p._syncRange.first !== first || p._syncRange.last !== lastN;
+    // _syncRange is runtime-only, so after a page reload there is no history at all - and treating "no history"
+    // as "the range changed" snapped away a trim the workflow had saved, on the first render. With no history,
+    // let the validity test below decide: saved values that are a valid sub-range of the clip are the artist's
+    // trim and are kept; anything stale or out of range still snaps to the full clip (2026-08-10).
+    const rangeChanged = !!p._syncRange && (p._syncRange.first !== first || p._syncRange.last !== lastN);
     const curSF = Math.round(W(node, "start_frame")?.value || 0), curEF = Math.round(W(node, "end_frame")?.value || 0);
     if (rangeChanged || !(curSF >= first && curEF <= lastN && curSF <= curEF && curEF > 0)) {
         setWSilent(node, "start_frame", first); setWSilent(node, "end_frame", lastN);
@@ -1727,9 +1731,16 @@ function playerVideoStart(node, p, path, meta) {
     // syncPlayerFromUpstream, but the stream path did NOT - so start/end stayed 0, the in/out handles were not at the
     // clip extremes, and fps / input CS never pulled through). start/end span the whole clip; fps from the video meta;
     // input CS mirrors the Read's OUTPUT colorspace (what actually feeds the Player) unless the user picked one.
+    // 2026-08-10: span the whole clip only when the current values are NOT a usable trim. This runs on every
+    // stream start, including the one right after a workflow load, and it used to overwrite an in/out the artist
+    // had saved. Same rule syncPlayerFromUpstream applies on the float path.
     const _vf = Math.max(1, meta.frames || 0);
-    setWSilent(node, "start_frame", p.videoBase);
-    setWSilent(node, "end_frame", p.videoBase + _vf - 1);
+    const _lo = p.videoBase, _hi = p.videoBase + _vf - 1;
+    const _curS = Math.round(W(node, "start_frame")?.value || 0), _curE = Math.round(W(node, "end_frame")?.value || 0);
+    if (!(_curS >= _lo && _curE <= _hi && _curS <= _curE && _curE > 0)) {
+        setWSilent(node, "start_frame", _lo);
+        setWSilent(node, "end_frame", _hi);
+    }
     setWSilent(node, "base", String(p.videoBase));
     if (meta.fps > 0) { setWSilent(node, "fps", meta.fps); p.pb.fps = meta.fps; }
     if (_r && !p.userSetCs) { const _ro = W(_r, "output_colorspace")?.value; if (_ro) setWSilent(node, "input_colorspace", _ro); }
@@ -2203,7 +2214,6 @@ app.registerExtension({
                     }
                     applyCodecLabel();
                     applyFormat();
-                    setW(node, "output_colorspace", autoOutCs(c, W(node, "still_format")?.value));
                     pokeWidgets(node);                                          // Vue re-render (hides + labels)
                     node.setSize([node.size[0], node.computeSize()[1]]);
                     node.setDirtyCanvas(true, true);
@@ -2215,7 +2225,15 @@ app.registerExtension({
                     const info = vc && CODEC_INFO[vc.value];
                     if (vc) vc.label = info ? `video_codec (${info.bits}, ${info.ext})` : "video_codec";
                 };
-                onChange(this, "container", applyContainer);
+                // RESPONSIBLE FOR: keeping a user-set output_colorspace (and the profile it would reset) alive
+                // across a workflow load (2026-08-10). applyContainer only rebuilds the VIEW - visibility, labels,
+                // sizing - because it also runs from the onNodeCreated timer, which fires after configure() has
+                // restored the saved values. The default colorspace is written here instead: on a real container
+                // change, which is a deliberate act. Same split as OCIO Read, issue #3.
+                onChange(this, "container", () => {
+                    applyContainer();
+                    setW(node, "output_colorspace", autoOutCs(W(node, "container")?.value, W(node, "still_format")?.value));
+                });
                 onChange(this, "still_format", () => {
                     applyFormat();
                     applyCompressionVis();
@@ -2225,7 +2243,10 @@ app.registerExtension({
                 onChange(this, "video_codec", () => { applyCodecLabel(); pokeWidgets(node); node.setDirtyCanvas(true, true); });
                 // auto frame range / fps from the upstream OCIO Read
                 onChange(this, "auto_range", (v) => { if (v) syncWriteFromUpstream(node); });
-                for (const w of ["last_frame", "start_number"]) {
+                // fps belongs here too: auto_range pulls it from the Read like the others, and its tooltip has
+                // always promised that editing it by hand turns auto OFF - it did not, so a hand-set fps (a
+                // conform to 25 against a 23.976 source) was silently pulled back on the next sync (2026-08-10).
+                for (const w of ["last_frame", "start_number", "fps"]) {
                     onChange(this, w, () => { const ar = W(node, "auto_range"); if (ar) ar.value = false; });  // manual edit -> auto OFF
                 }
                 onChange(this, "first_frame", () => {

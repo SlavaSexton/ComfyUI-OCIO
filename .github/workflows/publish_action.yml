@@ -11,13 +11,18 @@ name: Publish to Comfy registry
 # Settings -> Secrets and variables -> Actions. If it fails with a duplicate-version error, the version in
 # pyproject.toml was already published - bump it, the Registry will not take the same number twice.
 
+# PAUSED 2026-08-10: the push trigger below is commented out on purpose. Versions 1.2.3 and 1.2.4 are both
+# sitting Flagged in the Registry on false positives from its automated scan, and the scan reads the SOURCE,
+# not the version - so publishing another number would only add a third flagged row without changing the
+# outcome. Until the review clears, a version bump must NOT publish by itself; a manual run is still
+# available through workflow_dispatch. Restore by uncommenting the four lines.
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - "pyproject.toml"
+  # push:
+  #   branches:
+  #     - main
+  #   paths:
+  #     - "pyproject.toml"
 
 jobs:
   publish-node:

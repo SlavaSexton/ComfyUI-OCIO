@@ -16,7 +16,13 @@ function setW(node, name, value) {
         w.options.values.push(value);
     }
     w.value = value;
-    if (w.callback) try { w.callback(value); } catch (e) {}
+    // Flag the callback as OUR write. A widget edited in the UI calls its callback directly, so anything
+    // wrapped here is code-driven and must not be counted as a manual edit (issue #3: "Open Files" writes
+    // source and then input_colorspace, and the second write cancelled the auto-fill the first one started).
+    if (w.callback) {
+        node._ocioAutoWrite = (node._ocioAutoWrite | 0) + 1;
+        try { w.callback(value); } catch (e) {} finally { node._ocioAutoWrite--; }
+    }
     node.setDirtyCanvas(true, true);
 }
 // set a widget value WITHOUT firing its callback (so an auto-sync isn't mistaken for a manual edit)
@@ -943,33 +949,48 @@ async function updateReadMeta(node) {
     } catch (e) { console.error("OCIO meta", e); box.innerHTML = ""; }
 }
 
-async function fillRange(node, source) {
-    if (!source) { applyReadVis(node); updateReadPreview(node); _setVideoOutput(node, false); return; }   // empty source: hide the frame controls (still-image default) + the VIDEO output
+// RESPONSIBLE FOR: keeping user-set widget values alive across a workflow load (2026-08-09, issue #3).
+// Detected defaults are applied ONLY when the artist changes the source or presses "Detect from source".
+// opts.applyValues === false runs the detect WITHOUT writing any editable widget - it still refreshes what
+// is NOT stored in the workflow and therefore has to be re-derived every session: _ocioSeq, the per-kind
+// widget visibility and the preview. (The VIDEO output IS serialized, so a passive detect leaves it alone -
+// re-deriving it would drop the saved slot whenever the source is offline and the scan reports "still".)
+async function fillRange(node, source, opts) {
+    const applyValues = !(opts && opts.applyValues === false);
+    if (!source) { applyReadVis(node); updateReadPreview(node); if (applyValues) _setVideoOutput(node, false); return; }   // empty source: hide the frame controls (still-image default) + the VIDEO output
+    // Everything the artist edits from here on is remembered by name, so a slow scan (big sequence, network
+    // share) that lands later overwrites only the fields nobody touched, instead of losing the edit - or,
+    // worse, dropping the whole answer and leaving the node holding values from the PREVIOUS clip.
+    if (applyValues) node._ocioEdited = new Set();
     try {
         const r = await fetch("/ocio/seq_range", {
             method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source }),
         });
         const d = await r.json();
+        // the source moved on while this scan was running: the answer describes a file nobody is looking at
+        if ((W(node, "source")?.value || "") !== String(source)) return;
+        const edited = node._ocioEdited || new Set();
+        const put = (name, val) => { if (applyValues && !edited.has(name)) setWSilent(node, name, val); };
         node._ocioSeq = d;
         // auto-set the visible Frame Mode to the detected kind: still->single, sequence->sequence, video->video
         const fmMap = { still: "single", sequence: "sequence", video: "video" };
-        if (d && fmMap[d.kind]) setWSilent(node, "frame_mode", fmMap[d.kind]);
-        _setVideoOutput(node, !!(d && d.kind === "video"));    // expose the VIDEO output only for a video source
+        if (d && fmMap[d.kind]) put("frame_mode", fmMap[d.kind]);
+        if (applyValues) _setVideoOutput(node, !!(d && d.kind === "video"));   // expose the VIDEO output only for a video source
         const pv = node._ocioPrev;
         if (d && (d.kind === "sequence" || d.kind === "video")) {
-            setWSilent(node, "start_frame", d.start | 0);
-            setWSilent(node, "end_frame", d.end | 0);
-            setWSilent(node, "frame_shift", d.start | 0);      // default: first frame keeps its source number
-            if (d.fps) setWSilent(node, "fps", Math.round(d.fps * 1000) / 1000);
-            if (d.input_cs) setWSilent(node, "input_colorspace", d.input_cs);   // folder path has no ext -> fix EXR auto-detect (sRGB -> ACEScg) from the resolved first frame
+            put("start_frame", d.start | 0);
+            put("end_frame", d.end | 0);
+            put("frame_shift", d.start | 0);                   // default: first frame keeps its source number
+            if (d.fps) put("fps", Math.round(d.fps * 1000) / 1000);
+            if (d.input_cs) put("input_colorspace", d.input_cs);   // folder path has no ext -> fix EXR auto-detect (sRGB -> ACEScg) from the resolved first frame
             // the transport ruler + in/out span the REAL file frame count (authoritative), not video.duration
             if (pv && pv.pb) pv.pb.fileFrames = Math.max(1, (d.count | 0) || ((d.end | 0) - (d.start | 0) + 1) || 1);
         } else {
-            setWSilent(node, "start_frame", 0);
-            setWSilent(node, "end_frame", 0);
+            put("start_frame", 0);
+            put("end_frame", 0);
             if (pv && pv.pb) pv.pb.fileFrames = 1;
         }
-        applyReadVis(node, d.kind);
+        applyReadVis(node, d && d.kind);                       // d can be null on a malformed answer
         resyncAllWrites();                                     // push the detected range/fps to downstream Writes
         updateReadPreview(node);                              // now that _ocioSeq is known, route to the right player (seq flipbook / video / thumb)
     } catch (e) { console.error("OCIO seq_range", e); }
@@ -2035,6 +2056,21 @@ app.registerExtension({
             const onCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
                 const r = onCreated ? onCreated.apply(this, arguments) : undefined;
+                // Belongs to the source PARAMETERS above it, so it sits directly under them: it re-reads range /
+                // fps / colorspace from the file, which is exactly what those widgets hold. Detected defaults are
+                // applied on a source CHANGE only, so this is the deliberate way to pull them back after an edit
+                // (2026-08-09, issue #3).
+                const detectBtn = this.addWidget("button", "Detect from Source", null, () => {
+                    fillRange(this, W(this, "source")?.value);
+                    updateReadMeta(this);
+                }, { serialize: false });
+                detectBtn._ocioAlwaysVisible = true;
+                // spacer: separates the source section above from the file / viewer controls below
+                const gapEl = document.createElement("div");
+                gapEl.style.cssText = "height:100%;pointer-events:none;";
+                const gapW = this.addDOMWidget("gap", "div", gapEl, { serialize: false });
+                gapW.computeSize = () => [0, 10];
+                gapW._ocioAlwaysVisible = true;
                 // one file picker: browse ANY path on disk straight into `source`. No copy - OCIORead reads it
                 // in place, which is what a local workflow wants (no duplicating big EXR sequences / video into
                 // the input folder). uploadRead() (copy-into-input) still exists if we ever want to re-expose it.
@@ -2069,9 +2105,22 @@ app.registerExtension({
                 for (const w of ["frame_shift", "fps", "start_frame", "end_frame"]) {
                     onChange(this, w, () => resyncAllWrites());   // Read range/shift/fps -> downstream Writes
                 }
+                // Remember which auto-filled fields the artist edited, so a detect still in flight overwrites
+                // only the others (issue #3). The auto-fill itself writes through setWSilent, which fires no
+                // callback; a code-driven setW marks itself via _ocioAutoWrite. What reaches here is a real edit.
+                for (const w of ["frame_mode", "input_colorspace", "start_frame", "end_frame", "frame_shift", "fps"]) {
+                    onChange(this, w, () => {
+                        if (this._ocioAutoWrite) return;
+                        (this._ocioEdited || (this._ocioEdited = new Set())).add(w);
+                    });
+                }
                 const node = this;
-                setTimeout(() => {                                                // fresh node: detect the default
-                    fillRange(node, W(node, "source")?.value);
+                // A node born from a LOADED WORKFLOW (or a paste, or a recreate) also runs onNodeCreated, and by
+                // the time this timer fires configure() has already restored `source` - so writing detected
+                // defaults here overwrote the saved values. A genuinely new node has an empty source and
+                // fillRange returns early anyway, so nothing is lost by never applying values here (issue #3).
+                setTimeout(() => {                                                // detect kind / visibility only
+                    fillRange(node, W(node, "source")?.value, { applyValues: false });
                     updateReadPreview(node);
                     updateReadMeta(node);
                 }, 0);
@@ -2081,8 +2130,8 @@ app.registerExtension({
             nodeType.prototype.onConfigure = function () {
                 const r = onConfig ? onConfig.apply(this, arguments) : undefined;
                 const node = this;
-                setTimeout(() => {                                                // loaded workflow: re-detect
-                    fillRange(node, W(node, "source")?.value);
+                setTimeout(() => {                                                // loaded workflow: re-detect the KIND only
+                    fillRange(node, W(node, "source")?.value, { applyValues: false });   // saved values win (issue #3)
                     updateReadPreview(node);
                     updateReadMeta(node);
                 }, 0);

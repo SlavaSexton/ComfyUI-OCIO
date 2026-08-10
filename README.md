@@ -162,8 +162,10 @@ inside a native ComfyUI video graph, without bouncing frames out to a folder and
 Load a **still / image sequence / video** off disk and color-manage it on the way in (Nuke: *Read*).
 
 - **source** - a path to a file, a sequence folder, a frame pattern (`shot.####.exr`), or a video, **anywhere on
-  disk**. Use the **📁 browse source** button to pick one; **⬆ upload into input** copies files into ComfyUI's
-  input folder instead.
+  disk**. Type it in, or pick one with **Open Files**; the file is read in place, nothing is copied.
+- **Detect from Source** - re-read range, fps and colorspace from the file. Those fields fill in automatically
+  when the source changes and are left alone afterwards, so opening a workflow keeps what you set; press this
+  when you have edited them and want the file's own numbers back.
 - **frame_mode** - `auto` (a numbered file with siblings loads the whole sequence, Nuke's "grab sequence"),
   `single` (just that file), `sequence` (force-collapse the siblings). A folder is always a sequence; a video is
   always its full clip.

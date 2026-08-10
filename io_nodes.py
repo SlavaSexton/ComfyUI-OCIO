@@ -522,7 +522,12 @@ def load_source(source, start_frame=0, end_frame=0, frame_mode="auto", missing_m
     missing_mode fills gaps inside the range (black / hold / error); edge_mode fills frames outside the
     original range (hold / loop / bounce / black). frame_mode (Nuke's 'grab sequence' toggle):
       auto - numbered file with siblings -> whole sequence; single - just this file; sequence - force it."""
-    source = source.rstrip("/")
+    source = (source or "").strip().rstrip("/")
+    # An empty source resolves to the input FOLDER, and the sequence scan below would then sweep every numbered
+    # file in it and load that pile as if it were one clip. Say what is wrong instead of reading something the
+    # artist never asked for (2026-08-10).
+    if not source:
+        raise ValueError("OCIO Read: no source. Type a path into 'source', or pick one with Open Files.")
     s = source if os.path.isabs(source) else os.path.join(_input_dir(), source)
     ext = os.path.splitext(s)[1].lower()
     if ext in VIDEO_EXTS:
@@ -572,7 +577,12 @@ def _scan_sources():
 def _seq_range(source):
     """For the JS auto-fill: detect a sequence's [first, last, count] + fps from a selected source. Returns a
     dict; count 0 for a lone still."""
-    source = source.rstrip("/")
+    source = (source or "").strip().rstrip("/")
+    # Same trap as load_source: an empty source used to resolve to the input folder, so the scan reported one
+    # invented sequence spanning every numbered file in it - thousands of frames, nearly all "missing". Report
+    # "nothing to detect" rather than a confident fiction (2026-08-10).
+    if not source:
+        return {"kind": "still", "start": 0, "end": 0, "count": 0, "fps": 0.0, "error": "empty source"}
     s = source if os.path.isabs(source) else os.path.join(_input_dir(), source)
     ext = os.path.splitext(s)[1].lower()
     if ext in VIDEO_EXTS:

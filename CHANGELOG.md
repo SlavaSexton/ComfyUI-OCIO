@@ -1,5 +1,61 @@
 # Changelog
 
+## Values you set by hand stay set
+
+Reported as issue #3: OCIO Read re-detected the source during ordinary graph work and put the detected
+defaults back over widgets that had been edited. Opening a saved workflow was enough to lose a trimmed
+frame range, a conformed fps, or a deliberately chosen input colorspace - silently, with a valid render
+and wrong color.
+
+The same class turned out to be present in the neighbouring nodes, so all of it is fixed here.
+
+### OCIO Read
+
+Detected metadata is now applied only when the source actually changes, or when you press the new
+**Detect from Source** button. Loading a workflow, pasting a node and undoing still re-derive everything
+the workflow does not store - the detected kind, the per-kind widget visibility, the preview - but they no
+longer touch a value.
+
+A scan that finishes late no longer lands on top of an edit made while it was running: the fields you
+touched keep your values and the rest take the detected ones, so the node cannot end up holding a range
+from one clip and a colorspace from another.
+
+**Detect from Source** sits directly under the source parameters it re-reads, separated from the file and
+viewer buttons. Use it when you have edited the fields and want the file's own numbers back.
+
+### OCIO Write
+
+A deliberate `output_colorspace` is no longer reset to the container default when a workflow is opened,
+and the `profile` that a colorspace write used to clear along with it now survives too. That one mattered:
+losing a log profile sends log-encoded frames into the conversion as if they were linear.
+
+Editing `fps` by hand now turns `auto_range` off, which is what its tooltip has always said it does. Before
+this, a hand-set fps was pulled back to the source fps on the next sync.
+
+### OCIO Player
+
+A saved in/out trim is no longer replaced by the full clip on the first render after loading a workflow.
+Switching to a genuinely different clip still snaps the range to the new one.
+
+### Empty source
+
+An empty `source` resolved to the ComfyUI input folder, and the sequence scan then reported every numbered
+file sitting in it as one invented clip - thousands of frames, nearly all of them "missing". Both the
+detect endpoint and the loader now say what is wrong instead.
+
+### Color math is untouched
+
+No transform, curve, LUT path or conversion changed in this release; the accuracy suite reports the same
+numbers as 1.2.4.
+
+### About the Registry
+
+Automatic publishing to the Comfy Registry is paused for this release, so 1.2.5 is a GitHub release only.
+Versions 1.2.3 and 1.2.4 are both sitting `Flagged` there on false positives from the automated scan, which
+leaves ComfyUI-Manager with no installable version and makes it fall back to a git clone of this repository -
+which is how you get this fix. Publishing another version while the flag stands would only add a third
+flagged row. It will be re-enabled once the review clears.
+
 ## Re-publish after the Registry flagged 1.2.3
 
 **No node behavior changes.** The Python AST of every node file is identical to 1.2.3 apart from a single

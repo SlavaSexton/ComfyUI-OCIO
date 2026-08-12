@@ -1,0 +1,90 @@
+<svg viewBox="0 0 920 660" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+<title id="title">A professional LTX-2.5 pipeline through the ComfyUI-OCIO nodes</title>
+<desc id="desc">An EXR sequence is read by OCIO Read, compressed to ACEScct and fed to LTX-2.5. The result is decoded in float32 without clamping, expanded back to scene-linear, and written by two OCIO Write nodes: an EXR master and a ProRes review file. Audio goes from the model straight into the second Write, bypassing the colour nodes.</desc>
+<style>
+.box{fill:#f6f6f5;stroke:#d8d8d5;stroke-width:1.5}
+.ours{fill:#eff6ff;stroke:#3b82f6;stroke-width:2}
+.model{fill:#ececea;stroke:#a3a3a0;stroke-width:1.5;stroke-dasharray:5 3}
+.n{font:600 13px system-ui,-apple-system,Segoe UI,sans-serif;fill:#1a1a19}
+.s{font:11px system-ui,-apple-system,Segoe UI,sans-serif;fill:#6b6b68}
+.tag{font:600 10px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#3b82f6}
+.au{font:600 10px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#d97706}
+.w{stroke:#a3a3a0;stroke-width:1.6;fill:none}
+.wg{stroke:#3b82f6;stroke-width:2;fill:none}
+.wa{stroke:#d97706;stroke-width:2;fill:none}
+.hdr{font:600 11px system-ui,sans-serif;fill:#8a8a87;letter-spacing:.06em}
+</style>
+<defs>
+<marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#888"/></marker>
+<marker id="arb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#3b82f6"/></marker>
+<marker id="ara" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#d97706"/></marker>
+</defs>
+
+<rect width="920" height="660" fill="#ffffff"/>
+
+<text x="20" y="26" class="hdr">INPUT</text>
+<rect class="box ours" x="20" y="38" width="200" height="72" rx="8"/>
+<text x="34" y="62" class="n">OCIO Read</text>
+<text x="34" y="80" class="s">folder of *.exr frames</text>
+<text x="34" y="97" class="tag">ACEScg scene-linear</text>
+
+<path class="wg" d="M220 74 L268 74" marker-end="url(#arb)"/>
+
+<rect class="box ours" x="270" y="38" width="200" height="72" rx="8"/>
+<text x="284" y="62" class="n">OCIO LogConvert</text>
+<text x="284" y="80" class="s">Linear to Log, acescct</text>
+<text x="284" y="97" class="tag">ACEScct codes 0..1</text>
+
+<path class="wg" d="M470 74 L518 74" marker-end="url(#arb)"/>
+
+<rect class="box" x="520" y="38" width="200" height="72" rx="8"/>
+<text x="534" y="62" class="n">to VAE range</text>
+<text x="534" y="80" class="s">x*2-1, conditioning</text>
+<text x="534" y="97" class="tag">[-1, 1]</text>
+
+<path class="w" d="M620 110 L620 158" marker-end="url(#ar)"/>
+
+<text x="20" y="150" class="hdr">MODEL</text>
+<rect class="model" x="270" y="162" width="450" height="76" rx="8"/>
+<text x="290" y="188" class="n">LTX-2.5: 22B transformer + video VAE</text>
+<text x="290" y="207" class="s">128-channel latent, trained together with the model</text>
+<text x="290" y="224" class="s">a separate audio VAE produces the synchronised track</text>
+
+<path class="w" d="M400 238 L400 282" marker-end="url(#ar)"/>
+
+<path class="wa" d="M720 200 L868 200 L868 470 L818 470" marker-end="url(#ara)"/>
+<text x="742" y="192" class="au">AUDIO, bypasses colour</text>
+
+<text x="20" y="272" class="hdr">OUTPUT</text>
+<rect class="box ours" x="270" y="286" width="220" height="72" rx="8"/>
+<text x="284" y="310" class="n">OCIO VAE Decode</text>
+<text x="284" y="328" class="s">float32, no clamp</text>
+<text x="284" y="345" class="tag">ACEScct codes 0..1</text>
+
+<path class="wg" d="M490 322 L538 322" marker-end="url(#arb)"/>
+
+<rect class="box ours" x="540" y="286" width="200" height="72" rx="8"/>
+<text x="554" y="310" class="n">OCIO LogConvert</text>
+<text x="554" y="328" class="s">Log to Linear, acescct</text>
+<text x="554" y="345" class="tag">scene-linear HDR</text>
+
+<path class="wg" d="M640 358 L640 392 L330 392 L330 428" marker-end="url(#arb)"/>
+<path class="wg" d="M640 392 L640 428" marker-end="url(#arb)"/>
+
+<rect class="box ours" x="180" y="430" width="300" height="86" rx="8"/>
+<text x="196" y="456" class="n">OCIO Write 1: master</text>
+<text x="196" y="476" class="s">sequence · exr · 16f or 32f</text>
+<text x="196" y="494" class="s">zip compression, lossless</text>
+<text x="196" y="510" class="tag">name_acescg.0001.exr …</text>
+
+<rect class="box ours" x="516" y="430" width="300" height="86" rx="8"/>
+<text x="532" y="456" class="n">OCIO Write 2: review</text>
+<text x="532" y="476" class="s">video · ProRes 4444 · 12-bit 4:4:4</text>
+<text x="532" y="494" class="s">carries the audio track</text>
+<text x="532" y="510" class="tag">name.mov</text>
+
+<rect x="20" y="556" width="880" height="86" rx="8" fill="#ececea"/>
+<text x="36" y="580" class="s">Blue boxes are the OCIO nodes; the dashed box is the Lightricks model. The amber line is audio: it goes from the model straight to the second Write.</text>
+<text x="36" y="600" class="s">Both Write nodes hang off the same scene-linear output. One writes the master, the other a review file with sound.</text>
+<text x="36" y="620" class="s">Nothing on this path passes through 8 bits. The stock route clamps the decode to 0..1 and encodes 8-bit 4:2:0 at the end.</text>
+</svg>

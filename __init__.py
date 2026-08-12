@@ -7,6 +7,8 @@ import os
 from .nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
 from .io_nodes import (NODE_CLASS_MAPPINGS as _IO_CLASSES,
                        NODE_DISPLAY_NAME_MAPPINGS as _IO_NAMES)
+from .vae_nodes import (NODE_CLASS_MAPPINGS as _VAE_CLASSES,
+                        NODE_DISPLAY_NAME_MAPPINGS as _VAE_NAMES)
 # 2026-07-04: OCIO Grade / Grade Match / Apply Grade DISABLED (not in use yet). The code stays in
 # grade_nodes.py; re-enable by uncommenting this import AND the two .update() calls below.
 # from .grade_nodes import (NODE_CLASS_MAPPINGS as _GRADE_CLASSES,
@@ -15,6 +17,12 @@ from .io_nodes import (NODE_CLASS_MAPPINGS as _IO_CLASSES,
 # Read / Write IO nodes live in io_nodes.py; merge their mappings in.
 NODE_CLASS_MAPPINGS.update(_IO_CLASSES)
 NODE_DISPLAY_NAME_MAPPINGS.update(_IO_NAMES)
+
+# 2026-08-12: OCIO VAE Decode - decoding without the 0..1 clamp, optionally in float32. The stock
+# VAEDecode clamps every decode, which measurably flattens the foot of the curve before any colour
+# node can reach it.
+NODE_CLASS_MAPPINGS.update(_VAE_CLASSES)
+NODE_DISPLAY_NAME_MAPPINGS.update(_VAE_NAMES)
 
 # OCIO Grade / Grade Match / Apply Grade disabled 2026-07-04 (see above) - NOT registered:
 # NODE_CLASS_MAPPINGS.update(_GRADE_CLASSES)

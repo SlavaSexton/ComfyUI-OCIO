@@ -1,0 +1,25 @@
+ComfyUI-OCIO
+Copyright 2026 Slava Sexton
+
+This product includes software developed by Slava Sexton for AI VFX NEWS
+(https://aivfxnews.com/).
+
+Apache-2.0 section 4(d) requires this file to travel with any redistribution
+that includes a NOTICE file, so the attribution above cannot be dropped along
+the way.
+
+---
+
+The Docker test environment and the color-accuracy CI harness (docker/,
+docker-compose.yml, .dockerignore, .github/workflows/docker-tests.yml) were
+contributed by Sam Hodge (https://github.com/samhodge-1972) under the MIT
+license, which this project carried at the time of that contribution. That
+grant is unaffected by the move to Apache-2.0.
+
+---
+
+The nodes are a layer over third-party color tools that are installed, not
+redistributed here: OpenColorIO and the ACES config (Academy Software
+Foundation), opencv-python-headless, tifffile, Pillow and numpy. Each keeps its
+own license. ffmpeg is used as an external binary and is not bundled. See
+ATTRIBUTION.md for the full table.

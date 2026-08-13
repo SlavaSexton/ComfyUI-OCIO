@@ -1,15 +1,26 @@
 # Attribution
 
 The **ComfyUI-OCIO** node code (`nodes.py`, `io_nodes.py`, `__init__.py`, the `web/` front-end, the example
-workflow) is original and MIT-licensed - see [`LICENSE`](LICENSE). Author: **Slava Sexton**, for
-**[AI VFX NEWS](https://aivfxnews.com/)**.
+workflow) is original and licensed under **Apache-2.0** - see [`LICENSE`](LICENSE). Author:
+**Slava Sexton**, for **[AI VFX NEWS](https://aivfxnews.com/)**.
+
+Releases up to and including 1.2.6 were published under the MIT license. Those releases stay MIT: a license
+already granted cannot be withdrawn. Apache-2.0 applies from the next release onward.
 
 ## Reuse and credit
 
-The MIT license lets you reuse this freely. In return, keep the copyright notice **and credit
-`Slava Sexton` as the author** whenever you reuse this work - **in full, in part, as a derivative, or as the
-design / idea**. This holds wherever it is used, including inside
+Apache-2.0 lets you reuse this freely, including commercially, and adds an explicit patent grant. In return
+it asks for three things when you redistribute: keep this license, state the changes you made, and carry the
+[`NOTICE`](NOTICE) file. That file names **`Slava Sexton`** as the author, so the credit travels with the
+code **in full, in part, as a derivative, or as the design / idea** - including inside
 **[ComfyUI-Agent-Kit](https://github.com/SlavaSexton/ComfyUI-Agent-Kit)** and any other project.
+
+## Contributed code
+
+The Docker test environment and the color-accuracy CI harness (`docker/`, `docker-compose.yml`,
+`.dockerignore`, `.github/workflows/docker-tests.yml`) were contributed by **Sam Hodge**
+([samhodge-1972](https://github.com/samhodge-1972)) and came in under the MIT license this project carried at
+the time. That grant stands and is recorded in [`NOTICE`](NOTICE).
 
 ## Built on
 

@@ -771,8 +771,28 @@ def _save_still(path, rgb, fmt, bit_depth, alpha=None, colorspace=None, compress
         return np.dstack([x, np.clip(alpha, 0, 1) if x.dtype == np.float32 else alpha]) if has_a else x
 
     if fmt == "exr":
+        # OpenCV ships the EXR codec compiled in but DISABLED: it only registers when
+        # OPENCV_IO_ENABLE_OPENEXR=1 is in the environment BEFORE cv2 is imported (opencv/opencv#21326).
+        # The ComfyUI server does not set it, so every EXR write here was a silent no-op - imwrite()
+        # returned without a file while Write still reported "saved name.0001.exr". Setting the variable
+        # after import does not help; the codec table is built at import time. The OpenEXR module has no
+        # such gate and writes the same data, so it is the primary path now, with cv2 kept as a fallback
+        # for installs that already export the variable.
+        px = rgb.astype(np.float16 if bit_depth == "16f" else np.float32)
+        channels = {"RGB": np.ascontiguousarray(px)}
+        if has_a:
+            channels["A"] = np.ascontiguousarray(alpha.astype(px.dtype))
+        try:
+            import OpenEXR
+            comp_const = getattr(OpenEXR, _EXR_COMP.get(compression, "ZIP") + "_COMPRESSION",
+                                 OpenEXR.ZIP_COMPRESSION)
+            with OpenEXR.File({"compression": comp_const, "type": OpenEXR.scanlineimage}, channels) as f:
+                f.write(path)
+            return
+        except ImportError:
+            pass
         if cv2 is None:
-            raise RuntimeError("Writing EXR needs OpenCV (cv2).")
+            raise RuntimeError("Writing EXR needs the OpenEXR module or OpenCV (cv2).")
         try:
             t = cv2.IMWRITE_EXR_TYPE_FLOAT if bit_depth == "32f" else cv2.IMWRITE_EXR_TYPE_HALF
             params = [int(cv2.IMWRITE_EXR_TYPE), int(t)]
@@ -787,6 +807,10 @@ def _save_still(path, rgb, fmt, bit_depth, alpha=None, colorspace=None, compress
         bgr = rgb[..., ::-1].astype(np.float32)
         data = np.dstack([bgr, alpha.astype(np.float32)]) if has_a else bgr   # BGRA for cv2
         cv2.imwrite(path, np.ascontiguousarray(data), params)                 # (EXR colorspace attr: TODO OpenEXR)
+        if not os.path.exists(path) or os.path.getsize(path) == 0:            # never report a write that did not land
+            raise RuntimeError(
+                f"EXR write produced no file at {path}. Install the OpenEXR python module, or start ComfyUI "
+                "with OPENCV_IO_ENABLE_OPENEXR=1 - OpenCV's EXR codec is disabled by default.")
         return
     if fmt in ("tif", "tiff"):
         if bit_depth == "32f":

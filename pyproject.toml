@@ -9,6 +9,9 @@ requires-python = ">=3.9"
 dependencies = [
     "opencolorio>=2.2",
     "opencv-python-headless",
+    # OpenCV's EXR codec is disabled unless OPENCV_IO_ENABLE_OPENEXR=1 is set before cv2 is imported,
+    # which no ComfyUI launcher does - so EXR writes need their own backend (3.3 brought the File API).
+    "OpenEXR>=3.3",
     "tifffile",
     "Pillow",
     "numpy",

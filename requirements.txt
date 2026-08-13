@@ -1,5 +1,6 @@
 opencolorio>=2.2
 opencv-python-headless
+OpenEXR>=3.3
 tifffile
 Pillow
 numpy

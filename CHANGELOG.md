@@ -1,5 +1,30 @@
 # Changelog
 
+## EXR write wrote nothing, and said it did
+
+Every EXR write from OCIO Write was a silent no-op. The node reported `saved ocio_out_acescg.0001.exr`,
+the count was right, the preview rendered - and the output folder stayed empty. Sequence or single frame,
+16f or 32f, all of it.
+
+The cause is not in this pack. OpenCV ships the OpenEXR codec compiled in but **disabled**: it registers
+only when `OPENCV_IO_ENABLE_OPENEXR=1` is in the environment *before* `cv2` is imported
+([opencv/opencv#21326](https://github.com/opencv/opencv/issues/21326), the gate added after the 2022 EXR
+CVEs). No ComfyUI launcher sets it - not Desktop, not a plain `python main.py` - so `cv2.imwrite()` on an
+`.exr` path either raises `-213 imgcodecs: OpenEXR codec is disabled` or returns without writing, depending
+on the build. Setting the variable at runtime does not help, because the codec table is built at import
+time and `cv2` is usually already imported by another node pack.
+
+`_save_still` now writes EXR through the **OpenEXR python module**, which has no such gate, and keeps the
+cv2 path as a fallback for installs that do export the variable. That fallback now also verifies the file
+exists and is non-empty before returning, so a failed write can never again be reported as a success.
+
+`OpenEXR>=3.3` joins the dependencies (3.3 is where the `OpenEXR.File` API landed). Alpha is written as a
+separate `A` channel, and `bit_depth` still selects half (`16f`) or float (`32f`).
+
+Verified on a 121-frame LTX-2.5 render at 1280x704: 121 files on disk, `float32`, values preserved exactly
+including the out-of-range ones a video codec would clip (`min=-0.046`, `max=+1.056`), round-trip through
+`OpenEXR.File` bit-identical to the tensor that went in.
+
 ## Follow-ups to 1.2.5
 
 Three things 1.2.5 got wrong, found by re-reviewing it, plus documentation that was describing buttons and

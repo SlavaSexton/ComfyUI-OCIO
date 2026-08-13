@@ -4,11 +4,16 @@ description = "Nuke-style OpenColorIO color nodes for ComfyUI. Read a still/sequ
 version = "1.2.6"
 # Both forms are valid per the Registry spec, but the site renders this field raw: { file = ... } shows up
 # as the literal dict. The LICENSE file ships in the archive either way, so the readable form loses nothing.
-license = { text = "MIT License" }
+# 2026-08-08: MIT -> Apache-2.0. The Registry shows whatever the LAST PUBLISHED version declared, so this
+# line only reaches users on the next publish; GitHub picks the change up from LICENSE immediately.
+license = { text = "Apache License 2.0" }
 requires-python = ">=3.9"
 dependencies = [
     "opencolorio>=2.2",
     "opencv-python-headless",
+    # OpenCV's EXR codec is disabled unless OPENCV_IO_ENABLE_OPENEXR=1 is set before cv2 is imported,
+    # which no ComfyUI launcher does - so EXR writes need their own backend (3.3 brought the File API).
+    "OpenEXR>=3.3",
     "tifffile",
     "Pillow",
     "numpy",

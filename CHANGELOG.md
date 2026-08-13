@@ -1,5 +1,119 @@
 # Changelog
 
+## Colorspace filename tags are now spelled out in full
+
+**This renames output files, once, and it is the only breaking change here.** The short tag was ambiguous: 31 of
+the 55 colorspaces collided onto a name another colorspace already used, so two different deliveries could land
+on `shot_rec709.mov` and the second silently replaced the first. Full names cannot collide, measured across all
+55: `shot_rec709.mov` becomes `shot_rec_1886_rec_709_display.mov`, `shot_srgb.exr` becomes
+`shot_srgb_display.exr`. `ACEScg` was already unambiguous and is unchanged at `_acescg`.
+
+There is deliberately **no switch** to keep the old scheme. A permanent widget for a transitional problem is a
+positional widget value forever, it doubles the filename surface every future test has to cover, and it leaves a
+button whose only function is to re-enable silent overwriting. Nothing anywhere reads a tag back out of a
+filename, so the cost is one rename on your side.
+
+## Two new Avid options, and the depths are measured rather than quoted
+
+`video_codec` gains `dnxhr_hqx` and `dnxhr_444`. Offering Avid only at 8-bit contradicted the point of the pack.
+Every depth in the README table now comes from writing a file and reading it back with `ffprobe`, and one figure
+changed as a result: **`dnxhr_444` is 10-bit here, not 12**. The DNx encoder ffmpeg ships advertises exactly
+`yuv422p yuv422p10le yuv444p10le gbrp10le` and no 12-bit format at all, so 444 buys full chroma rather than more
+bits. For 12-bit the route is ProRes 4444.
+
+The README no longer states what those names mean as Avid *formats*, because Avid's own sources disagree: its
+historical guide calls both HQX and 444 12-bit, while its current naming page says that after the 2025 revision of
+ST 2019-1 the families are unified as Avid DNx with every level admitting 8 to 16 bits. The table describes the
+files this pack writes and claims nothing beyond that.
+
+## Metadata reaches every format, and a sidecar covers what no container can
+
+The complaint was metadata being rubbed out. Every write now puts a `.json` beside the file, one per sequence
+rather than one per frame, listing what the container kept and what only the sidecar holds. On top of that:
+
+- **TIFF** carries the shot identity in real tags plus an XMP packet, and a duplicate `ImageDescription` bug is
+  fixed. Passing `description=` while tifffile also wrote its own shaped JSON emitted tag 270 **twice**, and
+  readers disagreed about which one was the file's colorspace.
+- **PNG** carries it as `iTXt` chunks at **both** bit depths. 16-bit was the hard case, because OpenCV writes
+  16-bit RGB and no text while Pillow writes text and cannot represent 16-bit RGB at all. The chunks are written
+  directly, ahead of the first `IDAT` - and that position is the whole point: text after `IDAT` is legal PNG that
+  OpenImageIO cannot see, because its reader takes text before the pixels. Verified with a control, and with
+  `oiiotool` listing all seven fields.
+- **MXF** is available for DNxHR, in OP1a and OPAtom. Colour tags survive with `range=tv`, better than ProRes in a
+  MOV, and so does the timecode. Of the identity, only the reel name is a documented interchange field: ffmpeg
+  writes it as the Physical Source Package Name, which is what Avid means by Tape Name. The rest travels as
+  ffmpeg's own tagged values and is dependable in the sidecar.
+- **`adoptedNeutral`** is now authored from the derived chromaticities instead of being stripped on a promise to
+  re-author that was never kept. **`whiteLuminance`** is still stripped and deliberately not authored: it is an
+  absolute display quantity nobody knows for a scene-linear ACES file, and OpenEXR does not type-check the name,
+  so an inherited value can land as the wrong type for an attribute the specification defines as one float.
+- **No delivered file carries the machine.** Absolute paths, UNC shares and ComfyUI's embedded `prompt` graph are
+  withheld from every format including the sidecar, and the withheld keys are **named** rather than dropped in
+  silence.
+
+## OCIO VAE Decode and OCIO VAE Encode
+
+Decode a latent without the `0..1` clamp, which the stock node applies unconditionally, and encode back with a
+report when the input falls outside the range the stock path folds in silently.
+
+The decode no longer rewrites the VAE's output transform unconditionally, which was a wrong-output bug: eleven
+places in `comfy/sd.py` set that transform to the identity, five of them image decoders that already emit `0..1`
+including the fast preview decoder for LTX2 itself, and rewriting it there turns a correct frame into a
+washed-out one with no error. It now probes the transform, replaces only a shape it recognises, and reports
+anything unfamiliar. Found by Andrei Orehov.
+
+Also: spatial tiling on the decode, a range report as a second output, and float32 as an opt-in rather than a
+default. Measured on 25 frames at 1280x704 with tiling at 384, float32 cost **5.1x** the model default (26.4 s
+against 5.2 s) for a difference of at most 0.010467, about 2.7 steps of an 8-bit scale. Worth it for a
+deliverable master, not for a look-see.
+
+## Smaller things
+
+- **`write_audio`** on OCIO Write, appended as the last widget, default on. It covers what the `audio` socket
+  cannot: a native `Video` input brings its own track and there is no wire to disconnect in order to decline it.
+- **`SDR Rec.709 delivery`** profile, the first display-referred preset: sRGB to Rec.1886 Rec.709 at unchanged
+  primaries. It forces no format, so choose a video container or PNG / TIFF rather than leaving it on EXR.
+- **The node's filename preview now agrees with the file it writes.** The extension was decided twice, once in
+  Python and once by a name-prefix test in the front end, and the two disagreed for the MXF entries: the node
+  previewed `.mov` while the write produced `.mxf`.
+- **A hidden widget comes back.** Switching `container` to video and back left `compression` invisible while every
+  flag said it was showing, because the layout restore was keyed on a value that is normally undefined. The node
+  lost 176 pixels of controls across one round trip.
+- **The overwrite warning cannot under-warn on a still image.** A still taken from a multi-frame batch gets its
+  frame number stamped into the name, and the dialog used to check only the un-stamped one, so it never warned and
+  a repeat render silently replaced the previous file.
+- **A drop-frame timecode bug** at 29.97 and 59.94: the correction dropped frames on the wrong minutes. Also a
+  raise on an illegal drop-frame label instead of writing a code that does not exist.
+- **EXR reading** goes through the OpenEXR module first, with OpenCV as a caught fallback, so reading no longer
+  depends on an environment variable set before ComfyUI started.
+- `OpenEXR>=3.3` in both `requirements.txt` and `pyproject.toml`. The `OpenEXR.File` API this pack calls in four
+  places arrived in 3.3.0; 3.2.x has only the older `InputFile` / `OutputFile` bindings.
+
+## EXR write wrote nothing, and said it did
+
+Every EXR write from OCIO Write was a silent no-op. The node reported `saved ocio_out_acescg.0001.exr`,
+the count was right, the preview rendered - and the output folder stayed empty. Sequence or single frame,
+16f or 32f, all of it.
+
+The cause is not in this pack. OpenCV ships the OpenEXR codec compiled in but **disabled**: it registers
+only when `OPENCV_IO_ENABLE_OPENEXR=1` is in the environment *before* `cv2` is imported
+([opencv/opencv#21326](https://github.com/opencv/opencv/issues/21326), the gate added after the 2022 EXR
+CVEs). No ComfyUI launcher sets it - not Desktop, not a plain `python main.py` - so `cv2.imwrite()` on an
+`.exr` path either raises `-213 imgcodecs: OpenEXR codec is disabled` or returns without writing, depending
+on the build. Setting the variable at runtime does not help, because the codec table is built at import
+time and `cv2` is usually already imported by another node pack.
+
+`_save_still` now writes EXR through the **OpenEXR python module**, which has no such gate, and keeps the
+cv2 path as a fallback for installs that do export the variable. That fallback now also verifies the file
+exists and is non-empty before returning, so a failed write can never again be reported as a success.
+
+`OpenEXR>=3.3` joins the dependencies (3.3 is where the `OpenEXR.File` API landed). Alpha is written as a
+separate `A` channel, and `bit_depth` still selects half (`16f`) or float (`32f`).
+
+Verified on a 121-frame LTX-2.5 render at 1280x704: 121 files on disk, `float32`, values preserved exactly
+including the out-of-range ones a video codec would clip (`min=-0.046`, `max=+1.056`), round-trip through
+`OpenEXR.File` bit-identical to the tensor that went in.
+
 ## Follow-ups to 1.2.5
 
 Three things 1.2.5 got wrong, found by re-reviewing it, plus documentation that was describing buttons and

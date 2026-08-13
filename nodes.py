@@ -2,7 +2,15 @@
 # @author Slava Sexton, 2026-06-30
 #
 # Six nodes: OCIO ColorSpace, OCIO LogConvert, OCIO Display, OCIO CDLTransform,
-# OCIO FileTransform, OCIO LookTransform. All IMAGE -> IMAGE, float, HDR-safe (no clip).
+# OCIO FileTransform, OCIO LookTransform. All IMAGE -> IMAGE, float, and none of them adds a clip of its own.
+#
+# "NO CLIP" IS A STATEMENT ABOUT THIS CODE, NOT A PROMISE ABOUT THE RESULT, and the difference is not academic
+# (qualified 2026-08-13 after a reviewer measured it). A 3D LUT has a bounded input domain, so OCIO clamps to that
+# domain before interpolating - which is correct, and is what Nuke does too. Feed a scene-linear plate peaking at
+# 15.37 through a .cube defined over 0..1 and the highlights are gone: measured 1.05 out, exactly the LUT's own
+# corner value, with no error and a write that reports success. The same LUT applied AFTER a log encode behaves as
+# expected. So for OCIO FileTransform and OCIO LookTransform the data has to already be in the domain the file was
+# authored for. That is the user's call; this code cannot correct it without silently changing the transform.
 #
 # Pickers, not free text: colorspaces, displays, views, looks are dropdowns from the active config;
 # config (.ocio) and LUT files are dropdowns of files in the ComfyUI input folder (drop a file there to
@@ -66,15 +74,113 @@ def _video_wrap(images, frame_rate, audio=None):
             return None
 
 
-def _dual_io(apply_fn, image, video):
+# WHERE THIS IS WIRED, AND WHY ONLY THERE. Measured per node with distinct values from 1.5 to 500 above
+# white and -0.02 to -1.0 below black, reading back whether distinct values stayed distinct:
+#
+#   OCIO ColorSpace     no collapse in any case tested - a no-op, a matrix (ACEScg to ACES2065-1), a
+#                       display encoding (to sRGB - Display) and a log encoding (to ACEScct). 500 goes in
+#                       and comes out separated. NOT wired: a warning that cannot fire is dead code.
+#   OCIO CDLTransform   no collapse; a slope/offset/power grade is per-channel arithmetic. 500 -> 525.
+#                       NOT wired, same reason.
+#   OCIO Display        negatives all become exactly 0.000000, and that is what a display transform IS.
+#                       Above white it compresses but keeps separation. NOT wired: it would fire on every
+#                       correct use, which is how a warning teaches people to ignore it.
+#   OCIO LogConvert     our own Python curves. Eight of ten keep negatives separated; ACEScc and Cineon
+#                       floor them by published definition, so those two are suppressed by name below.
+#                       WIRED, because a future curve could clip the high side and nothing else would say.
+#   OCIO FileTransform  both sides collapse: above white onto the LUT's own corner value, below black
+#                       onto 0. The domain belongs to the FILE, and getting it wrong is the mistake this
+#                       whole function exists for. WIRED.
+#   OCIO LookTransform  same engine and the same file-domain exposure. WIRED.
+#
+# So the pack's own maths does not clamp. What clamps is a LUT's domain, a display transform by design, and
+# two curve definitions. The warning belongs where a user can be surprised, not everywhere.
+def _report_range_loss(before, after, label, expect_low_clip=False):
+    """Say so when a transform threw away range the input had. Logged, never raised.
+
+    THE CASE THIS EXISTS FOR is a LUT applied to scene-linear data. A 3D LUT is defined over a bounded input
+    domain, so OCIO clamps to that domain before interpolating, which is correct and is what Nuke does too. The
+    consequence is not obvious: a plate peaking at 15.37 through a .cube defined over 0..1 comes out at 1.05,
+    the LUT's own corner value, and the write that follows reports success over destroyed highlights. Nothing in
+    the graph said anything.
+
+    Deliberately a log line and not an output. Every colour node returns `(IMAGE, VIDEO)` through _dual_io, and
+    turning that into ComfyUI's `{"ui":..., "result":...}` form would change what `node.convert(...)[0]` means for
+    every caller: this pack's own tests, the snippets in its docs, and anyone's script. Surfacing it ON the node
+    is worth doing and is a deliberate change to six shipped signatures, not a line to slip in here.
+    """
+    # THE TEST IS COLLAPSE, NOT SHRINKAGE, and the first version got that wrong: it compared the output maximum
+    # against the input maximum, which fires on a LOG ENCODE. A log curve maps 15.37 to about 0.5 on purpose, so
+    # that version warned about the most ordinary correct operation in the pack. A warning that cries on honest
+    # work is worse than none, because it teaches people to ignore it.
+    #
+    # What separates a clamp from a compression is whether DISTINCT values stayed distinct. A log curve keeps the
+    # ordering and the separation of everything above white; a clamp maps all of it onto one number. So the test
+    # is: among the samples that were out of range going in, did they collapse onto a single value coming out?
+    try:
+        import logging
+
+        def collapsed(mask):
+            if not bool(mask.any()):
+                return None
+            src = before[mask]
+            dst = after[mask]
+            if src.numel() < 2:
+                return None
+            if float(src.max()) - float(src.min()) < 1e-6:      # they were already one value; nothing to lose
+                return None
+            spread = float(dst.max()) - float(dst.min())
+            if spread > 1e-4:                                    # still separated: compressed, not clipped
+                return None
+            return float(src.min()), float(src.max()), float(dst.max())
+
+        parts = []
+        hi = collapsed(before > 1.0)
+        if hi:
+            parts.append(f"{hi[0]:.4f} to {hi[1]:.4f} above white all became {hi[2]:.4f}")
+        # SOME TRANSFORMS FLOOR NEGATIVES BY SPECIFICATION, and warning about those every single time is how
+        # a log line gets ignored. Measured across all ten curves in this file: exactly two collapse the
+        # negatives, Cineon to -2.262952 and ACEScc to -0.358447, and both do it because their published
+        # definitions say so. The other eight keep negatives separated, and none of the ten collapses above
+        # white. So the caller says when the low side is expected, and the high side is always reported.
+        lo = None if expect_low_clip else collapsed(before < 0.0)
+        if lo:
+            parts.append(f"{lo[1]:.4f} down to {lo[0]:.4f} below black all became {lo[2]:.4f}")
+        if not parts:
+            return
+        logging.warning(
+            f"{label}: values outside 0..1 were CLIPPED, not transformed ({'; '.join(parts)}). Distinct "
+            f"values collapsed onto one, so that detail is gone rather than compressed. The usual cause is "
+            f"data outside the domain the transform is defined over: a 3D LUT clamps to its own domain "
+            f"before interpolating. Put an OCIO LogConvert or an OCIO ColorSpace in front so the values are "
+            f"in the space the transform expects.")
+    except Exception:
+        return                      # a report must never be the reason a render fails
+
+
+# The two curves whose PUBLISHED definitions floor every negative onto one value, measured rather than
+# recalled: Cineon to -2.262952 (its log argument is clamped at 1e-10) and ACEScc to -0.358447 (verbatim in
+# ACEScsc.Academy.ACES_to_ACEScc.ctl). The other eight curves in this file keep negatives separated.
+_FLOORS_NEGATIVES = frozenset({"cineon", "acescc"})
+
+
+def _dual_io(apply_fn, image, video, label=None, expect_low_clip=False):
     """Mirror-input dual IMAGE/VIDEO for a color node: process whichever socket is connected; the matching output
     carries data, the other is None (the front end auto-disconnects the inactive socket, so it is 'either/or' end to
-    end). apply_fn(image_tensor) -> image_tensor. Returns (IMAGE_out, VIDEO_out)."""
+    end). apply_fn(image_tensor) -> image_tensor. Returns (IMAGE_out, VIDEO_out).
+
+    `label` names the node in the range-loss warning. Optional so no existing call site breaks."""
     if video is not None:
         frames, fr, audio = _video_unwrap(video)
-        return (None, _video_wrap(apply_fn(frames), fr, audio))
+        out = apply_fn(frames)
+        if label:
+            _report_range_loss(frames, out, label, expect_low_clip)
+        return (None, _video_wrap(out, fr, audio))
     if image is not None:
-        return (apply_fn(image), None)
+        out = apply_fn(image)
+        if label:
+            _report_range_loss(image, out, label, expect_low_clip)
+        return (out, None)
     raise ValueError("Connect an image / sequence to 'Image Sequence Video', OR a movie to 'ComfyUI Video'.")
 
 try:
@@ -257,10 +363,20 @@ def _config_input():
 
 def _lut_input():
     files = _scan_files({".cube", ".3dl", ".spi1d", ".spi3d", ".csp", ".ccc", ".cdl", ".clf", ".lut"})
+    # The domain warning is in the tooltip because it is the one way to lose real data here and get a clean
+    # success. Measured, not supposed: a plate peaking at 15.37 through a .cube defined over 0..1 came out at
+    # 1.05, the LUT's own corner value. OCIO clamps to the file's domain before interpolating, as it should.
+    # SHORT ENOUGH TO RENDER ON HOVER. The long form was 547 characters and did not fit on the node, so it was
+    # not read at all - and this is the one way to lose real data here and still get a clean success. The
+    # measurement and the reason any LUT behaves this way stay in docs/NODES_COLOR.md.
+    WHERE = ("FEED IT THE DOMAIN IT WAS MADE FOR: a LUT clamps anything outside its range to the edge, so a "
+             "scene-linear plate peaking at 15 lands on the corner value silently. Put a LogConvert ahead.")
     if files:
-        return (files, {"tooltip": "LUT file from the ComfyUI input folder (drop a .cube/.3dl/.spi1d there)."})
+        return (files, {"tooltip": "LUT from the input folder (.cube / .3dl). " + WHERE})
     return ("STRING", {"default": "", "multiline": False,
-                       "tooltip": "No LUT in the input folder yet. Drop a .cube/.3dl/.spi1d there, or type a path."})
+                       # The fallback branch has its own prefix, so it has its own length. Measuring only the
+                       # dropdown branch missed this one: it is the longer of the two.
+                       "tooltip": "No LUT in the input folder; type a path. " + WHERE})
 
 
 def _display_input():
@@ -449,8 +565,20 @@ def _vlog_to_lin(y):
 # reflectance (0.18 = 18% grey, matching every other curve in this file); Canon's own table indexes by "Scene
 # Linear %" with reflection = Scene Linear * 0.9, so Canon's own tabulated "18% Grey" row (input 0.20 in their
 # convention) reads CV 351 / 0.343 - confirmed from the same doc's Appendix [4] table. At x=0.18 direct
-# (this code's convention) the value is ~0.3298, inferred consistent with the same formula, not separately
-# tabulated by Canon.
+# (this code's convention) the value is ~0.3298.
+#
+# THAT WAS "inferred consistent with the formula" AND IS NOW MEASURED (2026-08-13), against an implementation
+# nobody here wrote: the config's own CanonLog3 CinemaGamut D55, with primaries matched on both sides so only the
+# transfer differs. The whole curve agrees under exactly the 0.9 input convention described above -
+#
+#   encode:  ours(x)                  == theirs(x * 0.9)   to 1.19e-07   over linear 0.01 .. 4.0
+#   decode:  ours(code) * 0.9         == theirs(code)      to 6.68e-06   over codes 0.2 .. 1.0,
+#            and the ratio ours/theirs is 1/0.9 to seven digits (1.11111021 .. 1.11111140), i.e. a constant
+#
+# both residuals being float32 quantisation at those magnitudes rather than a difference in the maths. So the two
+# routes are the same curve on two input conventions, and mixing them costs log2(1/0.9) = 0.152 stops. That is why
+# the tooltip says to pair this node with a camera-gamut ColorSpace step and NOT with the config's same-named
+# colorspace: the difference is silent, small enough to survive a look, and large enough to fail a match.
 _CL3_NEG_A, _CL3_NEG_S = 0.36726845, 14.98325
 _CL3_NEG_OFF = 0.12783901
 _CL3_MID_S, _CL3_MID_OFF = 1.9754798, 0.12512219
@@ -553,7 +681,7 @@ class OCIOLogConvert:
             "curve": (["Cineon", "ACEScct", "ACEScc", "ARRI LogC3", "ARRI LogC4", "Sony S-Log3",
                        "Panasonic V-Log", "Canon Log 3", "RED Log3G10", "DaVinci Intermediate"],
                       {"default": "Cineon",
-                      "tooltip": "Cineon = Nuke flat film log (black 0.0928). ACEScct = ACES log with a toe (0.0729). ACEScc = pure ACES log. ARRI LogC3 = ARRI LogC3 EI800, the LTX-2 HDR curve (ceiling ~55 linear). ARRI LogC4 = ARRI LogC4, wider headroom (ceiling ~469.8 linear), the LumiPic V10 *_logc4_* curve. Sony S-Log3 = Sony S-Log3 (18% grey -> code 420/1023). Panasonic V-Log = Panasonic V-Log (18% grey -> code 433/1023). Canon Log 3 = Canon Log 3, three-piece curve with a linear mid segment around 0. RED Log3G10 = RED Log3G10 (18% grey -> 1/3, 10 stops over grey -> 1.0). DaVinci Intermediate = Blackmagic DaVinci Intermediate OETF (18% grey -> 0.336043). All are camera-native transfer curves only: Log to Linear decodes the plate to linear in the camera's own primaries; pair with a camera-gamut -> ACEScg ColorSpace step, not the config's same-named colorspace."}),
+                      "tooltip": "The TRANSFER CURVE only, not the gamut. Log to Linear decodes to linear in the camera's OWN primaries, so pair it with a camera-gamut to ACEScg ColorSpace step. Per-curve anchors: docs/NODES_COLOR.md."}),
             "mix": _mix_input(),
         }, "optional": {"image": ("IMAGE",), "video": ("VIDEO",)}}
 
@@ -581,7 +709,8 @@ class OCIOLogConvert:
             out = arr.copy()
             out[..., :3] = fn(arr[..., :3])
             return _blend(img, torch.from_numpy(out).to(img.device, img.dtype), mix)
-        return _dual_io(_apply, image, video)
+        return _dual_io(_apply, image, video, label="OCIO LogConvert",
+                        expect_low_clip=curve_key in _FLOORS_NEGATIVES)
 
     @classmethod
     def VALIDATE_INPUTS(cls, curve=None, operation=None):
@@ -664,6 +793,40 @@ class OCIODisplay:
         cpu = _cached_cpu_processor(cfg_key, tf_key, build)
         return _dual_io(lambda img: _blend(img, _apply_processor(img, cpu), mix), image, video)
 
+    @classmethod
+    def VALIDATE_INPUTS(cls, display=None, view=None, config_path=None):
+        """Reject a display/view pair the config does not have, BEFORE the job runs.
+
+        MOST OF THE PAIRS THIS NODE OFFERS DO NOT EXIST. `view` is built as the union of every view across every
+        display (see _view_input), and that is not a mistake: the combo is fixed when INPUT_TYPES is evaluated,
+        long before anyone picks a display. Measured against the studio config this pack loads by default, 9
+        displays x 14 views is 126 combinations and 75 of them are invalid. On 'sRGB - Display' only 4 of the 14
+        work. OCIO's own message is clear - "The display 'sRGB - Display' does not have view 'ACES 2.0 - SDR 100
+        nits (P3 D65)'" - but it arrives mid-execution, after the graph has already spent its time.
+
+        Validating here turns that into a rejection before anything runs, and hands back the views that WOULD
+        work, which is what the artist actually needs. Listing display and view as parameters makes ComfyUI skip
+        its own combo-membership check for them and defer to this, so a saved graph carrying a display from
+        another config still reaches run() and fails there with OCIO's message rather than being refused for the
+        wrong reason.
+
+        Never raises. A config that will not resolve is not this method's problem to report; run() says so
+        properly, and refusing a prompt over a broken probe would be worse than letting it through.
+        """
+        if not display or not view:
+            return True
+        try:
+            cfg, _ = _config_from_choice_keyed(config_path if config_path is not None else BUILTIN)
+            if cfg is None:
+                return True
+            valid = list(cfg.getViews(display))
+        except Exception:
+            return True
+        if not valid or view in valid:
+            return True
+        return (f"the display '{display}' has no view '{view}'. This node lists every view in the config, so most "
+                f"display and view pairs do not exist. Valid views for this display: {', '.join(valid)}")
+
 
 class OCIOCDLTransform:
     """ASC CDL grade: slope, offset, power (per channel) + saturation (Nuke: OCIOCDLTransform)."""
@@ -745,7 +908,7 @@ class OCIOFileTransform:
             return cfg.getProcessor(t)
 
         cpu = _cached_cpu_processor(cfg_key, tf_key, build)
-        return _dual_io(lambda img: _blend(img, _apply_processor(img, cpu), mix), image, video)
+        return _dual_io(lambda img: _blend(img, _apply_processor(img, cpu), mix), image, video, label="OCIO FileTransform")
 
 
 class OCIOLookTransform:
@@ -782,7 +945,7 @@ class OCIOLookTransform:
             return cfg.getProcessor(t)
 
         cpu = _cached_cpu_processor(cfg_key, tf_key, build)
-        return _dual_io(lambda img: _blend(img, _apply_processor(img, cpu), mix), image, video)
+        return _dual_io(lambda img: _blend(img, _apply_processor(img, cpu), mix), image, video, label="OCIO LookTransform")
 
 
 NODE_CLASS_MAPPINGS = {

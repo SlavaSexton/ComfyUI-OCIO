@@ -74,9 +74,14 @@ function _ocioBusyNode(node, on, text) { _ocioBusy(_ocioNodeBox(node), on, text)
 
 const CS_SRGB = "sRGB - Display";
 const CS_ACESCG = "ACEScg";
+// A movie is a Rec.709 deliverable, not an sRGB one: same primaries, different transfer function. This used to
+// return CS_SRGB for a video container, which tagged every ProRes / DNxHR with the computer-display curve
+// (trc=iec61966-2-1) instead of Rec.709. MUST stay in step with _auto_output_cs in io_nodes.py - if the two
+// disagree, the node shows one colourspace and the backend writes another. Fixed 2026-08-12.
+const CS_REC709_DISPLAY = "Rec.1886 Rec.709 - Display";
 function autoInCs(filename) { return isExr(filename) ? CS_ACESCG : CS_SRGB; }
 function autoOutCs(container, stillFormat) {
-    if (container === "video") return CS_SRGB;
+    if (container === "video") return CS_REC709_DISPLAY;
     return stillFormat === "exr" ? CS_ACESCG : CS_SRGB;
 }
 
@@ -88,14 +93,23 @@ const STILL_EXT = { exr: "exr", tiff: "tif", png: "png", jpeg: "jpg" };
 // video codec -> real bit depth + extension (mirrors io_nodes.py save_video's codec->pix_fmt map). bit_depth
 // stays hidden for video (still-format 16f/32f/16/8 don't map to video 8/10/12) - this footer shows the real,
 // codec-fixed depth instead.
+// EVERY codec in the backend's video_codec combo needs an entry here, and `ext` is the ONLY place the front end
+// decides an extension. It used to re-derive it from a name prefix instead, which is how dnxhr_hq_mxf came to
+// preview .mov while the backend wrote .mxf: 'dnxhr_hq_mxf'.startsWith('dnxhr') is true. A prefix test is a
+// second copy of a rule that already lives in this table, and the two drift the moment a codec is added.
+// tools/test_codec_ext_parity.py reads both sides and fails if they ever disagree again.
 const CODEC_INFO = {
     prores_4444: { bits: "12-bit", ext: ".mov" }, prores_422hq: { bits: "10-bit", ext: ".mov" },
     prores_422: { bits: "10-bit", ext: ".mov" }, dnxhr_hq: { bits: "8-bit", ext: ".mov" },
     h264: { bits: "8-bit", ext: ".mp4" }, hevc: { bits: "8-bit", ext: ".mp4" },
+    dnxhr_hq_mxf: { bits: "8-bit", ext: ".mxf" }, dnxhr_hq_mxf_opatom: { bits: "8-bit", ext: ".mxf" },
+    dnxhr_hqx: { bits: "10-bit", ext: ".mov" }, dnxhr_444: { bits: "10-bit", ext: ".mov" },
 };
 const CODEC_LABEL = {
     prores_4444: "ProRes 4444", prores_422hq: "ProRes 422 HQ", prores_422: "ProRes 422",
     dnxhr_hq: "DNxHR HQ", h264: "H.264", hevc: "HEVC",
+    dnxhr_hq_mxf: "DNxHR HQ - MXF OP1a", dnxhr_hq_mxf_opatom: "DNxHR HQ - MXF OPAtom",
+    dnxhr_hqx: "DNxHR HQX", dnxhr_444: "DNxHR 444",
 };
 
 // hide / show ONE widget with a TRUE collapse (no blank row). 2026-07-04: switched off the old OCIO_HIDDEN
@@ -103,15 +117,36 @@ const CODEC_LABEL = {
 // type change) AND risked blanking the widget value on serialize. Now identical to setVisibleWidgets' per-widget
 // logic: widget.hidden + options.hidden (dual-set - canvas reads .hidden, Vue reads options.hidden) + a zeroed
 // computeSize, NO type swap (so the value keeps serializing). Used by OCIO Write's per-container visibility.
+// THE RESTORE IS KEYED ON THE PROPERTY EXISTING, NOT ON ITS VALUE BEING TRUTHY, and that distinction was a real
+// user-visible defect until 2026-08-13. MOST of these widgets have NO computeSize of their own - litegraph lays
+// them out from the prototype - so hiding stashed `undefined` and the old restore, `if (w._ocioCompute)`, was
+// FALSY and never ran. The zeroed function therefore stayed forever: hidden once, invisible for good, while
+// `hidden` and `options.hidden` both read false and every flag said the row was showing.
+//
+// Measured in the live canvas. Switch container to video and back to sequence and `compression` comes back with
+// hidden=false, options.hidden=false and computeSize()[1] === 0. The node's own height went 666 -> 490 across
+// that one round trip: 176 pixels of controls the node believed it was drawing. An artist who looked at a
+// movie and returned to an EXR sequence could not set compression again without reloading the graph.
+//
+// `delete w.computeSize` is the correct undo for the no-own-property case: it exposes the prototype's layout
+// again, which is what "this widget had no computeSize" meant in the first place. Assigning undefined would
+// leave an own property shadowing it.
+function _ocioRestoreCompute(w) {
+    if (!("_ocioCompute" in w)) return;
+    if (w._ocioCompute === undefined) delete w.computeSize;
+    else w.computeSize = w._ocioCompute;
+    delete w._ocioCompute;
+}
+
 function showWidget(node, w, visible) {
     if (!w) return;
     if (!w.options) w.options = {};
     if (visible) {
         w.hidden = false; w.options.hidden = false;
-        if (w._ocioCompute) { w.computeSize = w._ocioCompute; delete w._ocioCompute; }
+        _ocioRestoreCompute(w);
     } else {
         w.hidden = true; w.options.hidden = true;
-        if (!w._ocioCompute) w._ocioCompute = w.computeSize;
+        if (!("_ocioCompute" in w)) w._ocioCompute = w.computeSize;
         w.computeSize = () => [0, 0];
     }
 }
@@ -139,11 +174,11 @@ function setVisibleWidgets(node, isVisible) {
         if (visible) {
             w.hidden = false;
             w.options.hidden = false;                       // Vue-nodes read options.hidden; canvas reads .hidden
-            if (w._ocioCompute) { w.computeSize = w._ocioCompute; delete w._ocioCompute; }
+            _ocioRestoreCompute(w);                         // property-keyed, see the comment on showWidget
         } else {
             w.hidden = true;
             w.options.hidden = true;                        // dual-set so Vue drops the row (v-if), no blank gap
-            if (!w._ocioCompute) w._ocioCompute = w.computeSize;
+            if (!("_ocioCompute" in w)) w._ocioCompute = w.computeSize;
             w.computeSize = () => [0, 0];
         }
     }
@@ -160,20 +195,19 @@ function pokeWidgets(node) {
     if (node.widgets && node.widgets.length) { const d = node.widgets.pop(); node.widgets.push(d); }
 }
 
-// the "_colorspace" the Write node injects before the frame number (mirrors io_nodes.py _cs_tag)
-const CS_TAG_RULES = [
-    ["acescct", "acescct"], ["acescc", "acescc"], ["acescg", "acescg"], ["aces2065", "aces2065"],
-    ["logc", "logc"], ["canon log", "clog"], ["clog", "clog"], ["slog", "slog"], ["v-log", "vlog"], ["vlog", "vlog"],
-    ["rec.2020", "rec2020"], ["rec2020", "rec2020"],
-    ["rec.709", "rec709"], ["rec709", "rec709"], [" 709", "rec709"],
-    ["display p3", "p3"], ["p3-d", "p3"], ["p3", "p3"],
-    ["srgb", "srgb"],
-    ["linear", "linear"],
-];
+// The "_colorspace" the Write node injects before the frame number. MUST stay identical to io_nodes.py
+// _cs_tag - tools/test_cs_tag_unique.py asserts the two agree on every colorspace the config offers, because
+// a front-end that previews a different filename than the backend writes is worse than no preview at all.
+//
+// This used to be a table of short tags, and it collapsed 31 of 55 colorspaces onto a shared token (thirteen
+// gamuts to "linear", eight transfers to "rec709", six to "p3"). Since the delivered PATH is built from this,
+// two writes differing only in colorspace overwrote each other silently. Spelling the name out in full ends
+// that. No truncation: a fixed-width cut would re-introduce collisions between names sharing a prefix.
 function csCore(name) {
-    const low = (name || "").toLowerCase();
-    for (const [needle, tag] of CS_TAG_RULES) if (low.includes(needle)) return tag;
-    return low.replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 24);
+    return (name || "").toLowerCase()
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/_+/g, "_")
+        .replace(/^_+|_+$/g, "");
 }
 function csTag(node) {
     if (!(W(node, "colorspace_in_name")?.value)) return "";
@@ -189,7 +223,7 @@ function exampleName(node) {
     const c = W(node, "container")?.value;
     if (c === "video") {
         const v = W(node, "video_codec")?.value || "";
-        return name + t + (v.startsWith("prores") || v.startsWith("dnxhr") ? ".mov" : ".mp4");
+        return name + t + (CODEC_INFO[v]?.ext || ".mp4");
     }
     const ext = STILL_EXT[W(node, "still_format")?.value] || "exr";
     if (c === "still image") return `${name}${t}.${ext}`;
@@ -276,17 +310,30 @@ function _adoptAspect(node, p, mw, mh) {
 // still/sequence looks IMAGE-only and a video exposes the VIDEO output. VIDEO is the LAST output, so add/remove it
 // never shifts the IMAGE/MASK/FLOAT/STRING indices (backend maps by index). A wired VIDEO slot is kept (don't yank a
 // saved / user connection). The true single self-determining slot would be a V3 MatchType port.
+// 2026-08-12: THIS NO LONGER ADDS OR REMOVES THE SLOT, and the reason is a correctness one that overrides the
+// tidiness the removal bought. A link is serialised as an output INDEX and the backend maps that index through
+// RETURN_TYPES, so the front end's outputs array has to agree with the backend's, position for position. The old
+// remove/re-add was safe only while VIDEO was the last output; 'source metadata' now sits at index 5 behind it, so
+// removing VIDEO would slide source metadata down into index 4 on the client while the server still answers index 4
+// with a VIDEO object - a wire that looks connected and delivers the wrong type, silently. Moving source metadata
+// ABOVE VIDEO is not the alternative: that reindexes the VIDEO links of every already-saved workflow.
+// So the slot stays and its LABEL carries the "video sources only" hint instead. Less tidy, and it cannot corrupt
+// a graph. (Adding the slot when it is missing entirely is kept: a workflow saved before the 6th output existed
+// comes back with a short array.)
 function _setVideoOutput(node, show) {
     if (node && node.type === "OCIOPlayer") return;   // 2026-07-04: the Player is INPUT-ONLY (no outputs), so never add/remove a VIDEO slot on it
     if (!node || !node.outputs) return;
     let idx = -1;
     for (let i = 0; i < node.outputs.length; i++) if (node.outputs[i].type === "VIDEO") { idx = i; break; }
-    if (show) {
-        if (idx < 0) { node.addOutput("video", "VIDEO"); node.setDirtyCanvas(true, true); }
-    } else if (idx >= 0) {
-        const o = node.outputs[idx];
-        if (!(o.links && o.links.length)) { node.removeOutput(idx); node.setDirtyCanvas(true, true); }   // keep a connected slot
+    if (idx < 0) {
+        // Append ONLY when it lands at index 4, which is where the backend puts VIDEO. addOutput always appends,
+        // so on any other array length it would place VIDEO at the wrong index and hand the wire the wrong type.
+        if (show && node.outputs.length === 4) { node.addOutput("ComfyUI Video", "VIDEO"); node.setDirtyCanvas(true, true); }
+        return;
     }
+    const o = node.outputs[idx];
+    const want = show ? "ComfyUI Video" : "ComfyUI Video (video sources only)";
+    if (o.label !== want) { o.label = want; node.setDirtyCanvas(true, true); }
 }
 function ensureReadPreview(node) {
     if (node._ocioPrev) return node._ocioPrev;
@@ -1121,19 +1168,31 @@ function findUpstreamType(node, typeName, seen) {
     }
     return null;
 }
-function applyAutoColorspace(node) {
-    if (!(W(node, "auto_colorspace")?.value)) return;                 // only while auto is ON
-    if (!findUpstreamType(node, "LTXVHDRDecodePostprocess")) return;  // only for an LTX HDR upstream
-    setWSilent(node, "from_colorspace", "Linear Rec.709 (sRGB)");     // LTX hdr_linear = scene-linear Rec.709
-    setWSilent(node, "output_colorspace", "ACEScg");                  // grade space
-    node.setDirtyCanvas(true, true);
-}
+// applyAutoColorspace stood here and is removed: it had ZERO callers, and the job it described is done by the
+// `profile` combo's "auto" entry through resolveAutoProfile below, which traces the same upstream node and sets
+// BOTH colorspaces via applyProfile. One mechanism, reachable, and mirrored by a test. The `auto_colorspace`
+// WIDGET stays: widgets_values is positional, so removing it would shift every later value in every saved graph.
+// Its tooltip names what actually does the work.
 
 // ---- profile widget: HDR source preset -> from/output colorspace + still_format/bit_depth (silent) ---------
+// These must stay byte-identical to the backend mapping in io_nodes.py (OCIOWrite.write), and the from/out
+// strings must be values the from_colorspace combo actually offers - ComfyUI rejects an unknown combo value
+// with HTTP 400 and no fallback. tools/test_write_output.py asserts the mirror.
+//
+// LTX 2.3 and LTX 2.5 ARE NOT INTERCHANGEABLE, and the difference is the transfer they arrive in:
+//   2.3 - HDR IC-LoRA on the ARRI LogC3 (EI 800) curve. Lightricks' own ComfyUI node for it,
+//         LTXVHDRDecodePostprocess, already undoes the curve, so what reaches Write is LINEAR.
+//   2.5 - HDR via their --hdr ACESCCT flag. Nothing in ComfyUI undoes that curve, so what reaches Write is
+//         ACEScct LOG CODES, already in AP1 primaries, and only the transfer needs undoing.
+// Using the 2.3 preset on 2.5 material treats log as linear and leaves the frame flat and grey.
 const PROFILE_CS = {
     "LTX 2.3 HDR":               { from: "Linear Rec.709 (sRGB)", out: "ACEScg", fmt: "exr", bit: "16f" },
+    "LTX 2.5 HDR (ACEScct)":     { from: "ACEScct",               out: "ACEScg", fmt: "exr", bit: "16f" },
     "LumiPic LogC3 (Flux/Qwen)": { from: "Linear Rec.709 (sRGB)", out: "ACEScg", fmt: "exr", bit: "16f" },
     "LumiPic V10 LogC4":         { from: "Linear Rec.709 (sRGB)", out: "ACEScg", fmt: "exr", bit: "16f" },
+    // No fmt/bit: this is the one display-referred preset, so it must NOT force EXR 16f the way the HDR ones
+    // do. tools/test_ltx_hdr_profiles.py reads the backend mapping by AST and compares it against this table.
+    "SDR Rec.709 delivery":      { from: "sRGB - Display",       out: "Rec.1886 Rec.709 - Display" },
 };
 // generic upstream tracer: walk input links back through N nodes until `test(node)` matches
 function findUpstream(node, test, seen) {
@@ -1156,8 +1215,14 @@ function applyProfile(node, profileName) {
     node._ocioProfileSetting = true;                    // guard: the colorspace writes below are OURS, not a manual edit
     setWSilent(node, "from_colorspace", p.from);
     setWSilent(node, "output_colorspace", p.out);
-    setWSilent(node, "still_format", p.fmt);
-    setWSilent(node, "bit_depth", p.bit);
+    // GUARDED, and this is not defensive style. setWSilent is a bare `w.value = value`, so a row without fmt/bit
+    // used to write JavaScript `undefined` straight into two COMBO widgets. Both serialisations of that are a
+    // hard reject, measured against the live backend: null gives 400 [value_not_in_list] "None not in
+    // ['exr','tiff','png','jpeg']", and an absent key gives 400 [required_input_missing]. So picking such a
+    // profile would leave a graph that cannot be queued at all. Every HDR row carries fmt/bit; "SDR Rec.709
+    // delivery" deliberately does not, because a display-referred delivery has no business forcing EXR 16f.
+    if (p.fmt) setWSilent(node, "still_format", p.fmt);
+    if (p.bit) setWSilent(node, "bit_depth", p.bit);
     node._ocioProfileSetting = false;
     node.setDirtyCanvas(true, true);
 }
@@ -1165,6 +1230,11 @@ function applyProfile(node, profileName) {
 function findUpstreamSource(node) {
     const ltx = findUpstream(node, (n) => (n.type || "").includes("LTXVHDRDecodePostprocess"));
     if (ltx) return "LTX 2.3 HDR";                      // reliable: a dedicated LTX HDR decode node
+    // There is deliberately NO detector for "LTX 2.5 HDR (ACEScct)". 2.5's HDR has no ComfyUI node to look
+    // for - Lightricks ship it only in their reference CLI (--hdr), their ComfyUI pack has an HDR workflow for
+    // 2.3 and none for 2.5, and greps for acescct across that pack return zero (checked 2026-08-12). Guessing
+    // it from a 2.5 checkpoint name would be wrong as often as right, because a 2.5 graph is usually SDR.
+    // Leave it to the artist to pick, rather than silently choosing a transfer for them.
     const lora = findUpstream(node, (n) => (n.type || "").includes("LoraLoader"));
     if (lora) {
         const fn = (W(lora, "lora_name")?.value || "").toLowerCase();
@@ -1256,11 +1326,19 @@ async function listDir(path, wantFiles, sequence) {
     });
     return await r.json();
 }
+// A picked output folder -> what gets STORED in the widget. Anything under the ComfyUI output root becomes
+// relative, because this value is saved into widgets_values and core SaveVideo / SaveImage embed the whole
+// workflow JSON inside the files they write - an absolute server path there ships with the delivery.
+// Comparison is case-insensitive and slash-agnostic: on Windows "E:/ComfyUI/output" and "e:\ComfyUI\Output" are
+// the same folder, and the old byte-exact startsWith left a hand-typed path absolute for no reason. A path
+// genuinely OUTSIDE the output root is returned untouched - targeting a NAS is deliberate, not a mistake.
 function relToOutput(absPath, outputRoot) {
     if (!outputRoot) return absPath;
-    const a = absPath.replace(/\\/g, "/"), o = outputRoot.replace(/\\/g, "/");
-    if (a === o) return "";
-    if (a.startsWith(o + "/")) return a.slice(o.length + 1);
+    const norm = (s) => s.replace(/\\/g, "/").replace(/\/+$/, "");
+    const a = norm(absPath), o = norm(outputRoot);
+    const al = a.toLowerCase(), ol = o.toLowerCase();
+    if (al === ol) return "";
+    if (al.startsWith(ol + "/")) return a.slice(o.length + 1);
     return absPath;
 }
 // opts: { widget, pickFiles (Read source), forOutput (Write) }
@@ -1416,6 +1494,126 @@ function openFolderDialog(node) {   // Write output folder
 // on a float flipbook clock (_playerTick, modeled on _seqTick) that drives /ocio/floatframe -> GPU instead of an
 // <img>. start_frame / end_frame are the node's own 0-based OUTPUT indices (io_nodes.py), so the in/out handles
 // map 1:1 to cached frames with base 0 - no _seqBase offset (that stays a video/sequence-only concept).
+
+// --------------------------------------------------------------------------- what is this viewport presenting?
+//
+// Users ask whether the Player shows them HDR or 8 bits, and until now nothing answered. It presents an 8-bit
+// SDR composite, and that is worth SAYING rather than leaving people to guess from how the picture looks.
+//
+// The probe runs on a THROWAWAY 1x1 canvas, never on the live viewport. Asking the real context for a float
+// drawing buffer would reallocate and clear it, and a probe that disturbs the thing it measures is not a probe.
+//
+// Three situations, and they are genuinely different for the person looking at the screen:
+//   * the browser has no float drawing buffer at all             -> nothing to be done here
+//   * it has one, but the display does not report HDR            -> a float buffer would change nothing on screen,
+//                                                                   because the composite still has to land in SDR
+//   * it has one AND the display reports HDR                     -> range is being left on the table
+//
+// `(dynamic-range: high)` reports a CAPABILITY, not an active state, and the window can be dragged to another
+// monitor, so its value is tracked through a change listener rather than read once. Everything else is fixed for
+// the life of the page.
+let _presCaps = null;
+let _presHdrMq = null;
+
+function presentationCaps() {
+    if (_presCaps) return _presCaps;
+    const caps = { webgl2: false, floatExt: false, storageFn: false, floatBuffer: false, colorSpace: null };
+    try {
+        const c = document.createElement("canvas");
+        c.width = c.height = 1;
+        const gl = c.getContext("webgl2", { alpha: true, premultipliedAlpha: false, antialias: false });
+        if (gl) {
+            caps.webgl2 = true;
+            caps.floatExt = !!gl.getExtension("EXT_color_buffer_float");
+            caps.storageFn = typeof gl.drawingBufferStorage === "function";
+            // The colour space must be set BEFORE the storage call, because assigning it reallocates the buffer.
+            // Presence of the property does not mean a given enum value is accepted, so it is read back.
+            if ("drawingBufferColorSpace" in gl) {
+                try {
+                    gl.drawingBufferColorSpace = "srgb-linear";
+                    caps.colorSpace = gl.drawingBufferColorSpace;
+                } catch (e) { caps.colorSpace = null; }
+            }
+            if (caps.floatExt && caps.storageFn) {
+                while (gl.getError() !== gl.NO_ERROR) { /* drain, or a stale error misreports the next call */ }
+                gl.drawingBufferStorage(gl.RGBA16F, 1, 1);
+                caps.floatBuffer = gl.getError() === gl.NO_ERROR && gl.drawingBufferFormat === gl.RGBA16F;
+            }
+            const lose = gl.getExtension("WEBGL_lose_context");
+            if (lose) { try { lose.loseContext(); } catch (e) { /* tidiness only */ } }
+        }
+    } catch (e) { /* a probe that throws must not take the node down */ }
+    _presCaps = caps;
+    return caps;
+}
+
+function presentationHdrDisplay() {
+    if (_presHdrMq === false) return false;               // matchMedia is unavailable here; asked once, not per draw
+    try {
+        if (!_presHdrMq) {
+            _presHdrMq = window.matchMedia("(dynamic-range: high)");
+            // graph.setDirtyCanvas, not node.setDirtyCanvas: this fires outside the render loop and no single node
+            // owns the answer. It is the frontend's own pattern for an async event that needs a repaint.
+            const redraw = () => { try { app.graph && app.graph.setDirtyCanvas(true, true); } catch (e) {} };
+            if (_presHdrMq.addEventListener) _presHdrMq.addEventListener("change", redraw);
+            else if (_presHdrMq.addListener) _presHdrMq.addListener(redraw);      // older Safari shape
+        }
+        return !!_presHdrMq.matches;
+    } catch (e) {
+        _presHdrMq = false;                               // cache the failure, so a broken environment costs one try
+        return false;
+    }
+}
+
+function presentationLine() {
+    try {
+        const c = presentationCaps();
+        const hdr = presentationHdrDisplay();
+        // NOTHING is said when there is no WebGL2. The Player already shows "WebGL2 unavailable" in its own body
+        // and displays no image at all in that state, so a second line in the corner has nothing to add and must
+        // not describe a picture that is not there. OCIO Read is the node that falls back to a still thumbnail;
+        // this function belongs to the Player.
+        if (!c.webgl2) return null;
+        // SHORT VALUE, LONG REASON. The panel row is one monospace line inside the node's width, so a sentence got
+        // cut off mid-word ("float buffer a...") and the part that mattered never arrived. `text` is now what fits
+        // and answers the question - 8 bits or not - and `detail` carries the why, which the panel puts on the
+        // hover where there is room for it.
+        if (!c.floatBuffer) {
+            return { text: "8-bit SDR", hdrAvailable: false,
+                     detail: "The composite reaching the screen is 8-bit SDR, and this browser offers no float "
+                           + "drawing buffer at all, so there is no route to more than 8 bits per channel here. "
+                           + "Values above 1.0 are still carried in the data and still written to EXR - it is the "
+                           + "on-screen presentation that is 8-bit, not the pixels." };
+        }
+        // TWO SEPARATE FACTS, and conflating them made the message wrong once: the float buffer and the colour
+        // space it can be DECLARED as are independent. Measured in Chromium: the buffer allocates as RGBA16F and
+        // reports 16 bits, while `drawingBufferColorSpace` accepts only "srgb" and "display-p3" and THROWS a
+        // TypeError for "srgb-linear" and "display-p3-linear". Without a linear declaration the compositor reads
+        // the numbers through the sRGB transfer function, which is not what extended linear light means, so a
+        // float buffer here is storage without a correct interpretation. Say both, briefly.
+        const linear = c.colorSpace === "srgb-linear";
+        if (!hdr) {
+            return { text: "8-bit SDR", hdrAvailable: false,
+                     detail: "The composite reaching the screen is 8-bit SDR. A float drawing buffer IS available "
+                           + "in this browser, but this display does not report HDR capability, so there is no "
+                           + "headroom to show anything above white and the final conversion has to land in the "
+                           + "SDR range. Values above 1.0 are still carried in the data and still written to EXR - "
+                           + "it is the on-screen presentation that is 8-bit, not the pixels." };
+        }
+        return {
+            text: linear ? "float buffer, HDR display" : "float buffer, HDR display, no linear space",
+            hdrAvailable: true,
+            detail: linear
+                ? "This display reports HDR capability and a float drawing buffer is available, declared in a "
+                  + "linear colour space - the combination that can actually carry values above white to the "
+                  + "compositor."
+                : "This display reports HDR capability and a float drawing buffer is available, but it could not be "
+                  + "declared in a linear colour space (Chromium accepts only srgb and display-p3 and throws for "
+                  + "srgb-linear), so the compositor reads the numbers through the sRGB transfer function rather "
+                  + "than as extended linear light.",
+        };
+    } catch (e) { return null; }
+}
 
 // Exposure shader: RGBA16F float texture -> 2^exposure gain (input space) -> optional OCIO 3D LUT -> screen.
 const _PLAYER_FRAG = `#version 300 es
@@ -1934,7 +2132,12 @@ function playerOnExecuted(node, message) {
         p.videoSrc = { path: vpath, res: vres, fps: vfps, frames: vframes };
         _setVideoOutput(node, true);                                        // video source -> expose the VIDEO output
         renderPlayerMeta(node, { resolution: vres, total: vframes, cached: vframes, fps: vfps, input_cs: first(message.input_cs) });
-        playerVideoStart(node, p, vpath, { fps: vfps, frames: vframes });   // stream the whole clip (native decode + exposure/LUT shader)
+        // `res: vres` IS LOAD-BEARING, not decoration. playerVideoStart re-renders the metadata panel immediately
+        // with `meta.res || "-"`, so leaving it out overwrote the resolution this branch had just displayed. For a
+        // clip the browser CAN decode that is invisible, because loadedmetadata then fills the real videoWidth /
+        // videoHeight - but a ProRes or DNxHR clip it cannot decode (a case handled a few lines below) never fires
+        // that event, so the panel kept reading "-" for a resolution the server had already told us.
+        playerVideoStart(node, p, vpath, { fps: vfps, frames: vframes, res: vres });   // stream the whole clip (native decode + exposure/LUT shader)
         return;
     }
     if (p.videoMode) { p.videoMode = false; try { p.video.pause(); } catch (e) {} if (p.raf) { cancelAnimationFrame(p.raf); p.raf = 0; } }   // was streaming a video, now a float batch -> stop the stream
@@ -1976,34 +2179,92 @@ function playerOnExecuted(node, message) {
 const PLAYER_META_ROWS = [
     ["resolution", "Resolution"], ["frames", "Frames"], ["range", "Range"], ["fps", "FPS"],
     ["input_colorspace", "Input CS"], ["output_colorspace", "Output CS"],
+    // "Display" ANSWERS "what am I actually looking at" IN THE DOM, and that is the whole point of it being here
+    // rather than in the node's corner text. presentationLine() was originally drawn from onDrawForeground, which
+    // the Vue node renderer never calls at all - proven with counters on the real render path: drawNode ran five
+    // times for the node while onDrawForeground ran zero. This panel is an addDOMWidget, so it renders on both
+    // frontends, and it already exists to describe what is on screen.
+    ["presentation", "Display"],
 ];
+// A ROW WITH NOTHING TO SAY IS NOT DRAWN. The panel used to print every label always and fill the unknown ones
+// with a dash, so a clip the browser cannot decode showed "Resolution: -" and a still with no timecode showed
+// three dashes in a row - technical clutter that tells the artist nothing and costs a line of the node each.
+// Empty, a literal dash, and a zero all count as nothing: an fps of 0.000 or a frame count of 0 is a missing
+// value wearing a number, not a measurement.
+// A DISCLOSURE BUTTON'S CHEVRON MUST FOLLOW ITS STATE: pointing down when the block is open, right when it is
+// closed. Writing `name` alone does NOT do that on the Vue-nodes frontend - measured by reading the button's own
+// DOM text before and after: assigning `name` left it unchanged, assigning `label` flipped it in the same frame.
+// The legacy canvas renderer draws `label` when present and falls back to `name`, so both are set and the two
+// frontends cannot disagree.
+function _setWidgetLabel(w, text) {
+    if (!w) return;
+    w.name = text;
+    w.label = text;
+}
+const _metaHasValue = (v) => {
+    const s = String(v == null ? "" : v).trim();
+    return s !== "" && s !== "-" && s !== "0" && s !== "0.000";
+};
+// The panel's height follows the rows ACTUALLY rendered, so hiding a row reclaims its line instead of leaving a
+// gap. Guarded against re-entry, because on the Vue-nodes frontend setSize fires onResize, which comes back
+// through the same path - the trap already documented for the player box a few functions below.
+function _metaRelayout(node, rows) {
+    if (node._ocioMetaRows === rows) return;
+    node._ocioMetaRows = rows;
+    if (node._ocioMetaLaying) return;
+    node._ocioMetaLaying = true;
+    try { node.setSize([node.size[0], node.computeSize()[1]]); } finally { node._ocioMetaLaying = false; }
+}
 function ensurePlayerMeta(node) {
     if (node._ocioPlayerMeta) return node._ocioPlayerMeta;
     const box = document.createElement("div");
     box.style.cssText = "width:100%;font:10px/1.4 monospace;color:#9cf;background:#1a1a1a;padding:4px 6px;box-sizing:border-box;overflow:hidden;white-space:nowrap;";
     const w = node.addDOMWidget("player_meta", "div", box, { serialize: false });
-    w.computeSize = () => [0, 16 * PLAYER_META_ROWS.length + 8];
+    w.computeSize = () => {
+        // Folded by the "Info" button -> no height at all, so the node gives the space back rather than leaving a
+        // gap. Otherwise: undefined rows means nothing has rendered yet, and the full height is kept so a fresh
+        // node does not visibly grow on its first render; zero rows (no clip loaded) collapses it away too.
+        if (node._ocioMetaCollapsed) return [0, 0];
+        const n = node._ocioMetaRows === undefined ? PLAYER_META_ROWS.length : node._ocioMetaRows;
+        return [0, n > 0 ? 16 * n + 8 : 0];
+    };
     w._ocioAlwaysVisible = true;
     node._ocioPlayerMeta = box;
     return box;
 }
 function renderPlayerMeta(node, data) {
     const box = ensurePlayerMeta(node);
-    if (!data) { box.innerHTML = ""; return; }
+    if (!data) { box.innerHTML = ""; box.title = ""; _metaRelayout(node, 0); return; }
     const framesTxt = data.cached < data.total ? `${data.total} (viewer capped at ${data.cached})` : String(data.total);
     const pp = node._ocioPlayer;
     const base = (pp && pp.videoMode && pp.videoBase) ? (pp.videoBase | 0)        // streamed video: 1-based (or the upstream Read's numbering)
                : ((pp && pp.player && pp.player.base) ? (pp.player.base | 0) : 0);   // float batch: mirrored from the upstream OCIO Read
     const rangeTxt = `${base}-${base + Math.max(1, data.cached || 1) - 1}`;
+    // No dashes here any more: a missing value stays missing and _metaHasValue drops its whole row below.
     const values = {
-        resolution: data.resolution || "-",
+        resolution: data.resolution,
         frames: framesTxt,
         range: rangeTxt,
         fps: data.fps ? data.fps.toFixed(3) : (parseFloat(W(node, "fps")?.value) || 0).toFixed(3),
-        input_colorspace: W(node, "input_colorspace")?.value || data.input_cs || "-",
-        output_colorspace: W(node, "output_colorspace")?.value || "-",
+        input_colorspace: W(node, "input_colorspace")?.value || data.input_cs,
+        output_colorspace: W(node, "output_colorspace")?.value,
+        presentation: (presentationLine() || {}).text,
     };
-    box.innerHTML = PLAYER_META_ROWS.map(([k, label]) => `<div>${label}: ${values[k]}</div>`).join("");
+    // ESCAPED, because these values are not all ours. `input_colorspace` and `output_colorspace` are read from
+    // widgets, and a widget value arrives from the workflow JSON - which on a shared graph is a stranger's file, not
+    // a combo the front end filled in. Interpolating that straight into innerHTML made a hand-written workflow able
+    // to inject markup into the node panel. Pre-existing rather than introduced here, and one function away from
+    // being closed, so it is closed.
+    const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
+        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    const shown = PLAYER_META_ROWS.filter(([k]) => _metaHasValue(values[k]));
+    box.innerHTML = shown.map(([k, label]) => `<div>${esc(label)}: ${esc(values[k])}</div>`).join("");
+    _metaRelayout(node, shown.length);
+    // The hover carries the reason, which is far too long for one monospace row inside a node. A no-WebGL2 viewport
+    // returns null from presentationLine and gets no tooltip, because in that state the viewport is hidden behind
+    // its own "WebGL2 unavailable" message and there is no picture to describe.
+    const pres = presentationLine();
+    box.title = pres ? (pres.detail || "") : "";
 }
 
 // OCIO Write "Render" button: (1) overwrite guard - ask the server which output files this
@@ -2020,13 +2281,35 @@ async function ocioWriteRender(node) {
             raw_data: W(node, "raw_data")?.value ? 1 : 0, colorspace_in_name: W(node, "colorspace_in_name")?.value ? 1 : 0,
             start_number: parseInt(W(node, "start_number")?.value, 10) || 1,
         };
-        if (params.container === "still image") {            // a still grabbed from a sequence / video stamps its frame number -> match that name for the exists-check
+        // A still image gets its source frame number stamped into the name, and the BACKEND'S RULE IS THE BATCH
+        // SIZE, not the presence of an OCIO Read: io_nodes.py passes `still_frame=(first_frame if n > 1 else
+        // None)`. This asked findUpstreamRead instead, so a multi-frame batch arriving from anything else - a
+        // generation wired straight into Write, which is the ordinary LTX case - predicted `shot.png` while the
+        // write produced `shot.0005.png`. The dialog then probed a file that never exists, so it NEVER warned and
+        // a repeat render silently overwrote the real one. Reproduced live: predicted `mismatch_test.png`, wrote
+        // `mismatch_test.0005.png`.
+        //
+        // The front end cannot know the batch size - only the graph run does - so when an upstream Read does not
+        // settle it, BOTH candidate names are probed and either one existing counts as a conflict. Over-warning
+        // costs one dialog; under-warning costs the artist's previous render.
+        const probes = [params];
+        if (params.container === "still image") {
             const _r = findUpstreamRead(node), _k = _r && _r._ocioSeq && _r._ocioSeq.kind;
-            if (_k === "sequence" || _k === "video") params.still_frame = parseInt(W(node, "first_frame")?.value, 10);
+            const _sf = parseInt(W(node, "first_frame")?.value, 10);
+            if (_k === "sequence" || _k === "video") {
+                params.still_frame = _sf;                    // settled: it IS a grab from a sequence
+            } else if (Number.isFinite(_sf)) {
+                probes.push(Object.assign({}, params, { still_frame: _sf }));   // unsettled: probe both
+            }
         }
-        const r = await fetch("/ocio/write_paths", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(params) });
-        const d = await r.json();
-        if (d && Array.isArray(d.existing) && d.existing.length) {
+        const seen = new Set();
+        for (const body of probes) {
+            const rp = await fetch("/ocio/write_paths", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+            const dp = await rp.json();
+            for (const p of ((dp && Array.isArray(dp.existing)) ? dp.existing : [])) seen.add(String(p));
+        }
+        const d = { existing: Array.from(seen) };
+        if (d.existing.length) {
             const n = d.existing.length, sample = String(d.existing[0]).split(/[\\/]/).pop();
             const msg = n === 1 ? `File already exists:\n\n${sample}\n\nOverwrite it?`
                                 : `${n} files already exist (e.g. ${sample}).\n\nOverwrite them?`;
@@ -2114,7 +2397,7 @@ app.registerExtension({
                 const self = this;
                 const viewerToggle = this.addWidget("button", "▾ Viewer", null, () => {
                     const c = self._ocioReadCollapsed = !self._ocioReadCollapsed;
-                    viewerToggle.name = (c ? "▸" : "▾") + " Viewer";
+                    _setWidgetLabel(viewerToggle, (c ? "▸" : "▾") + " Viewer");   // same chevron fix as the Player's Info toggle
                     const p = self._ocioPrev;
                     if (p && p.box) p.box.style.display = c ? "none" : "flex";
                     if (self._ocioMeta) self._ocioMeta.style.display = c ? "none" : "";
@@ -2206,6 +2489,8 @@ app.registerExtension({
                 const applyCompressionVis = () => {
                     const c = W(node, "container")?.value, isVideo = c === "video";
                     showWidget(node, W(node, "compression"), !isVideo && W(node, "still_format")?.value === "exr");
+                    const tcw = W(node, "start_timecode");                     // same EXR-or-video rule as applyContainer
+                    if (tcw) showWidget(node, tcw, W(node, "container")?.value === "video" || W(node, "still_format")?.value === "exr");
                 };
                 const applyContainer = () => {
                     const c = W(node, "container")?.value, isVideo = c === "video", isStill = c === "still image";
@@ -2222,6 +2507,10 @@ app.registerExtension({
                     if (fpsW) showWidget(node, fpsW, isVideo);
                     showWidget(node, W(node, "source_start"), false);          // internal (set by the wire)
                     showWidget(node, W(node, "auto_colorspace"), false);       // legacy LTX auto-detect, superseded by profile="auto"
+                    // start_timecode only lands somewhere for EXR (header attribute) and video (timecode track).
+                    // PNG / JPEG / TIFF have nowhere to put it, so showing the field there promises a delivery
+                    // detail the file cannot carry.
+                    showWidget(node, W(node, "start_timecode"), isVideo || W(node, "still_format")?.value === "exr");
                     const ff = W(node, "first_frame");                         // relabel the shared field
                     if (ff) {
                         ff.label = isStill ? "frame to save" : "first_frame";
@@ -2300,6 +2589,17 @@ app.registerExtension({
             nodeType.prototype.onConfigure = function () {
                 const r = onConfigW ? onConfigW.apply(this, arguments) : undefined;
                 const node = this;
+                // A GRAPH SAVED BEFORE write_audio EXISTED LOADS IT AS null, AND null STRIPS THE SOUND.
+                // widgets_values is positional over ALL widgets, and this pack's two BUTTONS ("Output Folder",
+                // "▶ Render") are widgets too, serialised as null. write_audio was appended after start_timecode
+                // and therefore landed exactly where the first button's null used to sit, so an old 23-value
+                // graph loads write_audio = null - falsy, and the write then drops the audio it used to keep.
+                // Reproduced in the canvas: every other value survived (filename, fps 25, timecode 02:00:00:00)
+                // and only this one came back null. "A missing optional input falls through to the Python
+                // default" is true and does not help here, because the value is not missing - it is present
+                // and null. Repaired on load, and again in write() for a prompt posted straight to the API.
+                const wa = W(node, "write_audio");
+                if (wa && (wa.value === null || wa.value === undefined)) wa.value = true;
                 setTimeout(() => { syncWriteFromUpstream(node); resolveAutoProfile(node); }, 0);   // loaded workflow -> re-detect
                 return r;
             };
@@ -2326,18 +2626,80 @@ app.registerExtension({
                     ctx.fillStyle = "#6c6"; ctx.textAlign = "right";
                     ctx.fillText(`✓ wrote ${this._ocioWrote} frame(s)`, this.size[0] - 8, this.size[1] - 6);
                 }
+                // Audio verdict from the run (2026-08-12): whether a wired track was muxed, shipped as a sidecar,
+                // or ignored. Silence about sound is how a silent master ships unnoticed.
+                if (this._ocioAudio) {
+                    ctx.fillStyle = "#dc8"; ctx.textAlign = "right"; ctx.font = "9px sans-serif";
+                    ctx.fillText(this._ocioAudio, this.size[0] - 8, this.size[1] - 18);
+                }
+                // Metadata verdict: which colour attributes were authored, the start timecode, and - the part that
+                // must not be silent - anything DROPPED because a colour transform would have made it false.
+                if (this._ocioMeta) {
+                    ctx.fillStyle = "#9ab"; ctx.textAlign = "right"; ctx.font = "9px sans-serif";
+                    ctx.fillText(this._ocioMeta.slice(0, 120), this.size[0] - 8, this.size[1] - 30);
+                }
                 ctx.restore();
             };
             const onExec = nodeType.prototype.onExecuted;
             nodeType.prototype.onExecuted = function (message) {
                 onExec && onExec.apply(this, arguments);
                 const c = message && message.count;
+                const au = message && message.audio;
+                const mt = message && message.meta;
+                this._ocioAudio = au ? (Array.isArray(au) ? au[0] : au) : null;
+                this._ocioMeta = mt ? (Array.isArray(mt) ? mt[0] : mt) : null;
                 if (c) {
                     this._ocioWrote = Array.isArray(c) ? c[0] : c; this.setDirtyCanvas(true, true);
                     // Vue frontends do not draw the canvas "wrote N" corner text; a toast carries the count there
                     app.extensionManager?.toast?.add?.({ severity: "success", summary: "OCIO Write",
-                        detail: `wrote ${this._ocioWrote} frame(s)`, life: 4000 });
+                        detail: `wrote ${this._ocioWrote} frame(s)` + (this._ocioAudio ? `, ${this._ocioAudio}` : ""),
+                        life: 4000 });
+                    // A dropped pixel-state claim is a delivery fact, not a detail: the canvas corner text does not
+                    // draw on Vue frontends at all, so it gets its own toast there.
+                    // "clipped" joins "dropped" here (2026-08-13): an integer container that ate the below-black
+                    // and the highlights is a delivery fact of exactly the same weight, and on a Vue frontend
+                    // the corner text is never drawn, so without this toast the artist is told nothing at all.
+                    if (this._ocioMeta && /dropped|clipped/.test(this._ocioMeta)) {
+                        app.extensionManager?.toast?.add?.({ severity: "warn", summary: "OCIO Write metadata",
+                            detail: this._ocioMeta, life: 8000 });
+                    }
+                } else if (this._ocioAudio || this._ocioMeta) {
+                    this.setDirtyCanvas(true, true);
                 }
+            };
+        }
+
+        // A COMBO VALUE THAT NO LONGER EXISTS MAKES A SAVED GRAPH UNRUNNABLE, AND IT LOOKS FINE UNTIL RUN.
+        // `precision` on both VAE nodes offered "model default" until 2026-08-13 and now offers only float32 and
+        // float16. Measured in the canvas WITH A CONTROL, so the cause is attributed rather than assumed: the same
+        // graph carrying "float32" queues with HTTP 200 and no errors, while the one carrying "model default" is
+        // refused with HTTP 400 and the server names exactly one reason, `precision: 'model default' not in
+        // ['float32', 'float16']`. The widget meanwhile DISPLAYS "model default" - a value it does not offer - so
+        // the artist sees something that reads as set and gets a rejection with no hint of what to change.
+        //
+        // Repaired here rather than silently: the value is snapped to the node's own default so the graph RUNS,
+        // and a warning toast names what changed and what it costs, because the old value meant the model's own
+        // dtype and the new default is float32, which is measured at about 5x the decode time. Snapping without
+        // saying so would hand someone a 5x slower render and no reason for it.
+        if (nodeData.name === "OCIOVAEDecode" || nodeData.name === "OCIOVAEEncode") {
+            const onConfigV = nodeType.prototype.onConfigure;
+            nodeType.prototype.onConfigure = function () {
+                const r = onConfigV ? onConfigV.apply(this, arguments) : undefined;
+                const w = W(this, "precision");
+                const offered = w && w.options && Array.isArray(w.options.values) ? w.options.values : null;
+                if (w && offered && offered.length && !offered.includes(w.value)) {
+                    const was = w.value;
+                    w.value = offered.includes("float32") ? "float32" : offered[0];
+                    this.setDirtyCanvas(true, true);
+                    app.extensionManager?.toast?.add?.({
+                        severity: "warn", summary: nodeData.name.replace("OCIO", "OCIO "),
+                        detail: `This graph asked for precision "${was}", which this node no longer offers. `
+                              + `Set to "${w.value}" so the graph can run. "${was}" meant the model's own dtype; `
+                              + `float32 is about 5x the decode time. Pick float16 to fall back to the model's `
+                              + `dtype where it does not offer float16.`,
+                        life: 12000 });
+                }
+                return r;
             };
         }
 
@@ -2346,7 +2708,23 @@ app.registerExtension({
             nodeType.prototype.onNodeCreated = function () {
                 const r = onCreated ? onCreated.apply(this, arguments) : undefined;
                 ensurePlayer(this);                                           // float WebGL viewport + exposure slider
-                ensurePlayerMeta(this);                                       // metadata panel under it
+                // Fold the info panel away. It answers "what am I looking at" once, and after that it is seven
+                // lines of the node spent on an answer you already have. Built as the SAME disclosure button
+                // OCIO Read uses for its Viewer (a button widget with serialize:false, label flipping between the
+                // two chevrons, runtime-only) rather than a second style of control - Read folds its own metadata
+                // away together with its viewer, so the Player was the one node with no way to do it.
+                // Created BEFORE the panel, so it sits ABOVE the rows it controls: the header stays put while the
+                // block under it opens and closes, instead of the control moving up the node as the rows vanish.
+                const selfP = this;
+                const infoToggle = this.addWidget("button", "▾ Info", null, () => {
+                    const c = selfP._ocioMetaCollapsed = !selfP._ocioMetaCollapsed;
+                    _setWidgetLabel(infoToggle, (c ? "▸" : "▾") + " Info");
+                    if (selfP._ocioPlayerMeta) selfP._ocioPlayerMeta.style.display = c ? "none" : "";
+                    selfP.setSize([selfP.size[0], selfP.computeSize()[1]]);
+                    selfP.setDirtyCanvas(true, true);
+                }, { serialize: false });
+                infoToggle._ocioAlwaysVisible = true;
+                ensurePlayerMeta(this);                                       // metadata panel, under the toggle
                 renderPlayerMeta(this, null);                                 // empty until a render arrives
                 // a manual colorspace edit wins over the HDR auto-guess; live colorspace change -> re-bake the LUT
                 for (const w of ["input_colorspace", "output_colorspace", "raw_data"]) {
@@ -2382,7 +2760,9 @@ app.registerExtension({
                 onExec && onExec.apply(this, arguments);
                 try { playerOnExecuted(this, message); } catch (e) { console.error("[OCIO Player] onExecuted:", e); }
             };
-            // colorspace label (input -> output) in the title bar, same as OCIO Read
+            // colorspace label (input -> output) in the title bar, same as OCIO Read, plus one line saying what
+            // the viewport is actually presenting. See presentationCaps: users ask whether they are looking at
+            // HDR or at 8 bits, and the honest answer is worth more than a guess either way.
             const onDraw = nodeType.prototype.onDrawForeground;
             nodeType.prototype.onDrawForeground = function (ctx) {
                 onDraw && onDraw.apply(this, arguments);
@@ -2392,6 +2772,12 @@ app.registerExtension({
                 ctx.save();
                 ctx.font = "10px sans-serif"; ctx.fillStyle = "#9cf"; ctx.textAlign = "right";
                 ctx.fillText(`${shorten(a.value)} → ${shorten(b.value)}`, this.size[0] - 8, -6);
+                // The presentation line lives in the metadata panel (PLAYER_META_ROWS "Display"), NOT here. Two
+                // reasons, both measured: the Vue node renderer never calls onDrawForeground at all, so a corner
+                // string reaches nobody on that frontend; and this corner sits at size[1]-6, which is inside the
+                // metadata panel's own rows, so on the legacy canvas the same sentence was drawn on top of the
+                // panel that now carries it. The title-bar colorspace label above stays, because it sits at y=-6,
+                // outside the node body, and it is the one thing readable when the node is small.
                 ctx.restore();
             };
         }

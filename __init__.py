@@ -18,11 +18,27 @@ from .vae_nodes import (NODE_CLASS_MAPPINGS as _VAE_CLASSES,
 NODE_CLASS_MAPPINGS.update(_IO_CLASSES)
 NODE_DISPLAY_NAME_MAPPINGS.update(_IO_NAMES)
 
-# 2026-08-12: OCIO VAE Decode - decoding without the 0..1 clamp, optionally in float32. The stock
-# VAEDecode clamps every decode, which measurably flattens the foot of the curve before any colour
-# node can reach it.
+# TWO nodes come from vae_nodes.py, not one. Naming only the first here is how a reader of this file concludes
+# the pack has a single VAE node (corrected 2026-08-13):
+#   OCIO VAE Decode  (2026-08-12) - decodes without the 0..1 clamp, optionally in float32. The stock VAEDecode
+#                    clamps every decode, which measurably flattens the foot of the curve before any colour node
+#                    can reach it, and it rescales output from VAEs whose own transform already emits [0, 1].
+#   OCIO VAE Encode  (2026-08-13) - the other end of the round trip. It reports the range of what it was handed
+#                    BEFORE the latent exists, so out-of-range input is seen rather than inferred afterwards.
+# The class keys are OCIOVAEDecode and OCIOVAEEncode, registered by the dict merge below rather than by name, so
+# grepping this file for either key finds nothing - which is exactly why they are written out here.
 NODE_CLASS_MAPPINGS.update(_VAE_CLASSES)
 NODE_DISPLAY_NAME_MAPPINGS.update(_VAE_NAMES)
+
+# OCIO Metadata (2026-08-13), class key OCIOMetadata, from meta_nodes.py. The twelfth node. OCIO Read's metadata
+# output had exactly one possible destination - OCIO Write's metadata input - so the plate's identity could travel
+# and be delivered but could not be seen or corrected. This node sits on that wire: it reports what is there and
+# lets a reel, scene, shot, take, camera or lens be set or fixed, writing the same spellings every writer in this
+# pack already reads (io_nodes._IDENTITY_FROM), so nothing else needed changing.
+from .meta_nodes import (NODE_CLASS_MAPPINGS as _META_CLASSES,
+                         NODE_DISPLAY_NAME_MAPPINGS as _META_NAMES)
+NODE_CLASS_MAPPINGS.update(_META_CLASSES)
+NODE_DISPLAY_NAME_MAPPINGS.update(_META_NAMES)
 
 # OCIO Grade / Grade Match / Apply Grade disabled 2026-07-04 (see above) - NOT registered:
 # NODE_CLASS_MAPPINGS.update(_GRADE_CLASSES)
@@ -327,14 +343,15 @@ try:
         the Render button's overwrite confirmation. Same local single-user trust as /ocio/thumb. Added 2026-07-04."""
         import glob as _glob
         import re as _re
-        from .io_nodes import _write_output_paths
+        from .io_nodes import _write_output_paths, resolve_output_folder
         try:
             d = await request.json()
         except Exception:
             return web.json_response({"error": "bad json"}, status=400)
-        root = folder_paths.get_output_directory() if folder_paths else os.getcwd()
-        of = str(d.get("output_folder", "") or "").strip()
-        folder = root if not of else (of if os.path.isabs(of) else os.path.join(root, of))
+        # SAME resolver OCIOWrite.write() uses. This route used to repeat the logic inline, so the $OUTPUT token
+        # would have resolved one way for the "file exists?" prompt and another for the render - the prompt would
+        # have checked a literal folder named "$OUTPUT". Two answers to one question is how they drift.
+        folder = resolve_output_folder(str(d.get("output_folder", "") or ""))
         sf = d.get("still_frame")
         sf = int(sf) if (sf is not None and str(sf) != "") else None       # still grabbed from a seq/video -> stamp the frame number
         try:

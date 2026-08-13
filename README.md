@@ -14,7 +14,7 @@
 
 **By [AI VFX NEWS](https://aivfxnews.com/) · Slava Sexton.**
 
-![License: MIT](https://img.shields.io/badge/License-MIT-FFD27D.svg)
+![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-FFD27D.svg)
 ![ComfyUI](https://img.shields.io/badge/ComfyUI-custom_nodes-5BAEE3.svg)
 ![OpenColorIO](https://img.shields.io/badge/OpenColorIO-2.x-9aa3b2.svg)
 ![ACES](https://img.shields.io/badge/ACES-studio_config-9aa3b2.svg)
@@ -23,7 +23,7 @@
 
 ---
 
-Nine color-management nodes for ComfyUI, modelled on **The Foundry Nuke's OCIO node set** and backed by
+Eleven color-management nodes for ComfyUI, modelled on **The Foundry Nuke's OCIO node set** and backed by
 **OpenColorIO** with the built-in **ACES** config. Convert between colorspaces, grade with ASC CDL, apply a
 display transform or a LUT, scrub the result in an on-node viewer, and - the two big ones - **Read** any
 still / image sequence / video off disk and **Write** it back out color-managed, in EXR / TIFF / PNG / JPEG
@@ -89,6 +89,43 @@ it must be a **full build** (the codecs above are only in full builds) on your s
 
 Check it is found with `ffmpeg -version` in a terminal. If ffmpeg is not on `PATH`, the still/sequence nodes
 still work - only the video container in OCIO Read / Write is unavailable, and it says so.
+
+#### What each codec actually writes
+
+Measured, by encoding one and reading the file back with `ffprobe` (`bits_per_raw_sample` and `pix_fmt`), not
+copied from a table:
+
+| `video_codec` | container | pixel format | depth | chroma |
+| --- | --- | --- | --- | --- |
+| `prores_4444` | `.mov` | `yuv444p12le` | 12-bit | 4:4:4 |
+| `prores_422hq` | `.mov` | `yuv422p10le` | 10-bit | 4:2:2 |
+| `prores_422` | `.mov` | `yuv422p10le` | 10-bit | 4:2:2 |
+| `dnxhr_hq` | `.mov` | `yuv422p` | 8-bit | 4:2:2 |
+| `dnxhr_hqx` | `.mov` | `yuv422p10le` | 10-bit | 4:2:2 |
+| `dnxhr_444` | `.mov` | `yuv444p10le` | 10-bit | 4:4:4 |
+| `dnxhr_hq_mxf` | `.mxf` | `yuv422p` | 8-bit | 4:2:2 |
+| `dnxhr_hq_mxf_opatom` | `.mxf` | `yuv422p` | 8-bit | 4:2:2 |
+| `h264` | `.mp4` | `yuv420p` | 8-bit | 4:2:0 |
+| `hevc` | `.mp4` | `yuv420p` | 8-bit | 4:2:0 |
+
+Three things worth knowing before choosing:
+
+- **The DNx encoder here has no 12-bit pixel format at all.** It advertises exactly
+  `yuv422p yuv422p10le yuv444p10le gbrp10le`, so `dnxhr_444` buys full chroma rather than more bits. For 12 bit
+  the route is ProRes 4444.
+- **These figures describe the files this pack writes, and claim nothing about the Avid formats themselves.**
+  Avid's own sources disagree with the widely-repeated 8/10/12 table: its historical *High Resolution Workflows
+  Guide* calls both HQX and 444 12-bit, while its current naming page (April 2026) says that after the 2025
+  revision of ST 2019-1 the DNxHD / DNxHR / DNxGX families are unified as *Avid DNx*, with every level admitting
+  8 to 16 bits and extended sampling. The split is a property of particular implementations, this encoder's
+  included.
+- **The two MXF entries are the same DNxHR HQ picture as `dnxhr_hq`, in a different wrapper.** `dnxhr_hq_mxf` is
+  OP1a, one self-contained file with picture and sound; `dnxhr_hq_mxf_opatom` is OPAtom, which holds one essence
+  per file by design (SMPTE ST 390), so a wired audio track is written beside it as a `.wav` rather than muxed in.
+  Both carry the colour tags and a timecode. Of the shot identity, only the reel name is a documented MXF
+  interchange field - ffmpeg writes it as the Physical Source Package Name, which is what Avid means by Tape Name.
+  The rest travels as ffmpeg's own AAF-compatible tagged values, read back by ffmpeg itself, and is dependable
+  only in the sidecar `.json`.
 
 ### Compatibility: web UI and standalone
 
@@ -156,7 +193,7 @@ inside a native ComfyUI video graph, without bouncing frames out to a folder and
 
 ---
 
-## The nine nodes
+## The eleven nodes
 
 <div align="center">
 
@@ -228,11 +265,34 @@ HDR profile forces an EXR 16f master. `auto` reads the upstream node: it detects
 guesses from the LoRA filename, so confirm that pick. `none` leaves the colorspaces as you set them, and editing a
 colorspace by hand switches `profile` back to `none`. `Seedance 4K 10-bit` is a placeholder pending its color spec.
 
-**Codec drives the video output.** The `video_codec` fixes the bit depth and container: ProRes 4444 is 12-bit
-`.mov`, ProRes 422 / 422 HQ 10-bit `.mov`, DNxHR HQ 8-bit `.mov`, h264 and hevc 8-bit `.mp4`. The file carries the
-right NCLC color tags (primaries / transfer / matrix) from `output_colorspace`, so it does not gamma-shift between
-players. Video defaults to `sRGB - Display` to match the ComfyUI preview; switch it to `Rec.1886 Rec.709 - Display`
-for a broadcast 2.4 master, or `Rec.2100-PQ` for HDR video.
+**Codec drives the video output.** The `video_codec` fixes the bit depth and the container, and the node states the
+depth on itself once you pick one. The measured table for all ten is under
+[What each codec actually writes](#what-each-codec-actually-writes); it lives in one place on purpose, because a
+second list in this section is a second thing to forget to update. The file carries the right NCLC color tags
+(primaries / transfer / matrix) from `output_colorspace`, so it does not gamma-shift between players. Video
+defaults to `sRGB - Display` to match the ComfyUI preview; switch it to `Rec.1886 Rec.709 - Display` for a
+broadcast 2.4 master, or `Rec.2100-PQ` for HDR video.
+
+**Audio.** Wire an `AUDIO` output into the `audio` input and a `video` container muxes it in, 24-bit PCM in a
+`.mov` or an MXF OP1a and AAC in an `.mp4`, trimmed to exactly the frames written so it cannot drift. A `sequence`
+gets a `.wav` beside the frames instead, because EXR, TIFF and PNG hold no audio, and so does MXF OPAtom, which
+holds one essence per file by design. A native ComfyUI `Video` input brings its own track automatically; the
+`write_audio` toggle is how you decline that, since there is no wire to disconnect. For lip sync on LTX-2.5, read
+the offset caveat in the [LTX-2.5 recipe](#recipe-ltx-25-hdr-which-is-a-different-mechanism-from-23) first.
+
+> **If the folder is empty and the run said success, this is usually why.** ComfyUI's front end can send a
+> `partial_execution_targets` list with a prompt, naming which output nodes to run. Every output node *not* in that
+> list is dropped before execution starts, with no error, no warning and a `success` status. `OCIO Write` is an
+> output node, so it is droppable that way. Reproduced here, three runs of one graph with a single variable: no
+> field at all wrote both outputs; the field present and naming only a preview node wrote **nothing** while
+> reporting success; the field naming the write wrote both again. So the field is not the problem, the list
+> contents are.
+>
+> **The node cannot warn you about this, and that is not an oversight.** A skipped node never executes, so it has
+> nothing to report its own absence with: `validate_prompt` filters the output set, `ExecutionList` is seeded only
+> from what survives that filter, and nothing downstream calls the node at all. If a render reports success over an
+> empty folder, queue it from the graph rather than through a partial run, or post the prompt to `/prompt` yourself
+> without that field.
 
 ### OCIO Player
 
@@ -241,10 +301,21 @@ out, so wiring it never breaks the graph downstream). Takes an **OCIO Img/Seq/Vi
 (mutually exclusive, same as the color nodes). **input_colorspace -> output_colorspace** bakes the display
 transform live on the GPU; **raw_data** shows the pixels untouched. **start_frame / end_frame** and **fps** set
 the playback range, with a transport bar (play / step / loop) and an **exposure** slider (view-only, never
-baked into the graph). Full-res HALF-float: exposure and the display LUT run on the real values, scene-linear
-values above 1.0 included, not on a pre-baked 8-bit preview. The panel itself presents through the browser's
-standard SDR canvas, like any SDR viewer, so what the float buys you is an accurate exposure and colorspace
-check, not a brighter display.
+baked into the graph).
+
+**What you are looking at, plainly, because it decides whether you can trust it.** The picture on screen is
+8-bit SDR. The data behind it is not: the frame is half float and keeps everything the render produced, values
+above white included, and the exposure control multiplies those real values on the GPU before anything is drawn.
+Only the final composite is 8-bit. So you cannot see the whole range at once, but you CAN find out whether a
+highlight is there: pull exposure down, and if detail appears the data was always there. The exposure window
+reaches linear 222.86, which is 7.8 stops over diffuse white, and stops separating values past that.
+
+**On a calibrated HDR monitor this viewport still presents SDR, and that is a property of the viewport rather
+than of the browser.** A WebGL2 drawing buffer can hold 16-bit float, through `drawingBufferStorage` (Chrome 122
+onward), and this one uses the default 8-bit buffer. Measured with both preconditions that call requires: the
+buffer reports 16 bits per channel and reads back 4.0 and -0.25 unchanged. So judge RANGE and colour decisions
+here, and judge how the picture LOOKS on your grading monitor. [docs/NODES_COLOR.md](docs/NODES_COLOR.md) carries
+the call, its preconditions, and the limits of what that measurement establishes.
 
 ### OCIO ColorSpace
 
@@ -296,6 +367,58 @@ from the config (e.g. *ACES 1.3 Reference Gamut Compression*), **invert_directio
 flips in / out. Also takes a **ComfyUI Video** input, mutually exclusive with the image (see *Image and Video*
 above).
 
+### OCIO VAE Decode
+
+Decode a latent **without the 0..1 clamp**. The stock `VAEDecode` finishes with `.clamp_(0, 1)`, which is correct
+for an 8-bit preview and destructive for anything else: on an HDR decode the values above white and below black
+are simply gone, and no float container recovers them afterwards because the range never reached the tensor. This
+node keeps them.
+
+- **clamp** - off by default. On, it reproduces the stock node exactly, for comparison.
+- **precision** - `float32` (the default) or `float16`. The precision is always named: a colour pipeline should
+  state the dtype it ran at rather than inherit whichever one the checkpoint's branch of `comfy/sd.py` happens to
+  list first. **float32 is the expensive default**, measured on 25 frames at 1280x704 tiled at 384: about **5x**
+  the model's own dtype on the decode (5.96 s against 29.90 s, timed per node from the server's websocket) and
+  **1.80x** on the encode. Untiled at full resolution it is far worse - it spills into VRAM offload - so turn
+  tiling on when you pick it.
+  `float16` is honoured only where the VAE lists it, and the profiles genuinely differ: of the 23
+  `working_dtypes` lists in `comfy/sd.py`, 8 omit float16 (the LTX video VAE among them) while 9 put it FIRST,
+  and `vae_dtype()` walks that list in order. On the LTX VAE, where it is not listed, the node **declines** and
+  says so on the range report instead of forcing the cast - and the decode then runs at the model's own dtype,
+  which is how you get the fast path. On the one SDR clip measured here float16 landed closer to float32 than
+  bfloat16 did (median 0.000053 against 0.000445) at bfloat16's speed, but its known failure is exponent range,
+  which that clip cannot reach, so check an HDR master before delivering one at float16.
+  **`model default` was removed**: a saved graph storing it is rejected with `value_not_in_list` and the widget
+  has to be re-picked. Widget order did not change, so nothing else in a saved graph shifts.
+  `docs/NODES_VAE.md` section 3.2 has the census, the measurements and the caveat - the tooltips are kept short
+  on purpose and point there.
+- **tiled / tile_size / overlap** - spatial tiling, off by default so no existing graph changes behaviour. Turn it
+  on for a long clip, and **leave the temporal defaults alone**: a diffusion decoder has no context at a temporal
+  tile edge, so tiling time puts a visibly soft frame at a fixed period. The period is
+  `(tile_t - overlap_t)` times the VAE's temporal ratio, which on the LTX-2 VAE at `temporal_size` 32 is every 16
+  pixel frames at this node's overlap default, or every 24 at ComfyUI's. The published measurement was taken at the
+  24 spacing: per-frame sharpness dipped to 62 % of the clip median at frames 25 / 49 / 73 / 97.
+  **Spatial tiling shows no seam, and that is not the same as showing no difference.** Measured on one 25-frame
+  latent decoded both ways, tiled against untiled differs by up to 0.147 on the first frame and 0.317 by the
+  twenty-fifth, with 58 to 62 % of samples differing at all. That is roughly thirty times the difference the
+  `precision` choice makes. The worst pixels are scattered rather than sitting on tile boundaries, so it is the
+  decoder doing genuinely different work per tile, not a blend artefact. The growth across the clip is measured and
+  unexplained; content brightness does not account for it. Choose tiling once per delivery, not mid-shot.
+- **range report** - a second `STRING` output with min / max / mean, percentiles and the exact share of samples
+  below 0 and above 1, so you can read what a clamp would have cost before you write the file.
+
+It recognises the VAE's own output transform rather than assuming one. `comfy/sd.py` sets `process_output` to the
+identity in eleven places - five image decoders that already emit 0..1, including TAEHV, plus six audio VAEs - and
+a node that rewrites that unconditionally turns a correct frame into a washed-out one with no error anywhere. This
+one probes the transform, replaces only the shape it knows, and reports anything unfamiliar instead of overwriting.
+
+### OCIO VAE Encode
+
+The other half of the round trip, for consistency with the rest of the pack rather than because the stock encode
+is broken. It reports **out-of-range input** instead of letting it fold in silently: the stock path applies
+`image * 2 - 1` with no clamp, so values outside 0..1 are carried into the latent without a word. Useful when you
+are feeding it a real HDR plate and want to know what the model was actually given.
+
 ---
 
 ## Color accuracy, measured
@@ -325,7 +448,7 @@ Latest run:
   in Nuke / Resolve / any OCIO tool. It is **not** bit-for-bit lossless (nothing through an OCIO LUT is), but the
   error (~2^-17.8) is about 100x finer than one half-float (EXR 16f) step near 1.0 (~2^-11), so a half-float
   delivery never resolves it. In bit terms: light is non-negative, so half-float's sign bit is unused and its
-  usable range is ~15 bits — the round-trip holds ~14.6 of them, a sub-half-bit shortfall against the container.
+  usable range is ~15 bits, and the round-trip holds ~14.6 of them, a sub-half-bit shortfall against the container.
 - **HDR safety: 0 silent clamps.** Negatives and values above 1.0 survive the conversions, curves and grades. No
   quiet clip to the `0..1` box.
 - **Rec.709 -> ACEScg parity: 0.00e+00.** The exact path the LTX and Flux HDR recipes rely on.
@@ -383,6 +506,41 @@ decode to float precision. As with any EXR here, set `OPENCV_IO_ENABLE_OPENEXR=1
 
 ---
 
+## Recipe: LTX-2.5 HDR, which is a different mechanism from 2.3
+
+**These two are not interchangeable, and the wrong preset does not error - it just looks wrong.** LTX-2.3's HDR is
+an IC-LoRA trained on the ARRI LogC3 curve, and Lightricks' own ComfyUI node already undoes that curve, so what
+reaches this pack is **linear**. LTX-2.5's HDR is **ACEScct**, reached through the `--hdr` flag in their reference
+CLI: their pipeline rotates the source primaries to AP1 *before* compressing, so the VAE hands out ACEScct **log
+codes already in ACEScg primaries** and only the transfer has to be undone. Feed 2.5 material through the 2.3
+preset and log gets treated as linear: the frame comes out flat and grey.
+
+<div align="center">
+
+<img src="docs/assets/ltx25_pipeline.svg" width="880" alt="The LTX-2.5 ACEScct pipeline in three columns. INPUT: OCIO Read of a folder of EXR frames in ACEScg scene-linear, into OCIO LogConvert set to Linear to Log with the ACEScct curve, giving ACEScct codes in 0 to 1, then scaled to the VAE's own range. MODEL: LTX-2.5, a 22B transformer with a 128-channel video VAE trained alongside it, and a separate audio VAE producing the synchronised track, which bypasses colour entirely. OUTPUT: OCIO VAE Decode in float32 with no clamp, giving ACEScct codes back, into OCIO LogConvert set to Log to Linear, giving scene-linear HDR, which feeds two writes: an EXR 16f or 32f master with lossless zip compression, and a ProRes 4444 12-bit review movie carrying the audio track.">
+
+</div>
+
+**Two ways to undo the curve, and they are equivalent.** The diagram shows the explicit one, which is the clearer
+starting point: **OCIO LogConvert** with `operation = Log to Linear` and `curve = ACEScct` after the decode, and
+the mirror of it (`Linear to Log`, `ACEScct`) before the encode. The short one is **OCIO Write**'s
+`profile = LTX 2.5 HDR (ACEScct)`, which asks the OCIO config for ACEScct to ACEScg and forces EXR 16f, matching
+the half-float EXR their reference writes. Pick whichever you can read at a glance in your graph.
+
+**Decode with the clamp off, or the range you came for is gone.** That is what **OCIO VAE Decode** is for: the
+stock `VAEDecode` finishes with `.clamp_(0, 1)`. Turn `tiled` on for anything long, and read the node's
+**range report** output to see what a clamp would have cost before you write.
+
+**The audio track bypasses colour, and it arrives late.** LTX-2.5 has a separate audio VAE, and its output is
+**offset against the source wav**: measured envelope correlation peaks at **+0.661 at -64 ms**, inside the -60 to
+-125 ms range others have reported, against +0.002 when the model composes its own track instead. Our muxing adds
+no drift of its own (measured 0.00 ms), but that measures the mux, not the VAE. So for anything that has to lip
+sync, **line the original wav up against the picture in the edit** rather than trusting the decoded track, which
+the lossy audio VAE degrades anyway. Wire the track into **OCIO Write**'s `audio` input for a review movie, and
+turn `write_audio` off for a picture-only master.
+
+---
+
 ## API video sources (Seedance and friends)
 
 Cloud video nodes (Seedance, Kling, Veo, and the like) emit a `VIDEO`, not an `IMAGE`. To color-manage one,
@@ -434,4 +592,5 @@ basis.
 Modelled on **The Foundry Nuke's** OCIO node set, powered by the **Academy Software Foundation's OpenColorIO**
 and the **ACES** reference config. Full credits and licenses in **[ATTRIBUTION.md](ATTRIBUTION.md)**.
 
-MIT licensed. By **[AI VFX NEWS](https://aivfxnews.com/)**, authored by **Slava Sexton**.
+Apache-2.0 licensed. Keep the [`NOTICE`](NOTICE) file with any redistribution. By
+**[AI VFX NEWS](https://aivfxnews.com/)**, authored by **Slava Sexton**.

@@ -1,991 +1,64 @@
 {
-  "id": "26c25490-d44f-451f-b0be-afe55b5257f3",
+  "id": "ocio-nodes-example",
   "revision": 0,
-  "last_node_id": 16,
-  "last_link_id": 20,
+  "last_node_id": 11,
+  "last_link_id": 11,
   "nodes": [
     {
       "id": 1,
-      "type": "LoadImage",
+      "type": "OCIORead",
       "pos": [
-        -272.5436279066994,
-        662.9561998536566
+        40,
+        140
       ],
       "size": [
-        300,
-        432
+        340,
+        130
       ],
       "flags": {},
       "order": 0,
       "mode": 0,
-      "inputs": [
-        {
-          "localized_name": "image",
-          "name": "image",
-          "type": "COMBO",
-          "widget": {
-            "name": "image"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "choose file to upload",
-          "name": "upload",
-          "type": "IMAGEUPLOAD",
-          "widget": {
-            "name": "upload"
-          },
-          "link": null
-        }
-      ],
+      "inputs": [],
       "outputs": [
         {
-          "localized_name": "IMAGE",
-          "name": "IMAGE",
-          "type": "IMAGE",
-          "slot_index": 0,
-          "links": []
-        },
-        {
-          "localized_name": "MASK",
-          "name": "MASK",
-          "type": "MASK",
-          "slot_index": 1,
-          "links": null
-        }
-      ],
-      "title": "Load Image (source)",
-      "properties": {
-        "Node name for S&R": "LoadImage"
-      },
-      "widgets_values": [
-        "nyc_skyline.png",
-        "image"
-      ]
-    },
-    {
-      "id": 2,
-      "type": "OCIOColorSpace",
-      "pos": [
-        446.83559731012986,
-        212.72162932015294
-      ],
-      "size": [
-        485.78125,
-        256
-      ],
-      "flags": {},
-      "order": 3,
-      "mode": 0,
-      "inputs": [
-        {
-          "localized_name": "image",
-          "name": "image",
-          "type": "IMAGE",
-          "link": 13
-        },
-        {
-          "localized_name": "in_colorspace",
-          "name": "in_colorspace",
-          "type": "COMBO",
-          "widget": {
-            "name": "in_colorspace"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "out_colorspace",
-          "name": "out_colorspace",
-          "type": "COMBO",
-          "widget": {
-            "name": "out_colorspace"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "mix",
-          "name": "mix",
-          "type": "FLOAT",
-          "widget": {
-            "name": "mix"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "config_path",
-          "name": "config_path",
-          "shape": 7,
-          "type": "COMBO",
-          "widget": {
-            "name": "config_path"
-          },
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "localized_name": "image",
-          "name": "image",
-          "type": "IMAGE",
-          "slot_index": 0,
-          "links": [
-            7
-          ]
-        }
-      ],
-      "title": "OCIO ColorSpace  (sRGB -> ACEScct; press the swap button to flip)",
-      "properties": {
-        "Node name for S&R": "OCIOColorSpace"
-      },
-      "widgets_values": [
-        "sRGB - Display",
-        "ACEScct",
-        1,
-        "(built-in ACES config)",
-        null,
-        null
-      ]
-    },
-    {
-      "id": 8,
-      "type": "PreviewImage",
-      "pos": [
-        1077.6784821508852,
-        72.75273806312379
-      ],
-      "size": [
-        320,
-        348
-      ],
-      "flags": {},
-      "order": 9,
-      "mode": 0,
-      "inputs": [
-        {
-          "localized_name": "images",
-          "name": "images",
-          "type": "IMAGE",
-          "link": 7
-        }
-      ],
-      "outputs": [],
-      "title": "view: OCIO ColorSpace",
-      "properties": {
-        "Node name for S&R": "PreviewImage"
-      },
-      "widgets_values": []
-    },
-    {
-      "id": 3,
-      "type": "OCIOLogConvert",
-      "pos": [
-        477.8976710727453,
-        537.1590684290982
-      ],
-      "size": [
-        413.234375,
-        250
-      ],
-      "flags": {},
-      "order": 4,
-      "mode": 0,
-      "inputs": [
-        {
-          "localized_name": "image",
-          "name": "image",
-          "type": "IMAGE",
-          "link": 14
-        },
-        {
-          "localized_name": "operation",
-          "name": "operation",
-          "type": "COMBO",
-          "widget": {
-            "name": "operation"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "curve",
-          "name": "curve",
-          "type": "COMBO",
-          "widget": {
-            "name": "curve"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "mix",
-          "name": "mix",
-          "type": "FLOAT",
-          "widget": {
-            "name": "mix"
-          },
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "localized_name": "image",
-          "name": "image",
-          "type": "IMAGE",
-          "slot_index": 0,
-          "links": [
-            8
-          ]
-        }
-      ],
-      "title": "OCIO LogConvert  (CINEON lin->log, black lifted ~0.093)",
-      "properties": {
-        "Node name for S&R": "OCIOLogConvert"
-      },
-      "widgets_values": [
-        "lin_to_log",
-        "cineon",
-        1,
-        null
-      ]
-    },
-    {
-      "id": 9,
-      "type": "PreviewImage",
-      "pos": [
-        1077.6784821508852,
-        490.7527380631239
-      ],
-      "size": [
-        320,
-        348
-      ],
-      "flags": {},
-      "order": 10,
-      "mode": 0,
-      "inputs": [
-        {
-          "localized_name": "images",
-          "name": "images",
-          "type": "IMAGE",
-          "link": 8
-        }
-      ],
-      "outputs": [],
-      "title": "view: OCIO LogConvert",
-      "properties": {
-        "Node name for S&R": "PreviewImage"
-      },
-      "widgets_values": []
-    },
-    {
-      "id": 4,
-      "type": "OCIOCDLTransform",
-      "pos": [
-        477.8976710727453,
-        857.1590684290982
-      ],
-      "size": [
-        340,
-        456
-      ],
-      "flags": {},
-      "order": 5,
-      "mode": 0,
-      "inputs": [
-        {
-          "localized_name": "image",
-          "name": "image",
-          "type": "IMAGE",
-          "link": 15
-        },
-        {
-          "localized_name": "slope_r",
-          "name": "slope_r",
-          "type": "FLOAT",
-          "widget": {
-            "name": "slope_r"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "slope_g",
-          "name": "slope_g",
-          "type": "FLOAT",
-          "widget": {
-            "name": "slope_g"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "slope_b",
-          "name": "slope_b",
-          "type": "FLOAT",
-          "widget": {
-            "name": "slope_b"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "offset_r",
-          "name": "offset_r",
-          "type": "FLOAT",
-          "widget": {
-            "name": "offset_r"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "offset_g",
-          "name": "offset_g",
-          "type": "FLOAT",
-          "widget": {
-            "name": "offset_g"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "offset_b",
-          "name": "offset_b",
-          "type": "FLOAT",
-          "widget": {
-            "name": "offset_b"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "power_r",
-          "name": "power_r",
-          "type": "FLOAT",
-          "widget": {
-            "name": "power_r"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "power_g",
-          "name": "power_g",
-          "type": "FLOAT",
-          "widget": {
-            "name": "power_g"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "power_b",
-          "name": "power_b",
-          "type": "FLOAT",
-          "widget": {
-            "name": "power_b"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "saturation",
-          "name": "saturation",
-          "type": "FLOAT",
-          "widget": {
-            "name": "saturation"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "direction",
-          "name": "direction",
-          "type": "COMBO",
-          "widget": {
-            "name": "direction"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "mix",
-          "name": "mix",
-          "type": "FLOAT",
-          "widget": {
-            "name": "mix"
-          },
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "localized_name": "image",
-          "name": "image",
-          "type": "IMAGE",
-          "slot_index": 0,
-          "links": [
-            9
-          ]
-        }
-      ],
-      "title": "OCIO CDLTransform  (warm grade, sat 1.2)",
-      "properties": {
-        "Node name for S&R": "OCIOCDLTransform"
-      },
-      "widgets_values": [
-        1.1,
-        1,
-        0.9,
-        0,
-        0,
-        0,
-        1,
-        1,
-        1,
-        1.2,
-        "forward",
-        1
-      ]
-    },
-    {
-      "id": 10,
-      "type": "PreviewImage",
-      "pos": [
-        1077.6784821508852,
-        908.7527380631238
-      ],
-      "size": [
-        320,
-        348
-      ],
-      "flags": {},
-      "order": 11,
-      "mode": 0,
-      "inputs": [
-        {
-          "localized_name": "images",
-          "name": "images",
-          "type": "IMAGE",
-          "link": 9
-        }
-      ],
-      "outputs": [],
-      "title": "view: OCIO CDLTransform",
-      "properties": {
-        "Node name for S&R": "PreviewImage"
-      },
-      "widgets_values": []
-    },
-    {
-      "id": 5,
-      "type": "OCIODisplay",
-      "pos": [
-        477.8976710727453,
-        1375.1590684290977
-      ],
-      "size": [
-        340,
-        288
-      ],
-      "flags": {},
-      "order": 6,
-      "mode": 0,
-      "inputs": [
-        {
-          "localized_name": "image",
-          "name": "image",
-          "type": "IMAGE",
-          "link": 16
-        },
-        {
-          "localized_name": "in_colorspace",
-          "name": "in_colorspace",
-          "type": "COMBO",
-          "widget": {
-            "name": "in_colorspace"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "display",
-          "name": "display",
-          "type": "COMBO",
-          "widget": {
-            "name": "display"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "view",
-          "name": "view",
-          "type": "COMBO",
-          "widget": {
-            "name": "view"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "invert_direction",
-          "name": "invert_direction",
-          "type": "BOOLEAN",
-          "widget": {
-            "name": "invert_direction"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "mix",
-          "name": "mix",
-          "type": "FLOAT",
-          "widget": {
-            "name": "mix"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "config_path",
-          "name": "config_path",
-          "shape": 7,
-          "type": "COMBO",
-          "widget": {
-            "name": "config_path"
-          },
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "localized_name": "image",
-          "name": "image",
-          "type": "IMAGE",
-          "slot_index": 0,
-          "links": [
-            10
-          ]
-        }
-      ],
-      "title": "OCIO Display  (ACES SDR view)",
-      "properties": {
-        "Node name for S&R": "OCIODisplay"
-      },
-      "widgets_values": [
-        "ACES2065-1",
-        "sRGB - Display",
-        "ACES 2.0 - SDR 100 nits (Rec.709)",
-        false,
-        1,
-        "(built-in ACES config)",
-        null
-      ]
-    },
-    {
-      "id": 11,
-      "type": "PreviewImage",
-      "pos": [
-        1077.6784821508852,
-        1326.7527380631234
-      ],
-      "size": [
-        320,
-        348
-      ],
-      "flags": {},
-      "order": 12,
-      "mode": 0,
-      "inputs": [
-        {
-          "localized_name": "images",
-          "name": "images",
-          "type": "IMAGE",
-          "link": 10
-        }
-      ],
-      "outputs": [],
-      "title": "view: OCIO Display",
-      "properties": {
-        "Node name for S&R": "PreviewImage"
-      },
-      "widgets_values": []
-    },
-    {
-      "id": 6,
-      "type": "OCIOFileTransform",
-      "pos": [
-        477.8976710727453,
-        1713.1590684290977
-      ],
-      "size": [
-        340,
-        250
-      ],
-      "flags": {},
-      "order": 7,
-      "mode": 0,
-      "inputs": [
-        {
-          "localized_name": "image",
-          "name": "image",
-          "type": "IMAGE",
-          "link": 17
-        },
-        {
-          "localized_name": "file_path",
-          "name": "file_path",
-          "type": "COMBO",
-          "widget": {
-            "name": "file_path"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "interpolation",
-          "name": "interpolation",
-          "type": "COMBO",
-          "widget": {
-            "name": "interpolation"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "direction",
-          "name": "direction",
-          "type": "COMBO",
-          "widget": {
-            "name": "direction"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "mix",
-          "name": "mix",
-          "type": "FLOAT",
-          "widget": {
-            "name": "mix"
-          },
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "localized_name": "image",
-          "name": "image",
-          "type": "IMAGE",
-          "slot_index": 0,
-          "links": [
-            11
-          ]
-        }
-      ],
-      "title": "OCIO FileTransform  (warm .cube LUT)",
-      "properties": {
-        "Node name for S&R": "OCIOFileTransform"
-      },
-      "widgets_values": [
-        "warm_demo.cube",
-        "linear",
-        "forward",
-        1,
-        null
-      ]
-    },
-    {
-      "id": 12,
-      "type": "PreviewImage",
-      "pos": [
-        1077.6784821508852,
-        1744.7527380631234
-      ],
-      "size": [
-        320,
-        348
-      ],
-      "flags": {},
-      "order": 13,
-      "mode": 0,
-      "inputs": [
-        {
-          "localized_name": "images",
-          "name": "images",
-          "type": "IMAGE",
-          "link": 11
-        }
-      ],
-      "outputs": [],
-      "title": "view: OCIO FileTransform",
-      "properties": {
-        "Node name for S&R": "PreviewImage"
-      },
-      "widgets_values": []
-    },
-    {
-      "id": 7,
-      "type": "OCIOLookTransform",
-      "pos": [
-        477.8976710727453,
-        2033.1590684290977
-      ],
-      "size": [
-        340,
-        316
-      ],
-      "flags": {},
-      "order": 8,
-      "mode": 0,
-      "inputs": [
-        {
-          "localized_name": "image",
-          "name": "image",
-          "type": "IMAGE",
-          "link": 18
-        },
-        {
-          "localized_name": "in_colorspace",
-          "name": "in_colorspace",
-          "type": "COMBO",
-          "widget": {
-            "name": "in_colorspace"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "out_colorspace",
-          "name": "out_colorspace",
-          "type": "COMBO",
-          "widget": {
-            "name": "out_colorspace"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "look",
-          "name": "look",
-          "type": "COMBO",
-          "widget": {
-            "name": "look"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "invert_direction",
-          "name": "invert_direction",
-          "type": "BOOLEAN",
-          "widget": {
-            "name": "invert_direction"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "mix",
-          "name": "mix",
-          "type": "FLOAT",
-          "widget": {
-            "name": "mix"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "config_path",
-          "name": "config_path",
-          "shape": 7,
-          "type": "COMBO",
-          "widget": {
-            "name": "config_path"
-          },
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "localized_name": "image",
-          "name": "image",
-          "type": "IMAGE",
-          "slot_index": 0,
-          "links": [
-            12
-          ]
-        }
-      ],
-      "title": "OCIO LookTransform  (ACES 1.3 RGC look)",
-      "properties": {
-        "Node name for S&R": "OCIOLookTransform"
-      },
-      "widgets_values": [
-        "ACES2065-1",
-        "sRGB - Display",
-        "ACES 1.3 Reference Gamut Compression",
-        false,
-        1,
-        "(built-in ACES config)",
-        null,
-        null
-      ]
-    },
-    {
-      "id": 13,
-      "type": "PreviewImage",
-      "pos": [
-        1077.6784821508852,
-        2162.7527380631245
-      ],
-      "size": [
-        320,
-        348
-      ],
-      "flags": {},
-      "order": 14,
-      "mode": 0,
-      "inputs": [
-        {
-          "localized_name": "images",
-          "name": "images",
-          "type": "IMAGE",
-          "link": 12
-        }
-      ],
-      "outputs": [],
-      "title": "view: OCIO LookTransform",
-      "properties": {
-        "Node name for S&R": "PreviewImage"
-      },
-      "widgets_values": []
-    },
-    {
-      "id": 15,
-      "type": "OCIORead",
-      "pos": [
-        -387.82991354872115,
-        1237.5599897906177
-      ],
-      "size": [
-        494.46875,
-        552
-      ],
-      "flags": {},
-      "order": 1,
-      "mode": 0,
-      "inputs": [
-        {
-          "localized_name": "source",
-          "name": "source",
-          "type": "STRING",
-          "widget": {
-            "name": "source"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "frame_mode",
-          "name": "frame_mode",
-          "type": "COMBO",
-          "widget": {
-            "name": "frame_mode"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "input_colorspace",
-          "name": "input_colorspace",
-          "type": "COMBO",
-          "widget": {
-            "name": "input_colorspace"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "output_colorspace",
-          "name": "output_colorspace",
-          "type": "COMBO",
-          "widget": {
-            "name": "output_colorspace"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "raw_data",
-          "name": "raw_data",
-          "type": "BOOLEAN",
-          "widget": {
-            "name": "raw_data"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "start_frame",
-          "name": "start_frame",
-          "type": "INT",
-          "widget": {
-            "name": "start_frame"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "end_frame",
-          "name": "end_frame",
-          "type": "INT",
-          "widget": {
-            "name": "end_frame"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "frame_shift",
-          "name": "frame_shift",
-          "type": "INT",
-          "widget": {
-            "name": "frame_shift"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "missing_frames",
-          "name": "missing_frames",
-          "type": "COMBO",
-          "widget": {
-            "name": "missing_frames"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "edge_mode",
-          "name": "edge_mode",
-          "type": "COMBO",
-          "widget": {
-            "name": "edge_mode"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "fps",
-          "name": "fps",
-          "type": "FLOAT",
-          "widget": {
-            "name": "fps"
-          },
-          "link": null
-        }
-      ],
-      "outputs": [
-        {
-          "localized_name": "image/video",
-          "name": "image/video",
+          "name": "image/sequence/video",
           "type": "IMAGE",
           "links": [
-            13,
-            14,
-            15,
-            16,
-            17,
-            18,
-            19
-          ]
+            1
+          ],
+          "slot_index": 0
         },
         {
-          "localized_name": "alpha",
           "name": "alpha",
           "type": "MASK",
-          "links": [
-            20
-          ]
+          "links": [],
+          "slot_index": 1
         },
         {
-          "localized_name": "fps",
           "name": "fps",
           "type": "FLOAT",
-          "links": null
+          "links": [],
+          "slot_index": 2
         },
         {
-          "localized_name": "info",
           "name": "info",
           "type": "STRING",
-          "links": null
+          "links": [],
+          "slot_index": 3
+        },
+        {
+          "name": "ComfyUI Video",
+          "type": "VIDEO",
+          "links": [],
+          "slot_index": 4
+        },
+        {
+          "name": "metadata",
+          "type": "STRING",
+          "links": [
+            11
+          ],
+          "slot_index": 5
         }
       ],
       "properties": {
@@ -995,235 +68,643 @@
         "nyc_skyline.png",
         "single",
         "sRGB - Display",
-        "sRGB - Display",
+        "ACEScg",
         false,
         0,
         0,
         0,
         "black",
         "hold",
-        0,
-        null,
-        null
-      ]
+        0.0
+      ],
+      "title": "OCIO Read - one file, a sequence, or a video"
     },
     {
-      "id": 16,
-      "type": "OCIOWrite",
+      "id": 2,
+      "type": "OCIOColorSpace",
       "pos": [
-        1644.4096240667031,
-        1231.1149456545054
+        440,
+        140
       ],
       "size": [
-        270,
-        632
+        340,
+        130
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 1,
+          "shape": 7
+        },
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "link": null,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image/sequence/video",
+          "type": "IMAGE",
+          "links": [
+            2
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "ComfyUI Video",
+          "type": "VIDEO",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "OCIOColorSpace"
+      },
+      "widgets_values": [
+        "ACEScg",
+        "ACEScg",
+        1.0,
+        "(built-in ACES config)"
+      ],
+      "title": "OCIO ColorSpace - 55 spaces, any to any"
+    },
+    {
+      "id": 3,
+      "type": "OCIOLogConvert",
+      "pos": [
+        440,
+        420
+      ],
+      "size": [
+        340,
+        130
       ],
       "flags": {},
       "order": 2,
       "mode": 0,
       "inputs": [
         {
-          "localized_name": "images",
-          "name": "images",
+          "name": "image",
           "type": "IMAGE",
-          "link": 19
+          "link": 2,
+          "shape": 7
         },
         {
-          "localized_name": "alpha",
-          "name": "alpha",
-          "shape": 7,
-          "type": "MASK",
-          "link": 20
-        },
-        {
-          "localized_name": "from_colorspace",
-          "name": "from_colorspace",
-          "type": "COMBO",
-          "widget": {
-            "name": "from_colorspace"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "output_colorspace",
-          "name": "output_colorspace",
-          "type": "COMBO",
-          "widget": {
-            "name": "output_colorspace"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "container",
-          "name": "container",
-          "type": "COMBO",
-          "widget": {
-            "name": "container"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "still_format",
-          "name": "still_format",
-          "type": "COMBO",
-          "widget": {
-            "name": "still_format"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "video_codec",
-          "name": "video_codec",
-          "type": "COMBO",
-          "widget": {
-            "name": "video_codec"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "bit_depth",
-          "name": "bit_depth",
-          "type": "COMBO",
-          "widget": {
-            "name": "bit_depth"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "auto_range",
-          "name": "auto_range",
-          "type": "BOOLEAN",
-          "widget": {
-            "name": "auto_range"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "first_frame",
-          "name": "first_frame",
-          "type": "INT",
-          "widget": {
-            "name": "first_frame"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "last_frame",
-          "name": "last_frame",
-          "type": "INT",
-          "widget": {
-            "name": "last_frame"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "start_number",
-          "name": "start_number",
-          "type": "INT",
-          "widget": {
-            "name": "start_number"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "source_start",
-          "name": "source_start",
-          "type": "INT",
-          "widget": {
-            "name": "source_start"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "raw_data",
-          "name": "raw_data",
-          "type": "BOOLEAN",
-          "widget": {
-            "name": "raw_data"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "output_folder",
-          "name": "output_folder",
-          "type": "STRING",
-          "widget": {
-            "name": "output_folder"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "filename",
-          "name": "filename",
-          "type": "STRING",
-          "widget": {
-            "name": "filename"
-          },
-          "link": null
-        },
-        {
-          "localized_name": "fps",
-          "name": "fps",
-          "shape": 7,
-          "type": "FLOAT",
-          "widget": {
-            "name": "fps"
-          },
-          "link": null
+          "name": "video",
+          "type": "VIDEO",
+          "link": null,
+          "shape": 7
         }
       ],
       "outputs": [
         {
-          "localized_name": "path",
+          "name": "image/sequence/video",
+          "type": "IMAGE",
+          "links": [
+            3
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "ComfyUI Video",
+          "type": "VIDEO",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "OCIOLogConvert"
+      },
+      "widgets_values": [
+        "Linear to Log",
+        "ACEScct",
+        1.0
+      ],
+      "title": "OCIO LogConvert - ten camera curves"
+    },
+    {
+      "id": 4,
+      "type": "OCIOLogConvert",
+      "pos": [
+        440,
+        700
+      ],
+      "size": [
+        340,
+        130
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 4,
+          "shape": 7
+        },
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "link": null,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image/sequence/video",
+          "type": "IMAGE",
+          "links": [
+            5
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "ComfyUI Video",
+          "type": "VIDEO",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "OCIOLogConvert"
+      },
+      "widgets_values": [
+        "Log to Linear",
+        "ACEScct",
+        1.0
+      ],
+      "title": "OCIO LogConvert - and back to linear"
+    },
+    {
+      "id": 5,
+      "type": "OCIOCDLTransform",
+      "pos": [
+        840,
+        140
+      ],
+      "size": [
+        340,
+        130
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 5,
+          "shape": 7
+        },
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "link": null,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image/sequence/video",
+          "type": "IMAGE",
+          "links": [
+            6,
+            9,
+            10
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "ComfyUI Video",
+          "type": "VIDEO",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "OCIOCDLTransform"
+      },
+      "widgets_values": [
+        1.05,
+        1.0,
+        0.95,
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+        1.0,
+        1.0,
+        1.1,
+        "forward",
+        1.0
+      ],
+      "title": "OCIO CDLTransform - ASC CDL"
+    },
+    {
+      "id": 6,
+      "type": "OCIOFileTransform",
+      "pos": [
+        840,
+        480
+      ],
+      "size": [
+        340,
+        130
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 3,
+          "shape": 7
+        },
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "link": null,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image/sequence/video",
+          "type": "IMAGE",
+          "links": [
+            4
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "ComfyUI Video",
+          "type": "VIDEO",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "OCIOFileTransform"
+      },
+      "widgets_values": [
+        "warm_demo.cube",
+        "linear",
+        "forward",
+        1.0
+      ],
+      "title": "OCIO FileTransform - a LUT file"
+    },
+    {
+      "id": 7,
+      "type": "OCIOLookTransform",
+      "pos": [
+        840,
+        780
+      ],
+      "size": [
+        340,
+        130
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 6,
+          "shape": 7
+        },
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "link": null,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image/sequence/video",
+          "type": "IMAGE",
+          "links": [
+            7
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "ComfyUI Video",
+          "type": "VIDEO",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "OCIOLookTransform"
+      },
+      "widgets_values": [
+        "ACEScg",
+        "ACEScg",
+        "(none)",
+        false,
+        1.0,
+        "(built-in ACES config)"
+      ],
+      "title": "OCIO LookTransform - a look from the config"
+    },
+    {
+      "id": 8,
+      "type": "OCIODisplay",
+      "pos": [
+        1240,
+        140
+      ],
+      "size": [
+        340,
+        130
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 7,
+          "shape": 7
+        },
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "link": null,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image/sequence/video",
+          "type": "IMAGE",
+          "links": [
+            8
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "ComfyUI Video",
+          "type": "VIDEO",
+          "links": [],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "OCIODisplay"
+      },
+      "widgets_values": [
+        "ACEScg",
+        "sRGB - Display",
+        "ACES 2.0 - SDR 100 nits (Rec.709)",
+        false,
+        1.0,
+        "(built-in ACES config)"
+      ],
+      "title": "OCIO Display - the view transform ENDS the chain"
+    },
+    {
+      "id": 9,
+      "type": "PreviewImage",
+      "pos": [
+        1640,
+        140
+      ],
+      "size": [
+        340,
+        130
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 8
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      },
+      "widgets_values": [],
+      "title": "what the display transform produced"
+    },
+    {
+      "id": 10,
+      "type": "OCIOPlayer",
+      "pos": [
+        1240,
+        480
+      ],
+      "size": [
+        340,
+        130
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 9,
+          "shape": 7
+        },
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "alpha",
+          "type": "MASK",
+          "link": null,
+          "shape": 7
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "OCIOPlayer"
+      },
+      "widgets_values": [
+        "ACEScg",
+        "sRGB - Display",
+        false,
+        0,
+        0,
+        24.0,
+        "0"
+      ],
+      "title": "OCIO Player - float viewport, exposure in stops"
+    },
+    {
+      "id": 11,
+      "type": "OCIOWrite",
+      "pos": [
+        1640,
+        480
+      ],
+      "size": [
+        340,
+        130
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 10,
+          "shape": 7
+        },
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "alpha",
+          "type": "MASK",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "audio",
+          "type": "AUDIO",
+          "link": null,
+          "shape": 7
+        },
+        {
+          "name": "metadata",
+          "type": "STRING",
+          "link": 11,
+          "shape": 7
+        }
+      ],
+      "outputs": [
+        {
           "name": "path",
           "type": "STRING",
-          "links": null
+          "links": [],
+          "slot_index": 0
         }
       ],
       "properties": {
         "Node name for S&R": "OCIOWrite"
       },
       "widgets_values": [
-        "sRGB - Display",
+        "none",
+        "ACEScg",
         "ACEScg",
         "sequence",
         "exr",
         "prores_4444",
-        "16f",
+        "32f",
+        "zip",
         true,
         1,
         0,
         1,
         1,
         false,
+        true,
         "",
-        "ocio_out",
-        24,
-        null,
-        null
-      ]
+        "ocio_example",
+        true,
+        24.0,
+        "",
+        "01:00:00:00",
+        true
+      ],
+      "title": "OCIO Write - EXR 32f carries the whole range"
     }
   ],
   "links": [
     [
-      7,
+      1,
+      1,
+      0,
       2,
       0,
-      8,
-      0,
       "IMAGE"
     ],
     [
-      8,
+      2,
+      2,
+      0,
       3,
       0,
+      "IMAGE"
+    ],
+    [
+      3,
+      3,
+      0,
+      6,
+      0,
+      "IMAGE"
+    ],
+    [
+      4,
+      6,
+      0,
+      4,
+      0,
+      "IMAGE"
+    ],
+    [
+      5,
+      4,
+      0,
+      5,
+      0,
+      "IMAGE"
+    ],
+    [
+      6,
+      5,
+      0,
+      7,
+      0,
+      "IMAGE"
+    ],
+    [
+      7,
+      7,
+      0,
+      8,
+      0,
+      "IMAGE"
+    ],
+    [
+      8,
+      8,
+      0,
       9,
       0,
       "IMAGE"
     ],
     [
       9,
-      4,
+      5,
       0,
       10,
       0,
@@ -1239,108 +720,52 @@
     ],
     [
       11,
-      6,
-      0,
-      12,
-      0,
-      "IMAGE"
-    ],
-    [
-      12,
-      7,
-      0,
-      13,
-      0,
-      "IMAGE"
-    ],
-    [
-      13,
-      15,
-      0,
-      2,
-      0,
-      "IMAGE"
-    ],
-    [
-      14,
-      15,
-      0,
-      3,
-      0,
-      "IMAGE"
-    ],
-    [
-      15,
-      15,
-      0,
-      4,
-      0,
-      "IMAGE"
-    ],
-    [
-      16,
-      15,
-      0,
+      1,
       5,
-      0,
-      "IMAGE"
-    ],
-    [
-      17,
-      15,
-      0,
-      6,
-      0,
-      "IMAGE"
-    ],
-    [
-      18,
-      15,
-      0,
-      7,
-      0,
-      "IMAGE"
-    ],
-    [
-      19,
-      15,
-      0,
-      16,
-      0,
-      "IMAGE"
-    ],
-    [
-      20,
-      15,
-      1,
-      16,
-      1,
-      "MASK"
+      11,
+      4,
+      "STRING"
     ]
   ],
   "groups": [
     {
-      "id": 1,
-      "title": "ComfyUI-OCIO  (by Slava Sexton)  -- one image, all 6 OCIO nodes, each with its own preview",
+      "title": "Read",
       "bounding": [
-        -599.5719809369647,
-        -241.50508047837369,
-        2696.9359230285013,
-        2847.8343674130015
+        20,
+        80,
+        390,
+        510
       ],
-      "color": "#335159",
+      "color": "#88A",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "title": "The six colour operators",
+      "bounding": [
+        420,
+        80,
+        1190,
+        1150
+      ],
+      "color": "#3f789e",
+      "font_size": 24,
+      "flags": {}
+    },
+    {
+      "title": "Look at it, and deliver it",
+      "bounding": [
+        1220,
+        80,
+        790,
+        850
+      ],
+      "color": "#8A8",
+      "font_size": 24,
       "flags": {}
     }
   ],
   "config": {},
-  "extra": {
-    "ds": {
-      "scale": 0.5587319131832813,
-      "offset": [
-        3122.7684310384507,
-        721.4578576873299
-      ]
-    }
-  },
+  "extra": {},
   "version": 0.4
 }

@@ -48,6 +48,57 @@ if cfg is not None and spaces:
     except Exception as e:
         print("Display setup FAIL:", type(e).__name__, e); fails += 1
 
+# --------------------------------------------------------------------------- display / view pairs
+# MOST OF THE PAIRS OCIODisplay OFFERS DO NOT EXIST. `view` is the union of every view across every display,
+# because the combo is fixed when INPUT_TYPES runs and nobody has picked a display yet. Measured on the studio
+# config: 9 displays x 14 views is 126 combinations and 75 are invalid, and on 'sRGB - Display' only 4 of 14 work.
+# Before VALIDATE_INPUTS existed those 75 died mid-execution, after the graph had already spent its time.
+print("\ndisplay / view pairs are checked before the job runs, not during it")
+if cfg is not None:
+    displays = list(N._display_input()[0])
+    views = list(N._view_input()[0])
+    rejected = accepted = wrong = 0
+    for d in displays:
+        try:
+            real = list(cfg.getViews(d))
+        except Exception:
+            continue
+        for v in views:
+            verdict = N.OCIODisplay.VALIDATE_INPUTS(display=d, view=v)
+            should_pass = v in real
+            if should_pass and verdict is True:
+                accepted += 1
+            elif not should_pass and verdict is not True:
+                rejected += 1
+            else:
+                wrong += 1
+                if wrong <= 3:
+                    print(f"  FAIL  {d!r} + {v!r}: exists={should_pass} verdict={str(verdict)[:60]}")
+    print(f"  valid pairs accepted: {accepted}   invalid pairs rejected: {rejected}   disagreements: {wrong}")
+    if wrong:
+        fails += 1
+    if rejected == 0:
+        print("  FAIL  nothing was rejected, so the validator is inert")
+        fails += 1
+    # The message has to name the way out, or it is only a tidier way to fail.
+    d0 = displays[0]
+    bad = [v for v in views if v not in list(cfg.getViews(d0))]
+    if bad:
+        msg = str(N.OCIODisplay.VALIDATE_INPUTS(display=d0, view=bad[0]))
+        if "Valid views for this display" not in msg or not any(v in msg for v in cfg.getViews(d0)):
+            print(f"  FAIL  the rejection does not list the views that would work: {msg[:110]}")
+            fails += 1
+        else:
+            print("  the rejection lists the views that would work")
+    # It must never raise, whatever it is handed: a broken probe refusing a good prompt is worse than no check.
+    for kw in ({"display": None, "view": None}, {"display": "nope", "view": "nope"},
+               {"display": displays[0], "view": None}, {}):
+        try:
+            N.OCIODisplay.VALIDATE_INPUTS(**kw)
+        except Exception as e:
+            print(f"  FAIL  VALIDATE_INPUTS raised on {kw}: {type(e).__name__}")
+            fails += 1
+
 print("\nNot exercised (need assets): OCIOFileTransform (a LUT file), OCIOLookTransform (a config look).")
 print("RESULT:", "ALL PASS" if fails == 0 else f"{fails} FAILED")
 sys.exit(1 if fails else 0)

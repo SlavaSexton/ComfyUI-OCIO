@@ -406,8 +406,18 @@ def check_color_range():
         print("  SKIP (no ffmpeg)")
         return
     check("the flag is still passed", "-color_range" in io._video_color_tags("sRGB - Display"))
+    # PRORES ACCEPTS EITHER ANSWER, AND THAT IS ABOUT FFPROBE RATHER THAN ABOUT THIS PACK. On the build this
+    # was written against (gyan.dev 2024-10-02) a ProRes stream in a MOV reports color_range=unknown, because
+    # the QuickTime nclc colr box has no full-range flag and prores_ks signals no range of its own. On ffmpeg
+    # 8.1 the same file reports tv. Nothing in the written file changed and nothing here did: the decoder
+    # started announcing a value it used to leave blank. Asserting the older answer alone made a clean clone
+    # fail on a newer ffmpeg, reported by Andrei Orehov as issue #6. The other three codecs carry the range in
+    # the bitstream itself, so they answer tv on every build and are still asserted exactly.
+    versions = subprocess.run([io._FFMPEG, "-version"], capture_output=True, text=True).stdout.splitlines()
+    print(f"  (ffmpeg: {versions[0][:78] if versions else 'unknown'})")
     arr = np.asarray(IMAGES.numpy(), np.float32)
-    for codec, want in (("prores_4444", None), ("dnxhr_hq", "tv"), ("h264", "tv"), ("hevc", "tv")):
+    for codec, want in (("prores_4444", (None, "unknown", "tv")), ("dnxhr_hq", ("tv",)),
+                        ("h264", ("tv",)), ("hevc", ("tv",))):
         ext = ".mov" if codec.startswith(("prores", "dnxhr")) else ".mp4"
         p = os.path.join(TMP, f"cr_{codec}{ext}")
         io.save_video(arr, p, codec, 24.0, "sRGB - Display", None, meta_attrs={"title": "t"},
@@ -415,7 +425,8 @@ def check_color_range():
         pr = subprocess.run([io._FFPROBE, "-v", "error", "-select_streams", "v:0", "-show_entries",
                              "stream=color_range", "-of", "json", p], capture_output=True, text=True)
         got = (json.loads(pr.stdout or "{}").get("streams") or [{}])[0].get("color_range")
-        check(f"{codec}{ext}: color_range is {want!r}", got == want, f"got {got!r}")
+        shown = " or ".join(repr(x) for x in want)
+        check(f"{codec}{ext}: color_range is {shown}", got in want, f"got {got!r}")
 
 
 def check_mxf():

@@ -254,8 +254,11 @@ Color-manage an IMAGE batch and **write it to disk** (Nuke: *Write*).
 - **still_format** - `exr` / `tiff` / `png` / `jpeg` (used for still / sequence).
 - **video_codec** - `prores_4444` / `prores_422hq` / `prores_422` / `dnxhr_hq` / `h264` / `hevc` (used for video).
 - **bit_depth** - narrows to the format: JPEG 8; PNG 8 / 16; TIFF 8 / 16 / 32f; EXR 16f / 32f.
-- **compression** (EXR only) - defaults to **DWAA**, which is lossy and much smaller, the way most of the
-  industry writes anything that is not an archival master. Pick `zip` (or `zips` / `rle` / `piz`) when the
+- **compression** (EXR only) - defaults to **DWAA**: lossy, and far smaller for a review or comp copy. Two
+  things to know before leaving it there. DWA **quantises float32 to half before compressing**, so `32f` +
+  DWAA is a half-precision file whose header still says `float` - the node says so in its report when you
+  do it. And it destroys data passes: a depth pass came back with an error of 172 units, normals lost unit
+  length. Pick `zip` (or `zips` / `rle` / `piz`) for a 32-bit master, for any data pass, and whenever the
   file has to be bit-exact. Your choice is saved with the workflow; the default only applies to a new node.
 - **auto_range** - pull `first_frame` / `last_frame` / `start_number` / `fps` **automatically from the OCIO Read**
   at the other end of the wire (through any number of nodes). Edit them by hand and it turns off; turn it back on

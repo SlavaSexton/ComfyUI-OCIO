@@ -28,10 +28,16 @@ attribute and simply refused the claim of being the shot's reel.
 
 ## EXR now defaults to DWAA, and a professional container is read as Rec.709
 
-**`compression` defaults to `dwaa`** where it used to default to `zip`. DWAA is lossy and much smaller, which
-is what most of the industry writes for anything that is not an archival master. Pick `zip` when the file has
-to be bit-exact. A workflow you already saved keeps whatever it stored; the default only reaches a node you
-create fresh.
+**`compression` defaults to `dwaa`** where it used to default to `zip`. DWAA is lossy and far smaller, which
+suits a review or comp copy. A workflow you already saved keeps whatever it stored; the default only reaches
+a node you create fresh.
+
+Two consequences the node now reports rather than leaving you to find. DWA **quantises float32 to half before
+compressing** - that is OpenEXR's own behaviour, stated in `ImfDwaCompressor` - so `32f` + DWAA writes half
+precision under a header that still declares `float`. Measured: a 32f/zip file carried 49086 values no half
+can represent, the same data at 32f/dwaa carried none, and distinct values collapsed from 49071 to 4765. And
+DWA destroys data passes: a depth pass came back with a maximum error of 172 units, normals lost unit length,
+an ID pass was unrecognisable. Pick `zip` for a 32-bit master and for any data pass.
 
 **An SDR ProRes / DNxHD, or anything in an MXF, is now guessed as `Rec.1886 Rec.709 - Display`** instead of
 `sRGB - Display`. The tags alone cannot separate a camera master from a web clip: a Resolve MXF of ProRes

@@ -140,15 +140,26 @@ def check_timecode(io):
 
     # Drop-frame skips frame LABELS 00 and 01 of every minute except every tenth. Anchors that pin the whole
     # counting scheme: exactly one hour of 29.97 DF is 107892 frames (30*3600 - 2*54), of 59.94 DF 215784.
-    drop = [("00:00:00:00", 1799, 29.97, "00:00:59;29"), ("00:00:00:00", 1800, 29.97, "00:01:00;02"),
-            ("00:00:00:00", 17981, 29.97, "00:09:59;29"), ("00:00:00:00", 17982, 29.97, "00:10:00;00"),
-            ("00:00:00:00", 107892, 29.97, "01:00:00;00"),
-            ("00:00:00:00", 3599, 59.94, "00:00:59;59"), ("00:00:00:00", 3600, 59.94, "00:01:00;04"),
-            ("00:00:00:00", 215784, 59.94, "01:00:00;00")]
+    # THE START IS WRITTEN WITH ';' - it is what makes these drop-frame counts. Since 2026-08-13 the
+    # separator decides, not the frame rate: at 29.97 both counts are legal, and deriving it from the rate
+    # was renumbering real drop-frame plates and discarding legal non-drop ones. A ':' start at 29.97 is
+    # non-drop and is asserted separately below.
+    drop = [("00:00:00;00", 1799, 29.97, "00:00:59;29"), ("00:00:00;00", 1800, 29.97, "00:01:00;02"),
+            ("00:00:00;00", 17981, 29.97, "00:09:59;29"), ("00:00:00;00", 17982, 29.97, "00:10:00;00"),
+            ("00:00:00;00", 107892, 29.97, "01:00:00;00"),
+            ("00:00:00;00", 3599, 59.94, "00:00:59;59"), ("00:00:00;00", 3600, 59.94, "00:01:00;04"),
+            ("00:00:00;00", 215784, 59.94, "01:00:00;00")]
     for start, off, fps, want in drop:
         got = tc(start, off, fps)
         assert got == want, f"drop-frame {start} +{off} @{fps}: got {got}, want {want}"
-    seen = [tc("00:00:00:00", i, 29.97) for i in range(30 * 70)]
+    # A NON-DROP start at the same rate counts straight through: this is the plate that used to lose its
+    # timecode altogether, because the rate-derived guess called it drop-frame and then rejected it.
+    for start, off, want in (("01:01:00:00", 0, "01:01:00:00"), ("00:00:00:00", 1800, "00:01:00:00"),
+                             ("00:00:59:29", 1, "00:01:00:00")):
+        got = tc(start, off, 29.97)
+        assert got == want, f"non-drop at 29.97 {start} +{off}: got {got}, want {want}"
+
+    seen = [tc("00:00:00;00", i, 29.97) for i in range(30 * 70)]
     assert "00:01:00;00" not in seen and "00:01:00;01" not in seen, "drop-frame emitted a dropped label"
     assert "00:01:00;02" in seen, "drop-frame skipped past the first legal label of minute 1"
     assert len(set(seen)) == len(seen), "timecode repeated inside one run - frames would not be distinguishable"
@@ -533,6 +544,32 @@ def check_output_folder(io, tmp):
           "(NAS) untouched, default carries no path")
 
 
+def check_plate_dropframe_flag(io):
+    """The plate's own drop-frame flag survives the read, in both spellings it arrives under.
+
+    Found by a mutation pass: dropping the flag left every other test green, and the cost is a two-frame
+    conform error - a 00:00:59;29 drop-frame start renumbered to 00:01:00;02 where the non-drop truth is
+    00:01:00;00. The flag is in the data both ways: as SMPTE's ';' separator in a string, and as the fifth
+    field of OpenEXR's TimeCode tuple, which is what an EXR plate hands over.
+    """
+    # 1) the string spelling
+    assert io._parse_timecode("00:00:59;29")[4] is True, "the ';' drop-frame separator was thrown away"
+    assert io._parse_timecode("00:00:59:29")[4] is False, "a ':' start was reported as drop-frame"
+
+    # 2) the OpenEXR tuple spelling, which is how it actually arrives from a plate
+    df = io._timecode_from_source({"timeCode": "(1, 1, 0, 2, 1, 0, 0, 0, 0, 0)"})
+    ndf = io._timecode_from_source({"timeCode": "(1, 1, 0, 2, 0, 0, 0, 0, 0, 0)"})
+    assert df is not None and df[4] is True, f"the plate's dropFrame flag was lost: {df}"
+    assert ndf is not None and ndf[4] is False, f"a non-drop plate was reported as drop-frame: {ndf}"
+
+    # 3) and it reaches the arithmetic, which is where the two-frame error came from
+    got_df = io._timecode_string(*io._tc_advance(df, 0, 29.97))
+    got_ndf = io._timecode_string(*io._tc_advance(ndf, 0, 29.97))
+    assert ";" in got_df, f"a drop-frame plate was written non-drop: {got_df}"
+    assert ";" not in got_ndf, f"a non-drop plate was written drop-frame: {got_ndf}"
+    print("[PASS] the plate's own drop-frame flag survives, in both the ';' and the EXR-tuple spelling")
+
+
 def check_umid_is_not_a_reel(io):
     """A UMID parked in the reel field is not reported as the shot's reel - and is not destroyed either.
 
@@ -577,6 +614,7 @@ def main():
     check_output_folder(io, tmp)
     check_derivation(io)
     check_timecode(io)
+    check_plate_dropframe_flag(io)
     check_umid_is_not_a_reel(io)
     check_sequence_write(io, tmp)
     check_reports_only_what_it_wrote(io, tmp)

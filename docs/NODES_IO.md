@@ -332,7 +332,7 @@ the way `metadata` is.
 | `still_format` | COMBO | `exr`, `tiff`, `png`, `jpeg` | `exr` | Used for `still image` and `sequence`; hidden for `video`. |
 | `video_codec` | COMBO | `prores_4444`, `prores_422hq`, `prores_422`, `dnxhr_hq`, `h264`, `hevc`, `dnxhr_hq_mxf`, `dnxhr_hq_mxf_opatom`, `dnxhr_hqx`, `dnxhr_444` | `prores_4444` | Used for `video`; hidden otherwise. Fixes both the real bit depth and the container extension: `prores_4444` writes 12-bit 4:4:4 into a `.mov`; `prores_422hq`/`prores_422` write 10-bit 4:2:2 into a `.mov`; `dnxhr_hq` writes 8-bit 4:2:2 into a `.mov`; `h264`/`hevc` write 8-bit 4:2:0 into a `.mp4`; `dnxhr_hqx` writes 10-bit 4:2:2 and `dnxhr_444` writes 10-bit 4:4:4, both into a `.mov`; `dnxhr_hq_mxf` and `dnxhr_hq_mxf_opatom` write the identical DNxHR HQ picture as `dnxhr_hq` but into a `.mxf` (OP1a and OPAtom respectively) instead of a `.mov`. Confirmed on a real `prores_422hq` encode: `ffprobe` reported `codec_name=prores`, `pix_fmt=yuv422p10le`, `bits_per_raw_sample=10`, matching this table exactly. |
 | `bit_depth` | COMBO | `16f`, `32f`, `16`, `8` | `16f` | The full combo the server accepts; the canvas narrows the visible choices to what the current `still_format` actually supports (EXR: 16f/32f; TIFF: 8/16/32f; PNG: 8/16; JPEG: 8 only) but the **server does not enforce this narrowing**. See Traps. |
-| `compression` | COMBO | `zip`, `zips`, `piz`, `pxr24`, `dwaa`, `dwab`, `rle`, `none` | `dwaa` | EXR-only (Nuke Write style). `dwaa`/`dwab` are lossy and much smaller, which is why they are the default: it is what most of the industry writes for anything that is not an archival master. `zip`/`zips`/`rle` are lossless; `piz` is lossless and suits grain; `pxr24` is lossy at a fixed 24-bit float precision. **Pick `zip` when the file has to be bit-exact.** Your choice is saved in the workflow, so a graph you set to `zip` reopens on `zip` - the default only ever applies to a node you create fresh. |
+| `compression` | COMBO | `zip`, `zips`, `piz`, `pxr24`, `dwaa`, `dwab`, `rle`, `none` | `dwaa` | EXR-only. `dwaa`/`dwab` are lossy and far smaller, which suits a review or comp copy and is why they are the default here. **Two things to know before leaving it there.** (1) DWA **quantises float32 to half before compressing** - that is OpenEXR's own behaviour, stated in `ImfDwaCompressor` - so `32f` + DWAA writes half precision under a header that still declares `float`. Measured on 49152 pixels: the 32f/zip file carried 49086 values no half can represent, the same data at 32f/dwaa carried **none**, distinct values collapsing 49071 → 4765. The node reports this in its own note when you do it, and in the log. (2) DWA destroys data passes: a depth pass came back with a maximum error of **172 units**, normals lost unit length, an ID pass was unrecognisable, and `raw_data` does not exempt them. `zip`/`zips`/`rle` are lossless; `piz` is lossless and suits grain; `pxr24` is lossy at a fixed 24-bit float precision. **Pick `zip` for a 32-bit master, for any data pass, and whenever the file has to be bit-exact.** Your choice is saved in the workflow, so a graph you set to `zip` reopens on `zip` - the default only ever applies to a node you create fresh. Note the tooltip calls this control "Nuke Write style" for its option list; Nuke's own Write node defaults to Zip, and this pack deliberately does not. |
 | `auto_range` | BOOLEAN | true / false | `true` | Canvas-only. See Traps: this does nothing when a prompt is posted directly to the API. |
 | `first_frame` | INT | 0 to 100000000 | `1` | For `still image`: which single frame of the incoming batch to save. For `sequence`/`video`: the first frame **number** to write, matched against `source_start` to find the right slice of the batch. |
 | `last_frame` | INT | 0 to 100000000 | `0` | For `sequence`/`video`: the last frame number to write; `0` means "to the end of the batch." Ignored for `still image`. |
@@ -410,6 +410,21 @@ on node creation and on every `container`/`still_format` change.
 Where a timecode can land is unchanged, even though there is no longer a field for one: an EXR header
 attribute, and a video container's own timecode track. PNG, TIFF and JPEG have nowhere to put it, so the
 writer simply omits it there rather than promising a delivery detail the file cannot carry.
+
+**Drop-frame comes from the plate, not from the frame rate.** At 29.97 and 59.94 both counts are legal and
+both are in daily use, and the source says which it is: `;` before the frames is SMPTE's drop-frame marker,
+`:` is non-drop, and an EXR `timeCode` attribute carries the flag as its fifth field. This pack reads that
+and re-authors the sequence in the same count. Deriving it from the rate instead was wrong in both
+directions, and both were live until 2026-08-13:
+
+- a legal **non-drop** plate at 29.97 (say `01:01:00:00`) was declared drop-frame, then rejected by the
+  drop-frame validator, and its timecode vanished from every written header with nothing said about why;
+- a real **drop-frame** plate had its own flag parsed and thrown away, so a `00:00:59;29` start came back as
+  `00:01:00;02` where the non-drop truth is `00:01:00;00` - a two-frame conform error produced from a signal
+  that was already in the file.
+
+Drop-frame is still only applied at 29.97 and 59.94, per SMPTE ST 12-1: a `;` on a 25 fps clip does not
+invent a count that does not exist there.
 
 ### `profile`, in full
 

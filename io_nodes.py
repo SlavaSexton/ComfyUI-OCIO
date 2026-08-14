@@ -503,11 +503,23 @@ def _video_input_cs(info, ext=None):
     # answer for them. An h264 / hevc mp4 keeps sRGB, which is what it was and why (2026-07-04).
     # Measured on a real master: a Resolve MXF of ProRes 4444 XQ tags color_space=bt709 with primaries and
     # transfer both 'unknown', so the tags alone cannot separate the two cases - the container and codec can.
+    #
+    # A NAMED TRANSFER VETOES THE GUESS, and it has to: the guess is about a transfer function, and
+    # color_transfer is the only one of the three tags that describes one. Written first as an `or` chain, it
+    # could not be vetoed at all - a file declaring iec61966-2-1 (sRGB), linear or log100 still came back
+    # Rec.1886, because color_space or color_primaries alone satisfied the condition. That is wrong PIXELS,
+    # not a wrong label: read() feeds this straight into the conversion. Measured cost of the wrong guess on
+    # a ColorChecker: dE2000 max 3.58, mean 2.28, with 15 of 24 patches past dE 2.0, and a mid-grey code of
+    # 0.18 landing 0.74 stops off.
     if cs is None:
         codec = (info.get("codec_name", "") or "").lower()
         is_post = codec in ("prores", "dnxhd") or (ext or "").lower() == ".mxf"
-        sdr_709 = spc in ("bt709", "smpte170m", "bt470bg") or prim == "bt709" or trc in ("bt709", "unknown", "")
-        if is_post and sdr_709:
+        # Transfers that NAME a curve which is not Rec.709. An untagged file says 'unknown' or nothing, and
+        # that is the case the container/codec rule exists for - a real Resolve MXF tags color_space=bt709
+        # with primaries and transfer both 'unknown'.
+        named_other_trc = trc not in ("bt709", "unknown", "", "reserved")
+        sdr_709 = spc in ("bt709", "smpte170m", "bt470bg") or prim == "bt709" or trc == "bt709"
+        if is_post and sdr_709 and not named_other_trc:
             cs = pick("Rec.1886 Rec.709 - Display")
     return cs or WORKING
 
@@ -1432,23 +1444,34 @@ def _is_drop_frame(fps):
 
 
 def _parse_timecode(s):
-    """'01:00:00:00' -> (h, m, s, f). Accepts ';' as the drop-frame frame separator (the SMPTE convention) and
-    '.' as the sloppy one. Raises on anything it cannot read rather than silently starting at zero - a wrong
-    start timecode conforms the whole delivery to the wrong place, so it must not fail quietly."""
+    """'01:00:00:00' -> (h, m, s, f, drop). Raises on anything it cannot read rather than silently starting
+    at zero - a wrong start timecode conforms the whole delivery to the wrong place, so it must not fail
+    quietly.
+
+    THE FIFTH FIELD IS THE POINT. ';' before the frames is SMPTE's drop-frame marker and ':' is non-drop;
+    both are legal at 29.97 and 59.94 and both are in daily use. This used to return four fields, throwing
+    that away, and everything downstream then re-derived drop status from the frame rate - which is a guess,
+    and it was wrong in both directions (see _tc_advance). '.' is accepted as the sloppy separator and, like
+    ':', means non-drop.
+
+    Returns 5 fields where it used to return 4, deliberately: every caller that still unpacks four gets a
+    loud error instead of a value that quietly means something else."""
     txt = (str(s or "").strip())
     if not txt:
         return None
-    m = re.match(r"^(\d{1,2})[:;.](\d{1,2})[:;.](\d{1,2})[:;.](\d{1,3})$", txt)
+    m = re.match(r"^(\d{1,2})[:;.](\d{1,2})[:;.](\d{1,2})([:;.])(\d{1,3})$", txt)
     if not m:
         raise ValueError(f"OCIO Write: timecode {txt!r} is not HH:MM:SS:FF (e.g. 01:00:00:00). "
                          "Leave it empty to write no timecode.")
-    h, mi, se, fr = (int(g) for g in m.groups())
+    h, mi, se = (int(g) for g in m.group(1, 2, 3))
+    fr = int(m.group(5))
+    drop = m.group(4) == ";"
     if h > 23 or mi > 59 or se > 59:
         raise ValueError(f"OCIO Write: timecode {txt!r} is out of range (HH<=23, MM<=59, SS<=59).")
-    return h, mi, se, fr
+    return h, mi, se, fr, drop
 
 
-def _tc_advance(start, offset, fps):
+def _tc_advance(start, offset, fps, drop=None):
     """Advance a timecode by `offset` FRAMES. Returns (h, m, s, f, drop_frame).
 
     THE POINT OF THIS FUNCTION: OCIO Write emits N files from one settings dict, so writing the start timecode
@@ -1456,10 +1479,27 @@ def _tc_advance(start, offset, fps):
     that without a word and conform it wrong. Frame numbers advance, so the timecode must too.
 
     Drop-frame counting (29.97 / 59.94 only) skips frame numbers 00 and 01 of every minute except every tenth,
-    per SMPTE ST 12-1:2014 - it drops LABELS, never pictures."""
-    h, mi, se, fr = start
+    per SMPTE ST 12-1:2014 - it drops LABELS, never pictures.
+
+    `drop` OVERRIDES THE GUESS FROM fps, and a caller that knows must pass it. At 29.97 and 59.94 BOTH counts
+    are legal and both are in daily use, so deriving drop status from the rate alone is wrong in both
+    directions - measured, and both were live:
+
+      * A legal NON-drop plate lost its timecode entirely. 01:01:00:00 at 29.97 is an ordinary NDF label, but
+        the rate-derived guess declared the clip drop-frame, the drop-frame validator then rejected frames
+        00/01 at minute 01, and the code vanished from every written header with no reason given.
+      * A real drop-frame plate was renumbered. Its own flag was parsed and discarded, so a 00:00:59;29 start
+        came back as 00:01:00;02 where the NDF truth is 00:01:00;00: a two-frame conform error, produced from
+        a signal that was already in the data.
+
+    The source's own answer wins; the rate is the fallback for a code that carries no answer."""
+    h, mi, se, fr = start[:4]
     nom = _tc_nominal_rate(fps)
-    drop = _is_drop_frame(fps)
+    if drop is None and len(start) > 4:
+        drop = bool(start[4])                          # the plate said so itself
+    drop = _is_drop_frame(fps) if drop is None else bool(drop)
+    if drop and not _is_drop_frame(fps):
+        drop = False                                   # drop-frame does not exist outside 29.97 / 59.94
     total = ((h * 60 + mi) * 60 + se) * nom + fr + int(offset)
     if drop:
         # THE TWO DIRECTIONS HAVE TO USE THE SAME COUNTING. The line above converts the start LABEL to a frame
@@ -1837,13 +1877,18 @@ def _timecode_from_source(attrs):
         return _parse_timecode(raw)
     except ValueError:
         pass
-    m = re.match(r"^\(\s*(\d{1,2})\s*,\s*(\d{1,2})\s*,\s*(\d{1,2})\s*,\s*(\d{1,3})\s*[,)]", str(raw).strip())
+    # OpenEXR's TimeCode stringifies as its field tuple. The FIFTH field is dropFrame, and it is read here
+    # rather than re-derived from the frame rate: at 29.97 and 59.94 both counts are legal, and guessing was
+    # renumbering real drop-frame plates by two frames while throwing away legal non-drop ones entirely.
+    # Confirmed against the module: OpenEXR.TimeCode(..., dropFrame=True) renders as (h, m, s, f, 1, 0, ...).
+    m = re.match(r"^\(\s*(\d{1,2})\s*,\s*(\d{1,2})\s*,\s*(\d{1,2})\s*,\s*(\d{1,3})\s*(?:,\s*(\d+))?", str(raw).strip())
     if not m:
         return None
-    h, mi, se, fr = (int(g) for g in m.groups())
+    h, mi, se, fr = (int(g) for g in m.group(1, 2, 3, 4))
+    drop = bool(int(m.group(5))) if m.group(5) is not None else False
     if h > 23 or mi > 59 or se > 59:
         return None
-    return h, mi, se, fr
+    return h, mi, se, fr, drop
 
 
 def _identity_meta(attrs):
@@ -3157,7 +3202,7 @@ class OCIOWrite:
             # house default across VFX for anything that is not an archival master. A graph saved before this
             # keeps whatever it stored; the default only reaches newly created nodes.
             "compression": (["zip", "zips", "piz", "pxr24", "dwaa", "dwab", "rle", "none"], {"default": "dwaa",
-                            "tooltip": "EXR compression (Nuke Write style). DWAA (default) / DWAB = much smaller, LOSSY. ZIP / ZIPS = lossless. PIZ = lossless, good for grain. Applies to EXR only."}),
+                            "tooltip": "EXR compression. DWAA (default) / DWAB: much smaller, LOSSY, and they quantise float32 to HALF before compressing - so 32f + DWAA is a half-precision file that still says 'float'. ZIP / ZIPS / RLE lossless; PIZ lossless and good for grain. Use ZIP for a 32-bit master and for data passes (depth, normals, IDs), which DWA destroys. EXR only."}),
             # THE CAVEAT IS IN THE TOOLTIP because the parameter is genuinely front-end only: write() never reads
             # it. That is by construction - the detection walks the GRAPH to find the upstream OCIO Read, which
             # only the canvas can do - but the old wording did not say so, and a reviewer driving the pack through
@@ -3235,7 +3280,7 @@ class OCIOWrite:
 
     def write(self, profile, from_colorspace, output_colorspace, container, still_format, video_codec,
               bit_depth, auto_range, first_frame, last_frame, start_number, source_start, raw_data,
-              output_folder, filename, colorspace_in_name=True, auto_colorspace=True, compression="zip",
+              output_folder, filename, colorspace_in_name=True, auto_colorspace=True, compression="dwaa",
               alpha=None, fps=24.0, render_nonce="", images=None, video=None, audio=None,
               metadata="", write_audio=True):   # render_nonce: cache-buster (see INPUT_TYPES). images/video: mutually-exclusive inputs.
         if video is not None:                                        # a native ComfyUI VIDEO -> render it out with ALL these Write settings (container, codec, colorspace, bit depth)
@@ -3475,6 +3520,20 @@ class OCIOWrite:
             # AND the log, because an artist driving /prompt from a script never sees the canvas at all.
             logging.warning("OCIO Write: " + clip_note)
         if container != "video" and still_format == "exr":
+            # 32-BIT ASKED FOR, HALF DELIVERED - say so, because nothing else will. DWA quantises FLOAT to
+            # HALF before it compresses: OpenEXR's own ImfDwaCompressor puts it as "When dealing with FLOAT
+            # source buffers, we first quantize the source to HALF and continue down as we would for HALF
+            # source." The header still declares `float`, so no reader downstream can tell. Measured on
+            # 49152 pixels: a 32f/zip file carries 49086 values that no half can represent, the same data at
+            # 32f/dwaa carries ZERO, and distinct values collapse 49071 -> 4765.
+            # Not blocked, because the choice may be deliberate for a review copy - but never silent, and
+            # the note lands in the ui payload AND in the log for anyone driving /prompt from a script.
+            if bit_depth == "32f" and compression in ("dwaa", "dwab"):
+                _dwa_note = (f"{compression} quantises float32 to half BEFORE compressing (OpenEXR "
+                             "ImfDwaCompressor), so this 32f file carries half precision. Use zip / zips / "
+                             "piz for a true 32-bit master, or a data pass (depth, normals, IDs).")
+                bits.append(_dwa_note)
+                logging.warning("OCIO Write: " + _dwa_note)
             if base_attrs.get("chromaticities"):
                 bits.append(f"chromaticities {base_attrs.get('com.ocio.gamut', '')}".strip())
             if base_attrs.get("adoptedNeutral"):

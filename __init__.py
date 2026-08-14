@@ -30,9 +30,11 @@ NODE_DISPLAY_NAME_MAPPINGS.update(_IO_NAMES)
 NODE_CLASS_MAPPINGS.update(_VAE_CLASSES)
 NODE_DISPLAY_NAME_MAPPINGS.update(_VAE_NAMES)
 
-# A standalone OCIO Metadata node was registered here on 2026-08-13 and removed the same day: what it offered -
-# seeing the plate's identity and correcting it - belongs where the plate is opened, so it now lives as the
-# Metadata panel on OCIO Read rather than as a node on the wire between Read and Write.
+# A standalone OCIO Metadata node was registered here on 2026-08-13 and removed the same day. It did two
+# things: it SHOWED the plate's identity, and it let a reel / scene / shot / take / camera / lens be set or
+# corrected. Only the first has a replacement - the read-only Metadata panel on OCIO Read, where the plate is
+# opened. THERE IS NO REPLACEMENT FOR EDITING, and saying otherwise would send someone looking for a control
+# that does not exist: a field a plate does not carry cannot currently be supplied from inside this pack.
 
 # OCIO Grade / Grade Match / Apply Grade disabled 2026-07-04 (see above) - NOT registered:
 # NODE_CLASS_MAPPINGS.update(_GRADE_CLASSES)

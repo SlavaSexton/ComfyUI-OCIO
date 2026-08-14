@@ -65,19 +65,26 @@ for fps in DROP_RATES + NON_DROP:
         got = tcs(h, mi, se, fr, drop)
         want = label.replace(":", ";", -1) if False else label
         # the separator legitimately becomes ';' under drop-frame; compare the NUMBERS
-        same = (h, mi, se, fr) == parse(label)
+        same = (h, mi, se, fr) == parse(label)[:4]
         check(f"{fps:8.3f} fps  start {label} preserved", same, f"got {got}")
 
 print("\npublished SMPTE boundaries, at 29.97")
 fps = 30000 / 1001
-h, mi, se, fr, d = adv(parse("00:00:59:29"), 1, fps)
+# WRITTEN WITH ';' ON PURPOSE. The separator is SMPTE's drop-frame marker, and since 2026-08-13 this
+# pack honours it instead of deriving drop status from the rate: at 29.97 both counts are legal, and
+# guessing renumbered real drop-frame plates while discarding legal non-drop ones. A ':' start at the
+# same rate is non-drop and lands on 00:01:00:00, which is asserted a few lines below.
+h, mi, se, fr, d = adv(parse("00:00:59;29"), 1, fps)
 check("00:00:59;29 + 1 frame -> 00:01:00;02", (h, mi, se, fr) == (0, 1, 0, 2), tcs(h, mi, se, fr, d))
-h, mi, se, fr, d = adv(parse("00:09:59:29"), 1, fps)
+h, mi, se, fr, d2 = adv(parse("00:00:59:29"), 1, fps)
+check("...and the same label written NON-drop lands on 00:01:00:00",
+      (h, mi, se, fr, d2) == (0, 1, 0, 0, False), tcs(h, mi, se, fr, d2))
+h, mi, se, fr, d = adv(parse("00:09:59;29"), 1, fps)
 check("00:09:59;29 + 1 frame -> 00:10:00;00", (h, mi, se, fr) == (0, 10, 0, 0), tcs(h, mi, se, fr, d))
-h, mi, se, fr, d = adv((0, 0, 0, 0), 107892, fps)
+h, mi, se, fr, d = adv((0, 0, 0, 0, True), 107892, fps)
 check("offset 107892 from zero -> 01:00:00;00 (one hour at 29.97)",
       (h, mi, se, fr) == (1, 0, 0, 0), tcs(h, mi, se, fr, d))
-h, mi, se, fr, d = adv((0, 0, 0, 0), 215784, 60000 / 1001)
+h, mi, se, fr, d = adv((0, 0, 0, 0, True), 215784, 60000 / 1001)
 check("offset 215784 from zero -> 01:00:00;00 (one hour at 59.94)",
       (h, mi, se, fr) == (1, 0, 0, 0), tcs(h, mi, se, fr, d))
 
@@ -91,25 +98,39 @@ for label, extra in (("01:00:00:00", 0), ("01:00:00:00", 1), ("01:00:00:00", 47)
     b = adv(parse(tcs(*a, True)), 0, fps)[:4]
     check(f"{label} +{extra:3} frames is a fixed point of the inverse", a == b, f"{a} vs {b}")
 
-print("\nan illegal drop-frame start is rejected, not silently moved")
-for bad in ("00:01:00:00", "00:01:00:01", "01:11:00:00"):
+# WRITTEN WITH ';' THROUGHOUT, and that is the change of 2026-08-13. Frames 00 and 01 do not exist at a
+# non-tenth minute in a DROP-FRAME count, so a label claiming one is illegal - but only as drop-frame. The
+# identical digits with ':' are an ordinary non-drop label at the same rate, asserted right below. Until
+# this pack read the separator, it derived drop status from the frame rate, so a legal 29.97 NON-drop plate
+# had its timecode rejected and then silently dropped from every written header.
+print("\nan illegal DROP-FRAME start is rejected, not silently moved")
+for bad in ("00:01:00;00", "00:01:00;01", "01:11:00;00"):
     try:
         adv(parse(bad), 0, 30000 / 1001)
         check(f"{bad} rejected at 29.97", False, "accepted")
     except ValueError as e:
         check(f"{bad} rejected at 29.97", True, str(e)[:70] + "...")
-for ok in ("00:10:00:00", "00:00:00:00", "01:20:00:01", "00:01:00:02"):
+for ok in ("00:10:00;00", "00:00:00;00", "01:20:00;01", "00:01:00;02"):
     try:
         adv(parse(ok), 0, 30000 / 1001)
         check(f"{ok} accepted at 29.97", True)
     except ValueError as e:
         check(f"{ok} accepted at 29.97", False, str(e)[:70])
+# The same digits as NON-drop are legal at 29.97, including every one rejected above. This is the case that
+# used to lose its timecode entirely.
+for ndf in ("00:01:00:00", "00:01:00:01", "01:11:00:00"):
+    try:
+        h, mi, se, fr, d = adv(parse(ndf), 0, 30000 / 1001)
+        check(f"{ndf} is a legal NON-drop label at 29.97",
+              not d and tcs(h, mi, se, fr, d) == ndf, tcs(h, mi, se, fr, d))
+    except ValueError as e:
+        check(f"{ndf} is a legal NON-drop label at 29.97", False, str(e)[:70])
 
 print("\nthe same labels are all legal at a NON-drop rate")
 for lab in ("00:01:00:00", "00:01:00:01", "01:11:00:00"):
     try:
         h, mi, se, fr, d = adv(parse(lab), 0, 25.0)
-        check(f"{lab} accepted at 25 fps and preserved", (h, mi, se, fr) == parse(lab) and not d,
+        check(f"{lab} accepted at 25 fps and preserved", (h, mi, se, fr) == parse(lab)[:4] and not d,
               tcs(h, mi, se, fr, d))
     except ValueError as e:
         check(f"{lab} accepted at 25 fps and preserved", False, str(e)[:70])

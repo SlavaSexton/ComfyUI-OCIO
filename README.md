@@ -437,6 +437,17 @@ cannot be recovered afterwards, which is why no float container downstream resto
 counts say the same thing in the domain, a reduction of about 723x, and the file size says it a third time,
 because an entropy coder has materially less information left to encode.
 
+<div align="center">
+
+<img src="docs/assets/ltx25_float32_demo.png" width="880" alt="One LTX-2.5 latent decoded two ways. Top left, frame 40 as a float32 EXR with a box marking the patch shown enlarged. Top middle, the stock ComfyUI decode at bf16 with its clamp: 11606 distinct levels inside the 0.2 to 0.3 band, and visible stepping across the gradient. Top right, the same patch decoded at float32 with no clamp: 584790 levels in the same band and a smooth gradient. Bottom left, a map of what the clamp destroys, with red marking samples above 1.0 at 0.480 percent of the frame and blue marking samples below 0.0 at 0.460 percent. Bottom middle, a histogram of the difference between the two decodes, centred on zero and spanning about plus or minus 0.03. Bottom right, one scanline of the green channel through the patch, where the two curves track each other closely. Footer: stock ranges 0.0000 to 1.0000, float32 ranges minus 0.0352 to plus 1.0408, over 121 frames at 1280x704.">
+
+</div>
+
+The patch above is the same comparison at one exposure: **11 606 distinct levels from the stock decode against
+584 790 from ours**, inside a single 0.1-wide band. The map at bottom left is what the clamp removes, 0.48% of
+the frame above white and 0.46% below black, and the scanline at bottom right is the reassurance that nothing
+else moved: the two decodes track each other everywhere the clamp does not bite.
+
 That comparison holds two variables at once. Separating them, with precision fixed at the VAE's own bf16:
 
 | decode | range | below 0 | above 1 |

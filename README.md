@@ -508,9 +508,16 @@ Latest run:
   (`docker/`, run in CI), a full `ACEScg -> ARRI LogC -> linear Rec.709 -> back` round-trip returns to the source
   at **max abs error 4.5e-6, mean 3.1e-8**. The residual is OCIO's single-precision LUT interpolation, the same
   in Nuke / Resolve / any OCIO tool. It is **not** bit-for-bit lossless (nothing through an OCIO LUT is), but the
-  error (~2^-17.8) is about 100x finer than one half-float (EXR 16f) step near 1.0 (~2^-11), so a half-float
-  delivery never resolves it. In bit terms: light is non-negative, so half-float's sign bit is unused and its
-  usable range is ~15 bits, and the round-trip holds ~14.6 of them, a sub-half-bit shortfall against the container.
+  error (~2^-17.8) is about 100x finer than one half-float (EXR 16f) rounding step near 1.0 (~2^-11), so a
+  half-float delivery never resolves it. In bit terms: light is non-negative, so half-float's sign bit is unused
+  and its usable range is ~15 bits, and the round-trip holds ~14.6 of them, a sub-half-bit shortfall against the
+  container.
+
+  Both counts are countable rather than rhetorical. Walk the 31744 finite non-negative half-float bit patterns
+  (`0x0000..0x7BFF`): that is `log2(31744) = 14.95` bits of container. Keep only the levels a 4.5e-6 error still
+  holds apart and 24820 survive: `log2(24820) = 14.60` bits. The 0.35-bit shortfall sits entirely in the deep
+  shadow, because one half-float step equals the round-trip error at **x = 0.0046** - above that the container is
+  the coarser of the two and the error is unrepresentable in 16f; below it, a 32f master is the honest choice.
 - **HDR safety: 0 silent clamps.** Negatives and values above 1.0 survive the conversions, curves and grades. No
   quiet clip to the `0..1` box.
 - **Rec.709 -> ACEScg parity: 0.00e+00.** The exact path the LTX and Flux HDR recipes rely on.

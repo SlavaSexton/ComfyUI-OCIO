@@ -68,6 +68,18 @@ elif mode == "cv2_first_flag_on":
         import cv2
     except ImportError:
         pass
+elif mode == "no_cv2":
+    # cv2 made unimportable outright. This stands in for the two ways a real install arrives with no usable
+    # EXR through OpenCV - a wheel whose imgcodecs was built without the codec, and an environment with no
+    # OpenCV at all - without needing either machine. `import cv2` in io_nodes must fall to `cv2 = None` and
+    # the EXR path must still decode, because the OpenEXR module is the primary reader, not the fallback.
+    import importlib.abc
+    class _NoCv2(importlib.abc.MetaPathFinder):
+        def find_spec(self, name, path=None, target=None):
+            if name == "cv2" or name.startswith("cv2."):
+                raise ImportError("cv2 unavailable in this probe")
+            return None
+    sys.meta_path.insert(0, _NoCv2())
 import importlib.util, tempfile, types
 ROOT = sys.argv[2]
 t = tempfile.mkdtemp()
@@ -82,8 +94,11 @@ for n in ("nodes", "io_nodes"):
 io = sys.modules["ocio_pkg.io_nodes"]
 a = io._read_still(sys.argv[3])
 import numpy as np
+# io.cv2 is reported so the caller can prove the no_cv2 case actually ran WITHOUT cv2. Without it a green
+# result there would be indistinguishable from the finder silently failing to block the import.
 print("OK", a.shape[0], a.shape[1], a.shape[2],
-      round(float(a[..., 0].max()), 4), round(float(a[..., 1].max()), 4), round(float(a[..., 2].max()), 4))
+      round(float(a[..., 0].max()), 4), round(float(a[..., 1].max()), 4), round(float(a[..., 2].max()), 4),
+      "cv2none" if io.cv2 is None else "cv2live")
 '''
 child = os.path.join(tmp, "child.py")
 open(child, "w", encoding="utf-8").write(CHILD)
@@ -92,6 +107,7 @@ CASES = [
     ("cv2_first_flag_off", "cv2 imported FIRST with the flag OFF (the arrangement that broke it live)"),
     ("cv2_first_flag_on", "cv2 imported first with the flag ON"),
     ("clean", "no cv2 pre-import"),
+    ("no_cv2", "cv2 not importable at all (a build with no EXR codec, or no OpenCV)"),
 ]
 print()
 for mode, label in CASES:
@@ -105,9 +121,14 @@ for mode, label in CASES:
         tail = (p.stderr or "").strip().splitlines()[-1:] or ["(no stderr)"]
         check(f"EXR read succeeds: {label}", False, tail[0][:150])
         continue
-    _, h, w, c, rmax, gmax, bmax = line.split()
+    _, h, w, c, rmax, gmax, bmax, cv2state = line.split()
     ok_shape = (int(h), int(w)) == (H, W) and int(c) >= 3
     check(f"EXR read succeeds: {label}", True, f"{w}x{h}x{c}")
+    if mode == "no_cv2":
+        # Guards the guard: if the import block did not take, this case would pass on cv2's codec and prove
+        # nothing about the OpenEXR path it exists to test.
+        check("   cv2 really was unavailable (the case is not passing via cv2)",
+              cv2state == "cv2none", cv2state)
     check(f"   dimensions correct ({label.split('(')[0].strip()})", ok_shape, f"{w}x{h}")
     # R must stay R. A BGR mix-up would put the 4.0 ramp in channel 0.
     check(f"   channel order preserved, R != B ({mode})",

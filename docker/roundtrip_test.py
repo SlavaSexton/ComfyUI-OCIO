@@ -34,7 +34,7 @@ import time
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from comfyui_client import ComfyUIClient          # noqa: E402
+from comfyui_client import ComfyUIClient, OCIO_NODE_CLASSES   # noqa: E402
 from build_workflow import build_graph            # noqa: E402
 import ocio_names                                 # noqa: E402
 import compare_histograms                          # noqa: E402
@@ -102,7 +102,7 @@ def main():
         if not ok:
             print(f"[comfyui] OCIO nodes missing from /object_info: {missing}\n" + tail(SERVER_LOG))
             return 3
-        print("[comfyui] all 9 OCIO nodes registered.")
+        print(f"[comfyui] all {len(OCIO_NODE_CLASSES)} OCIO nodes registered.")
 
         cfg_src = os.environ.get("OCIO") or "(built-in ACES config)"
         names = ocio_names.resolve_names()

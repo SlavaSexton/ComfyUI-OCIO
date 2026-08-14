@@ -22,6 +22,18 @@ The Docker test environment and the color-accuracy CI harness (`docker/`, `docke
 ([samhodge-1972](https://github.com/samhodge-1972)) and came in under the MIT license this project carried at
 the time. That grant stands and is recorded in [`NOTICE`](NOTICE).
 
+## Thanks
+
+**[Andrei Orehov](https://github.com/AndreiOrehov)** found the defect where every EXR write from `OCIO Write`
+was a silent no-op, diagnosed it to OpenCV's disabled EXR codec rather than to this pack, and filed it as
+issue #5 with a reproduction. It had been shipping unnoticed.
+
+He also built an independent float32 decode for LTX-2.5 and measured it, and two of those measurements shaped
+the VAE nodes here: that a bf16 decode and an fp32 decode of the same latent differ by more than any float
+container recovers afterwards, which is why `float32` is the default rather than an option; and that you
+should tile space and never time, because a diffusion decoder has no context at a temporal tile edge. The
+temporal defaults on `OCIO VAE Decode`, and the warning printed beside them, come from that.
+
 ## Built on
 
 The nodes are a thin ComfyUI layer over established color tools. Credit to their authors; each keeps its own

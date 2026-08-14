@@ -2473,6 +2473,10 @@ def _save_still(path, rgb, fmt, bit_depth, alpha=None, colorspace=None, compress
         # 2026-08-12 with "OpenEXR codec is disabled" after 125 s of generation. OpenEXR needs no env var, and
         # it is the only way to write header attributes at all (cv2 writes none). Falls back to cv2 when
         # OpenEXR is not installed, so an install without it behaves as before.
+        #
+        # Moving EXR writing off cv2 is Andrei Orehov's fix (PR #5): he found that every write here was a
+        # silent no-op, diagnosed it to OpenCV's disabled-by-default codec, and added the check on the
+        # fallback below. This path extends it to carry header attributes as well, which cv2 cannot do at all.
         try:
             return _save_exr_with_meta(path, rgb, bit_depth, alpha, compression, attrs)
         except ImportError:

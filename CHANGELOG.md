@@ -1,5 +1,41 @@
 # Changelog
 
+## OCIO Write stops answering a bad input with something that looks like success
+
+Five defects from an adversarial pass over the write path. They share a failure mode rather than a mechanism:
+each turned a situation the node could not honour into a result that read as fine. All five were reproduced
+before being touched, and each fix carries a check that goes red without it.
+
+**Metadata could kill a render.** A `metadata` wire whose `attrs` was valid JSON but not an object crashed
+`OCIO Write` outright, with a bare `TypeError`, `ValueError` or `AttributeError` depending on the shape. The
+socket is `forceInput` and takes a wire from any source, and a JavaScript `Object.entries()` serialisation
+produces exactly the list-of-pairs form that survived the first reader and died in the second. The pack's rule
+is that metadata never stops a render: a plate description we cannot read is dropped with a note and the pixels
+still get written. The existing tests only varied hostile values *inside* a proper `attrs` dictionary, so the
+shape itself had no coverage.
+
+**MXF refused the pack's own default frame rate.** `str(23.976)` makes ffmpeg parse `2997/125`, which is not
+`24000/1001`. MOV and MP4 accept the odd rational and carry it into the file; the MXF muxer is strict and
+rejects it, so both MXF codecs failed at 23.976 and 29.97 - `_SEQ_FPS_DEFAULT` and two of the pack's own
+`_DROP_FRAME_RATES`. Confirmed against raw ffmpeg outside the pack, so it was the argument form and not our
+encoder options. `-r` now goes through `_fps_arg`, which recognises the NTSC family by round trip rather than
+by lookup table, on a relative tolerance: an absolute one silently dropped 119.88 while appearing to cover it.
+
+**A still could be written under a name that lied.** `container = still image` with `first_frame` past the end
+of the batch clamped to the nearest frame: asking for frame 999 of a 3-frame batch wrote `name.0999.exr`
+containing frame 3, reported success, and said nothing. A filename is a claim about which frame it holds. Out
+of range now names both the frame asked for and the range available, matching what the `sequence` branch has
+always done. The same clamp underflowed to `-1` on an empty batch and died on `arr[-1]`.
+
+**`raw_data` claimed a colourspace on movies.** With `raw_data` on, a still correctly wrote no colorimetry at
+all, while a movie went down a path with no "unspecified" branch and came out tagged `bt709` /
+`iec61966-2-1` / `bt709`. Measured with identical pixels and only the flag flipped. Unconverted pixels have no
+delivery space to name; an untagged file leaves a player guessing, a mistagged one makes it guess wrong and
+believe it is right. The docs had described the correct behaviour for some time - it was verified on a PNG and
+generalised to "the output" - so this brings the code up to what was already written.
+
+Gate 32/32, one new file. Mutation matrix over the five fixes: 0 survivors of 7.
+
 ## The timecode now comes from the plate, and the reader shows you what the plate says
 
 **OCIO Write's `start_timecode` field is gone.** A code typed into the writer is a code invented at delivery.

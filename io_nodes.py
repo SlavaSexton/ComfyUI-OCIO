@@ -3255,7 +3255,7 @@ class OCIOWrite:
             "auto_range": ("BOOLEAN", {"default": True,
                            "tooltip": "ON: first_frame / last_frame / start_number / fps come from the upstream OCIO Read. CANVAS ONLY - an API prompt gets whatever is in its JSON, with this ticked and doing nothing. Set the four explicitly for farm work."}),
             "first_frame": ("INT", {"default": 1, "min": 0, "max": 100000000,
-                            "tooltip": "still image: WHICH frame to save. sequence/video: first frame to write (frame numbers, auto-filled from the source, e.g. 86)."}),
+                            "tooltip": "still image: WHICH frame to save - a number outside the batch is refused by name, not rounded to the nearest frame. sequence/video: first frame to write (frame numbers, auto-filled from the source, e.g. 86)."}),
             "last_frame": ("INT", {"default": 0, "min": 0, "max": 100000000,
                            "tooltip": "sequence/video: last frame to write (0 = to the end; auto-filled from the source, e.g. 97). Ignored for a still image."}),
             "start_number": ("INT", {"default": 1, "min": 0, "max": 100000000,
@@ -3263,7 +3263,7 @@ class OCIOWrite:
             "source_start": ("INT", {"default": 1, "min": 0, "max": 100000000,
                              "tooltip": "(auto) the source's first frame number, used to map first_frame/last_frame to the batch. Set by the wire."}),
             "raw_data": ("BOOLEAN", {"default": False,
-                         "tooltip": "Nuke 'Raw Data': write the pixels as-is, skipping the from->out colorspace conversion."}),
+                         "tooltip": "Nuke 'Raw Data': write the pixels as-is, skipping the from->out colorspace conversion. The file is also left UNTAGGED - no chromaticities on a still, no colour primaries / transfer / matrix on a movie - because unconverted pixels have no delivery space to name."}),
             "colorspace_in_name": ("BOOLEAN", {"default": True,
                                     "tooltip": "Put the output colorspace in the file name, before the frame number: name_acescg.0001.exr. Uses the sanitized output_colorspace (or 'raw' when Raw Data is on)."}),
             "output_folder": ("STRING", {"default": "", "tooltip": r"Empty = the ComfyUI output dir. Relative or $OUTPUT/sub sits under it; an absolute path is written there. PREFER relative or $OUTPUT: this value is stored in the workflow, and other nodes embed the workflow into the files they write."}),
@@ -3280,7 +3280,7 @@ class OCIOWrite:
             "video": ("VIDEO", {"tooltip": "A ComfyUI native VIDEO (e.g. Load Video) to render out with ALL these Write settings (container, codec, colorspace, bit depth). Mutually exclusive with the image input; the movie's own frame rate is used for a video container."}),
             "alpha": ("MASK", {"tooltip": "Optional alpha channel -> RGBA (EXR / TIFF / PNG; ignored for JPEG). Wire OCIO Read's alpha output, or any MASK."}),
             "fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 240.0, "step": 0.001,
-                              "tooltip": "Video frame rate. Wire OCIO Read's fps output here to carry the source rate."}),
+                              "tooltip": "Video frame rate. Wire OCIO Read's fps output here to carry the source rate. This sets the TIME BASE, it does not resample: the same frames are written either way, so a 24fps batch written at 48 plays twice as fast and half as long (a conform, not a frame-rate conversion). NTSC rates go out as their exact rational, 23.976 as 24000/1001."}),
             "render_nonce": ("STRING", {"default": "",
                              "tooltip": "Internal, hidden. The Render button bumps it so a repeat render to the same path really re-writes; ComfyUI would otherwise cache an identical Write and skip it."}),
             # Appended LAST on purpose: AUDIO carries no widget, so widgets_values is untouched, and a new
@@ -3301,7 +3301,7 @@ class OCIOWrite:
             # (renamed 2026-08-13, before any release carried it: `source_meta` has zero occurrences in
             # origin/main, so no published graph can be holding the old key).
             "metadata": ("STRING", {"forceInput": True,
-                         "tooltip": "(optional) Wire OCIO Read's 'metadata' output here to carry the plate's camera, lens, editorial attributes AND its start timecode into the written file. Claims a colour transform invalidates are dropped, not copied: docs/NODES_IO.md."}),
+                         "tooltip": "(optional) Wire OCIO Read's 'metadata' output here - or any node that emits the same JSON - to carry the plate's camera, lens, editorial attributes AND its start timecode into the written file. Claims a colour transform invalidates are dropped, not copied: docs/NODES_IO.md. A wire this node cannot read is reported and ignored; it never stops the render."}),
             # The last WIDGET, and it must stay last for the positional reason above.
             # It covers a case the 'audio' socket cannot: a native ComfyUI Video input carries its own track and
             # write() adopts it when nothing is wired, so there is no wire to disconnect in order to decline it.

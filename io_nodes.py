@@ -181,9 +181,21 @@ def _read_dpx(path):
             if arr.size != w * h * 3:
                 raise RuntimeError(f"{os.path.basename(path)}: ffmpeg returned {arr.size} samples, "
                                    f"expected {w * h * 3}.")
-            # ffmpeg scales an N-bit source into 16 bits by 2**(16-N); recover the real code ceiling
-            scale = float((1 << 16) - (1 << (16 - bits))) if bits < 16 else 65535.0
-            return arr.reshape(h, w, 3).astype(np.float32) / scale
+            # FULL SCALE, NOT A BIT SHIFT. The line here used to divide by 2**16 - 2**(16-N), on the belief
+            # that ffmpeg widens an N-bit sample by shifting it left. It does not: it maps the code range onto
+            # the full 16-bit range, round(code * 65535 / (2**N - 1)), so the top code arrives as 65535 for
+            # every depth. Dividing that by 65472 returned 1.000962 for a 10-bit file whose highest code was
+            # exactly 1023, which put 15.9% of a legal plate above 1.0 and made a correct read look like an
+            # out-of-range one. Measured on files written and read back by ffmpeg itself:
+            #
+            #   10-bit  top code 1023  -> 65535    /65472 = 1.000962   /65535 = 1.000000
+            #   12-bit  top code 4095  -> 65535    /65520 = 1.000229   /65535 = 1.000000
+            #   16-bit  top code 65535 -> 65535    /65535 = 1.000000   /65535 = 1.000000
+            #
+            # Reported by Andrei Orehov as issue #7, on a 10-bit RGBA plate. It only ever showed on this
+            # fallback: the pack's own unpacker handles the common widths, and a file reaches ffmpeg only when
+            # width * channels is not divisible by 3, which is why a 4096-wide RGB test never saw it.
+            return arr.reshape(h, w, 3).astype(np.float32) / 65535.0
         finally:
             if os.path.exists(tmp):
                 try:

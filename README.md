@@ -612,17 +612,39 @@ turn `write_audio` off for a picture-only master.
 
 ## API video sources (Seedance and friends)
 
-Cloud video nodes (Seedance, Kling, Veo, and the like) emit a `VIDEO`, not an `IMAGE`. To color-manage one,
-let the API node save its clip (`SaveVideo`), then load that file with **OCIO Read** (it reads video) and pipe it
-into **OCIO Write**:
+Cloud video nodes (Seedance, Kling, Veo, and the like) emit a `VIDEO`, not an `IMAGE`. **OCIO Write takes a
+`VIDEO` straight in**, so wire the API node to it and skip the round trip through a file:
+
+```
+ByteDance2TextToVideoNode -> OCIO Write (the `video` input)
+```
+
+The clip is rendered out with every other Write setting you have set (container, codec, colorspace, bit depth),
+and a `video` container inherits the movie's own frame rate rather than the `fps` widget.
+
+The older route still works and is the one to use when you want the file on disk in between, or when you need
+OCIO Read's frame range and metadata panel:
 
 ```
 ByteDance2TextToVideoNode -> SaveVideo -> OCIO Read (the saved .mp4) -> OCIO Write
 ```
 
-Seedance 4K is 10-bit and HDR-ready, but its exact color encoding (Rec.709 vs Rec.2020 / PQ) is not published, so
-set OCIO Read's `input_colorspace` to match your actual clip (check the file's tags with `ffprobe`). The
-`Seedance 4K 10-bit` profile on OCIO Write is a placeholder until that encoding is confirmed from a real sample.
+**It does not cost you bit depth, which is worth stating because it is the obvious thing to suspect.** Measured
+on a 10-bit HEVC ramp: the source carried 879 distinct values per channel, `SaveVideo` wrote it back still
+`yuv420p10le` at 879 (by default it remuxes rather than re-encodes), and even forcing a re-encode to H.264 kept
+`yuv420p10le` at 881. An 8-bit control of the same ramp read 221, so the measurement can tell the two apart.
+ComfyUI decodes video to `gbrpf32le`, float32, and OCIO Write reads it through `get_components()`, so nothing on
+this path quantises to 8-bit. The reason to prefer the direct wire is the extra lossy encode and the disk trip,
+not the bit depth.
+
+Seedance renders 4K natively at 10-bit (announced for **Seedance 2.0** at Volcengine's FORCE 2026), which is
+why it is worth color-managing rather than treating as a finished clip. Note which model you pick: read from
+this ComfyUI install's own `/object_info`, `4k` is offered only on the `Seedance 2.0` option of the
+`ByteDance2*` nodes (`480p, 720p, 1080p, 4k`), while `Seedance 2.5` there tops out at `720p` and the older
+`ByteDanceTextToVideoNode` family at `1080p`. The exact color encoding (Rec.709 vs Rec.2020 / PQ) is not
+published, so set OCIO Read's `input_colorspace` to match your actual clip (check the file's tags with
+`ffprobe`). The `Seedance 4K 10-bit` profile on OCIO Write is a placeholder until that encoding is confirmed
+from a real sample.
 Verified that a 10-bit clip (both a Rec.709 and a Rec.2020 / PQ variant) loads through OCIO Read and writes back
 through OCIO Write with the frame count intact.
 

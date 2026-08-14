@@ -519,6 +519,177 @@ def _range_report(images, label):
     )
 
 
+# =================================================================================================
+# INPUT GUARDS - a sentence naming the wrong number, instead of a crash from inside the model.
+#
+# RESPONSIBLE FOR: refusing an input the VAE cannot take, in words that name the size (2026-08-13).
+#
+# NEITHER OF THESE FIXES ANY ARITHMETIC, and the messages must not pretend otherwise. Both inputs
+# below fail on the STOCK ComfyUI nodes in exactly the same way; what they lack there is any hint of
+# which number is wrong. Confirmed for both, by running the real mechanism rather than by reading:
+#
+#   * A frame whose height or width is not a multiple of the VAE's block size reaches the model and
+#     dies inside einops with `Shape mismatch, can't divide axis of length 791 in chunks of 2` - an
+#     internal axis, at a size that is the frame's height divided by four, and no mention of the
+#     frame. Most VAEs never get there because comfy/sd.py:1069-1078 narrows the frame for them, but
+#     that runs only `if self.crop_input`, and sd.py:575, :595 and :884 switch it off (at :595 with
+#     the reason: a generic crop would narrow the FRAME axis by the 32x spatial ratio).
+#   * A 4-dimensional latent handed to a 5-dimensional video VAE dies in the memory estimate, before
+#     any decoding starts, because those lambdas index shape[4] - e.g. sd.py:596. `IndexError: tuple
+#     index out of range` says nothing about latents at all. Both entry points reach it: sd.py:1192
+#     inside a try whose handler re-raises anything that is not an OOM (model_management.py:393-395),
+#     and sd.py:1282 with no try around it.
+#
+# BOTH GUARDS FAIL OPEN, deliberately and in the same direction. A VAE that will not say what it
+# needs gets the input it would have got before, and the old unhelpful error with it. That is the
+# cheaper side of the trade by a wide margin: an unclear error costs an artist a search, while a
+# false refusal costs a job that would have rendered - and the field these read is set in over
+# twenty places in one file, none of which this pack controls. So every uncertain answer is None.
+# =================================================================================================
+
+
+def _spatial_alignment(vae):
+    """The pixel block this VAE encodes in, or None when it will not say plainly.
+
+    ASKED THROUGH THE SAME ACCESSOR THE CROP USES, not by parsing the field. comfy/sd.py:1432
+    `spacial_compression_encode` returns `downscale_ratio[-1]`, falling back to `downscale_ratio`
+    itself, so it already answers for both shapes the field takes: a bare int (sd.py:495, :534,
+    :543 and others) and the tuple `(callable, 32, 32)` that the video VAEs use (sd.py:570, :600,
+    :727 and others), whose callable maps a FRAME COUNT and is not a spatial divisor at all.
+    Reading the field here instead would be a second implementation of that rule, free to disagree
+    with the crop at sd.py:1071 that this guard exists to sit beside. The field is read directly
+    only when the accessor is missing, which is what a stand-in or an older ComfyUI looks like.
+
+    A 1-D VAE is skipped rather than answered. sd.py:879 sets `downscale_ratio` to
+    `512 * (44100 / sample_rate)` on an audio VAE, a number about a sample rate with no spatial
+    meaning whatever; the neighbouring `latent_dim` (sd.py:880) is how that case is recognised.
+    A non-integral ratio is refused for the same reason - see `_tiling_kwargs`, which documents the
+    same float trap from the decode side.
+    """
+    dim = getattr(vae, "latent_dim", None)
+    if isinstance(dim, int) and not isinstance(dim, bool) and dim < 2:
+        return None                       # no spatial axis to align
+
+    ratio = None
+    getter = getattr(vae, "spacial_compression_encode", None)
+    if callable(getter):
+        try:
+            ratio = getter()
+        except Exception:
+            ratio = None
+    if ratio is None:
+        ratio = getattr(vae, "downscale_ratio", None)
+        if isinstance(ratio, (tuple, list)):
+            ratio = ratio[-1] if len(ratio) else None
+
+    # A NUMBER OR NOTHING. int("32") succeeds, so accepting a string here would let a foreign implementation's
+    # text be read as a block size - exactly the guess this function exists to refuse. bool is an int in Python
+    # and is excluded for the same reason: True would arrive as a ratio of 1.
+    if not isinstance(ratio, (int, float)) or isinstance(ratio, bool):
+        return None
+    if isinstance(ratio, float) and not ratio.is_integer():
+        return None
+    ratio = int(ratio)
+    # 1 divides everything, so it can never fail this check and is not worth a branch downstream.
+    return ratio if ratio >= 2 else None
+
+
+def _encode_alignment_problem(vae, height, width):
+    """Why this VAE cannot encode a frame of this size, or None when it can.
+
+    THE SIZE CHECKED IS THE ONE AFTER ComfyUI'S OWN CROP, and that is what keeps this guard from
+    refusing work that would have succeeded. `vae_encode_crop_pixels` (sd.py:1069) narrows both
+    spatial dimensions to a multiple of this same ratio whenever `crop_input` is set, which is the
+    default at sd.py:511 and true of most VAEs. Feed those an odd size and the post-crop size is
+    already aligned, so nothing below fires - correctly, because the encode goes on to work. Only a
+    VAE that declines the crop arrives here still unaligned, which is exactly the failing case.
+    Asking the real function beats reading `crop_input` and re-deriving what it implies.
+    """
+    align = _spatial_alignment(vae)
+    if align is None:
+        return None
+    bad = [(name, int(v)) for name, v in (("height", height), ("width", width)) if int(v) % align]
+    if not bad:
+        return None
+
+    parts = []
+    for name, v in bad:
+        lo, rem = (v // align) * align, v % align
+        # A floor of 0 is not a size anyone can use, so it is not offered as one.
+        near = (f"the nearest {name}s it accepts are {lo} and {lo + align}" if lo >= align
+                else f"the nearest {name} it accepts is {lo + align}")
+        parts.append(f"the {name} {v} is not ({v} = {align} x {v // align} + {rem}; {near})")
+
+    return (
+        f"OCIO VAE Encode: this VAE encodes in blocks of {align} pixels, and " + ", and ".join(parts)
+        + f". Crop or resize the frame to a multiple of {align} on both axes before it reaches this "
+        f"node, then encode.\n"
+        f"This is the VAE's own requirement and not a limit of this node: the stock VAE Encode "
+        f"fails on this same frame. ComfyUI trims an unaligned frame for you only when the VAE asks "
+        f"it to (comfy/sd.py:1069-1078), and this one does not - its vae_encode_crop_pixels handed "
+        f"the size back unchanged. Without this message the frame reaches the model and fails inside "
+        f"einops with \"Shape mismatch, can't divide axis of length ... in chunks of ...\", which "
+        f"names an internal axis and never mentions the size you fed it."
+    )
+
+
+# What each latent axis is called, so the message can spell the shape out rather than say "5-D".
+# Keyed by the expected rank; anything not listed is described without naming its axes.
+_LATENT_AXES = {
+    3: "[batch, channels, samples]",
+    4: "[batch, channels, height, width]",
+    5: "[batch, channels, frames, height, width]",
+}
+
+
+def _decode_shape_problem(vae, latent):
+    """Why this VAE cannot decode this latent, or None when it can.
+
+    A latent carries a batch axis and a channel axis on top of the ones `latent_dim` counts, so the
+    rank this VAE expects is `latent_dim + 2`: 5 for the video VAEs (sd.py:563, :593, :700 and the
+    rest), 4 for a still image (the default, sd.py:498), 3 for audio (sd.py:688).
+
+    TWO CASES ARE LEFT ALONE, both because comfy/sd.py handles them itself and refusing them would
+    be a false block:
+
+      * `latent_dim == 2` given a 5-dimensional latent. sd.py:1188 drops the frame axis before
+        anything else runs. The reverse has no such line, which is the whole reason for this guard.
+      * any VAE with `extra_1d_channel` set (sd.py:855, :930). Those carry an extra axis that
+        `latent_dim` does not count - `encode_tiled_1d` reshapes to
+        [batch, latent_channels, extra, T] at sd.py:1158 - so the rank rule above does not describe
+        them. Both current sites happen to agree with it anyway; the skip is here because the rule
+        was not confirmed for them, not because it was confirmed wrong.
+    """
+    dim = getattr(vae, "latent_dim", None)
+    if not isinstance(dim, int) or isinstance(dim, bool):
+        return None
+    if getattr(vae, "extra_1d_channel", None) is not None:
+        return None
+    ndim = getattr(latent, "ndim", None)
+    if not isinstance(ndim, int):
+        return None
+
+    want = dim + 2
+    if ndim == want or (dim == 2 and ndim == 5):
+        return None
+
+    axes = _LATENT_AXES.get(want)
+    wants = f"{want}-dimensional latents {axes}" if axes else f"latents of {want} dimensions"
+    shape = "x".join(str(int(s)) for s in latent.shape) if getattr(latent, "shape", None) else "?"
+    return (
+        f"OCIO VAE Decode: this VAE decodes {wants}, and the latent handed to it has {ndim} "
+        f"({shape}). The latent and the VAE do not belong together, which almost always means they "
+        f"came from different models. Wire the latent from the model this VAE was loaded with: a "
+        f"VAE is trained alongside its own transformer and cannot be paired with another one's "
+        f"latents.\n"
+        f"This is a mismatch in the graph and not a limit of this node: the stock VAE Decode fails "
+        f"on this same pair. comfy/sd.py sizes the decode from the latent's shape before any "
+        f"decoding starts (sd.py:1192 whole-frame, sd.py:1282 tiled), and on a video VAE that "
+        f"estimate reads shape[4] (sd.py:596), so without this message the job stops at "
+        f"\"IndexError: tuple index out of range\", which never mentions the latent at all."
+    )
+
+
 class OCIOVAEDecode:
     """Decode a latent without the 0..1 clamp, optionally in float32."""
 
@@ -596,6 +767,14 @@ class OCIOVAEDecode:
         # Nested latents (audio-video models) carry the video track first, same as the stock node.
         if getattr(latent, "is_nested", False):
             latent = latent.unbind()[0]
+
+        # CHECKED ON THE TENSOR THAT WILL BE DECODED, hence after the unbind above and not before it:
+        # the nested wrapper's own rank is not the rank the VAE will see. Raised here, before the
+        # `try` below, so there is no patched transform or raised precision to put back - nothing has
+        # been touched yet.
+        problem = _decode_shape_problem(vae, latent)
+        if problem is not None:
+            raise ValueError(problem)
 
         import logging
 
@@ -811,6 +990,14 @@ class OCIOVAEEncode:
             logging.warning(f"OCIO VAE Encode: {in_w}x{in_h} was cropped to {out_w}x{out_h} to reach a multiple of "
                             f"the VAE's compression ratio (comfy/sd.py:1315 does this silently). Feed dimensions "
                             f"that are already a multiple if you need every pixel.")
+
+        # THE POST-CROP SIZE IS THE ONE THAT REACHES THE MODEL, so it is the one checked - see
+        # _encode_alignment_problem. A VAE that crops has already fixed its own alignment by this
+        # line and cannot be refused here; only one that declines the crop can still be unaligned.
+        # Raised before the precision block below, so no dtype has been changed to restore.
+        problem = _encode_alignment_problem(vae, out_h, out_w)
+        if problem is not None:
+            raise ValueError(problem)
 
         saved_dtype = getattr(vae, "vae_dtype", None)
         raised_precision = False

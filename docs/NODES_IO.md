@@ -122,7 +122,22 @@ later.
 |---|---|---|---|---|
 | `source` | STRING (widget) | A path to a still, a sequence folder, one numbered frame, or a video, anywhere on disk (absolute, e.g. `E:\path\to\shots\LeftGirl.v01`) or relative to the ComfyUI input folder. Use the **Open Files** button or type it. | `""` | This is a plain text widget, not a socket, but like any ComfyUI STRING widget it can be right-click-converted to an input and driven by a STRING output from another node (a path-builder node, for example). Left as a widget, you type or browse to it. |
 | `frame_mode` | COMBO | `auto`, `single`, `sequence`, `video` | `auto` | Widget only. `auto`: a numbered file with siblings on disk becomes the whole sequence; `single`: load only the exact file named in `source`; `sequence`: force-collapse the file's siblings into a sequence even if `auto` wouldn't have; `video`: treat `source` as a movie clip. A folder is always read as a sequence and a video file is always read as its full clip regardless of this setting. |
-| `input_colorspace` | COMBO (55 colorspaces) | See the shared list above. | `sRGB - Display` | Widget. This is what the *file* is claimed to be in, not what you want out. The live default is `sRGB - Display`; the pack's front end additionally auto-sets it to `ACEScg` the moment you pick an `.exr` or `.hdr` file (`_auto_input_cs`), but that auto-set is a JavaScript convenience, not something the server does. If you build the graph via the API directly, you must set this yourself. |
+| `input_colorspace` | COMBO (55 colorspaces) | See the shared list above. | `sRGB - Display` | Widget. This is what the *file* is claimed to be in, not what you want out. The live default is `sRGB - Display`; the pack's front end additionally auto-sets it the moment you pick a file, but that auto-set is a JavaScript convenience, not something the server does - build the graph through the API and you must set it yourself. What it picks: `ACEScg` for `.exr`/`.hdr`; for a video, see the table below. **It is a guess from the container, and you can always overrule it** - a log-encoded ProRes (LogC, S-Log, V-Log) carries no tag that says so, and will be guessed as Rec.709. |
+
+How a video's `input_colorspace` is guessed (`_video_input_cs`), in order:
+
+| The file says | Guess | Why |
+|---|---|---|
+| transfer `smpte2084` (PQ) | `Rec.2100-PQ - Display` | an HDR transfer is unambiguous |
+| transfer `arib-std-b67` (HLG) | `Rec.2100-HLG - Display` | same |
+| primaries `bt2020`, or a `bt2020nc`/`bt2020c` matrix | `Rec.2100-PQ` / `-HLG` | wide-gamut UHD |
+| SDR, and the codec is **ProRes / DNxHD**, or the container is **MXF** | `Rec.1886 Rec.709 - Display` | a post codec in a professional container is a camera or mastering file: it is graded and viewed on a BT.1886 reference display, not on a web browser |
+| anything else SDR (h264/hevc `.mp4`, plain `.mov`) | `sRGB - Display` | an internet deliverable, and most viewers are on sRGB |
+
+The ProRes/DNxHD/MXF row exists because the colour tags alone cannot separate the two cases. Measured on
+a real DaVinci Resolve MXF of ProRes 4444 XQ: it reports `color_space=bt709` with **both** primaries and
+transfer `unknown`, which is indistinguishable from an untagged web clip by tags. The container and codec
+do distinguish them - nobody publishes an MXF to the web.
 | `output_colorspace` | COMBO (55 colorspaces) | See the shared list above. | `sRGB - Display` | Widget. What you want the `IMAGE` output converted into. `sRGB - Display` is ComfyUI's own working space (plain gamma-encoded, what `LoadImage` produces), so leaving this at default hands downstream nodes exactly what they already expect from any other loader. |
 | `raw_data` | BOOLEAN | true / false | `false` | Widget. Nuke's "Raw Data": when on, the file's numbers are passed straight through with no colorspace conversion at all, and `input_colorspace`/`output_colorspace` are ignored (the alpha channel is unaffected either way, colorspace conversion never touches it). |
 | `start_frame` | INT | 0 to 100000000 | `0` | Widget. First frame **number** to load (a file's own number, e.g. `86`, not a batch index). `0` means "from the detected start." A number below the sequence's real first frame is filled in according to `edge_mode`. |
@@ -168,11 +183,37 @@ regardless of what the canvas would have shown or hidden.
 | `edge_mode` | hidden | shown | hidden |
 | `fps` | hidden | shown | shown |
 
-The `Detect from Source`, `Open Files` and `▾ Viewer` buttons, plus the on-node preview and metadata
-panels, are always visible regardless of kind. The `ComfyUI Video` output socket is likewise hidden on
+The `Detect from Source`, `Open Files`, `▾ Viewer` and `▾ Metadata` buttons, plus the panels they open,
+are always visible regardless of kind. The `ComfyUI Video` output socket is likewise hidden on
 the node face unless the detected kind is `video` (`_setVideoOutput`), but this is a display choice: the
 Python side always computes and returns a `VIDEO` object at slot 4 no matter what the source is, so a
 prompt built directly against the API always has that value available at that index.
+
+### The two panels on the node face
+
+Each has its own disclosure button, and each remembers nothing between sessions - they are display, not
+settings. The chevron follows the state: pointing down when the block is open, right when it is closed,
+and the node gives the space back when you close one.
+
+**`▾ Viewer`** folds the picture: the thumbnail, the transport bar and, on `OCIO Player`, the exposure
+strip.
+
+**`▾ Metadata`** folds the header read-out - plain text, one `Label: value` line each, no graphs. It
+lists what the file itself says, in the order you read it: what the file IS (resolution, format, codec,
+pixel format, frame range, missing frames, fps, colorspace, colour primaries and transfer, alpha) and
+then which picture it is (reel, scene, shot, take, camera, lens, **timecode**). It is the same read that
+travels down the `metadata` wire to `OCIO Write`, so what you see here is what will be delivered.
+
+**A row with nothing to say is not drawn.** A plate with no lens tag costs no line, so the panel is
+short on a bare EXR and long on a camera master. Two consequences worth knowing:
+
+- A *value* the file does not carry is simply absent. If `Timecode` is missing from the list, the source
+  has none, and nothing downstream will invent one.
+- A **UMID is not shown as a reel.** Some applications park a SMPTE ST 330M identifier in the reel field
+  (measured: DaVinci Resolve writes `com.apple.proapps.reel=0x060A2B34...` into a ProRes master). That is
+  a 32-octet machine identifier, not a name - a reel name is 8 characters in a CMX3600 EDL and up to 32
+  on Avid, so it could not travel as one anyway. The value is **not** discarded: it still goes into the
+  written file under its own attribute. It is only refused the claim of being the shot's reel.
 
 ### Worked wiring examples
 
@@ -291,7 +332,7 @@ the way `metadata` is.
 | `still_format` | COMBO | `exr`, `tiff`, `png`, `jpeg` | `exr` | Used for `still image` and `sequence`; hidden for `video`. |
 | `video_codec` | COMBO | `prores_4444`, `prores_422hq`, `prores_422`, `dnxhr_hq`, `h264`, `hevc`, `dnxhr_hq_mxf`, `dnxhr_hq_mxf_opatom`, `dnxhr_hqx`, `dnxhr_444` | `prores_4444` | Used for `video`; hidden otherwise. Fixes both the real bit depth and the container extension: `prores_4444` writes 12-bit 4:4:4 into a `.mov`; `prores_422hq`/`prores_422` write 10-bit 4:2:2 into a `.mov`; `dnxhr_hq` writes 8-bit 4:2:2 into a `.mov`; `h264`/`hevc` write 8-bit 4:2:0 into a `.mp4`; `dnxhr_hqx` writes 10-bit 4:2:2 and `dnxhr_444` writes 10-bit 4:4:4, both into a `.mov`; `dnxhr_hq_mxf` and `dnxhr_hq_mxf_opatom` write the identical DNxHR HQ picture as `dnxhr_hq` but into a `.mxf` (OP1a and OPAtom respectively) instead of a `.mov`. Confirmed on a real `prores_422hq` encode: `ffprobe` reported `codec_name=prores`, `pix_fmt=yuv422p10le`, `bits_per_raw_sample=10`, matching this table exactly. |
 | `bit_depth` | COMBO | `16f`, `32f`, `16`, `8` | `16f` | The full combo the server accepts; the canvas narrows the visible choices to what the current `still_format` actually supports (EXR: 16f/32f; TIFF: 8/16/32f; PNG: 8/16; JPEG: 8 only) but the **server does not enforce this narrowing**. See Traps. |
-| `compression` | COMBO | `zip`, `zips`, `piz`, `pxr24`, `dwaa`, `dwab`, `rle`, `none` | `zip` | EXR-only (Nuke Write style). `zip`/`zips`/`rle` are lossless; `piz` is lossless and suits grain; `pxr24` is lossy at a fixed 24-bit float precision; `dwaa`/`dwab` are lossy, smaller. Has no effect outside EXR. |
+| `compression` | COMBO | `zip`, `zips`, `piz`, `pxr24`, `dwaa`, `dwab`, `rle`, `none` | `dwaa` | EXR-only (Nuke Write style). `dwaa`/`dwab` are lossy and much smaller, which is why they are the default: it is what most of the industry writes for anything that is not an archival master. `zip`/`zips`/`rle` are lossless; `piz` is lossless and suits grain; `pxr24` is lossy at a fixed 24-bit float precision. **Pick `zip` when the file has to be bit-exact.** Your choice is saved in the workflow, so a graph you set to `zip` reopens on `zip` - the default only ever applies to a node you create fresh. |
 | `auto_range` | BOOLEAN | true / false | `true` | Canvas-only. See Traps: this does nothing when a prompt is posted directly to the API. |
 | `first_frame` | INT | 0 to 100000000 | `1` | For `still image`: which single frame of the incoming batch to save. For `sequence`/`video`: the first frame **number** to write, matched against `source_start` to find the right slice of the batch. |
 | `last_frame` | INT | 0 to 100000000 | `0` | For `sequence`/`video`: the last frame number to write; `0` means "to the end of the batch." Ignored for `still image`. |
@@ -305,9 +346,14 @@ the way `metadata` is.
 
 ### Every input, optional
 
-These nine can be sockets. Several of them (`images`, `video`, `alpha`, `audio`, `metadata`) have no
-widget at all and only exist as wires; the rest (`fps`, `render_nonce`, `start_timecode`, `write_audio`)
-start as widgets that a direct wire will override.
+These can be sockets. Several of them (`images`, `video`, `alpha`, `audio`, `metadata`) have no widget at
+all and only exist as wires; the rest (`fps`, `render_nonce`, `write_audio`) start as widgets that a
+direct wire will override.
+
+**There is no timecode field here, on purpose.** A code typed into the writer is a code invented at
+delivery; the one that has to survive the round trip is the one the plate arrived with. Wire `metadata`
+and the start comes from the source file - then this node advances it per written frame, which is the
+only form that conforms correctly downstream. Nothing wired, no timecode written.
 
 | Input | Type | Accepts | Default | What you wire into it |
 |---|---|---|---|---|
@@ -317,8 +363,7 @@ start as widgets that a direct wire will override.
 | `fps` | FLOAT | 1.0 to 240.0, step 0.001 | `24.0` | `OCIO Read`'s `fps` output, to carry the true source rate into the write, or type a number directly. Only used for a `video` container (and only as a fallback when no `video` object with its own rate is wired). |
 | `render_nonce` | STRING | Any string; a plain widget the canvas hides. | `""` | Internal. The on-node **Render** button bumps this to a fresh timestamp so a repeat render to the same path actually rewrites the file. See Traps: this exists because ComfyUI's own execution cache otherwise skips a second identical Write outright. |
 | `audio` | AUDIO | A ComfyUI `AUDIO` dict (`{"waveform": [B,C,T] tensor, "sample_rate": int}`). | none | `LoadAudio`, `LTXVAudioVAEDecode` (named explicitly in the tooltip), or any AUDIO-producing node. A `video` container muxes it in (24-bit PCM for `.mov`/MXF OP1a, AAC for `.mp4`), trimmed to exactly the frame range being written. A `sequence` gets a sidecar `.wav` instead, because EXR/TIFF/PNG hold no audio track, and so does an MXF OPAtom write, which by design holds exactly one essence per file. |
-| `start_timecode` | STRING | `HH:MM:SS:FF` (SMPTE ST 12-1), or empty for none. | `"01:00:00:00"` | Written into every EXR frame's header (advancing per frame, not repeated) and, for a video, into the container's own timecode track. Drop-frame counting only applies at 29.97/59.94 fps; 23.976 counts as 24, non-drop. |
-| `metadata` | STRING | JSON from `OCIO Read`'s "metadata" output. | none | **`forceInput: true`**: unlike every other widget on this node, this field never renders as a text box, only as a wire-only socket. Wire `OCIO Read`'s slot-5 output here to carry the plate's camera/lens/editorial identity into the written file. Attributes describing a specific pixel state (C2PA manifests, ST 2086/2094 HDR mastering data, an ACES AMF, an MHL hash list) are dropped rather than copied, because a colorspace conversion makes them false; container attributes (`dataWindow`, `channels`, `compression`) are never copied either, since the writer recomputes those from the real pixels. Confirmed on a real write: a test attribute named to match the "mastering" filter was silently removed from both the EXR header and the sidecar JSON, while unrecognized custom attributes and the seven identity fields (reel, scene, shot, take, camera, lens, timecode) passed through intact. |
+| `metadata` | STRING | JSON from `OCIO Read`'s "metadata" output. | none | **`forceInput: true`**: unlike every other widget on this node, this field never renders as a text box, only as a wire-only socket. Wire `OCIO Read`'s slot-5 output here to carry the plate's camera/lens/editorial identity **and its start timecode** into the written file - this wire is the only route a timecode has, since the node has no field for one. Attributes describing a specific pixel state (C2PA manifests, ST 2086/2094 HDR mastering data, an ACES AMF, an MHL hash list) are dropped rather than copied, because a colorspace conversion makes them false; container attributes (`dataWindow`, `channels`, `compression`) are never copied either, since the writer recomputes those from the real pixels. The fields this node re-authors for itself (chromaticities, frame rate, frame counter, timecode) are stripped from the incoming set in **any spelling** and written fresh, so a plate that calls its code `timecode` where we call it `timeCode` cannot leave two conflicting timecodes in one header. Confirmed on a real write: a test attribute named to match the "mastering" filter was silently removed from both the EXR header and the sidecar JSON, while unrecognized custom attributes and the seven identity fields (reel, scene, shot, take, camera, lens, timecode) passed through intact. Confirmed on a real camera master (DaVinci Resolve MXF, ProRes 4444 XQ): all twelve of its attributes reached the EXR header, with a single, correctly typed timecode advancing per frame. |
 | `write_audio` | BOOLEAN | true / false | `true` | Off: no audio at all is written, not even as a sidecar `.wav`, regardless of what's wired or what a native `Video` input carries. On (default): a wired `audio` input wins over a native `Video`'s own track. This is the only way to *decline* a `Video` input's own audio, since there's no wire to disconnect for it. |
 
 ### Every output
@@ -358,15 +403,13 @@ on node creation and on every `container`/`still_format` change.
 | `last_frame` | hidden | shown | shown |
 | `start_number` | hidden | shown | hidden |
 | `fps` (as a widget, when not wired) | hidden | hidden | shown |
-| `start_timecode` | shown only if `still_format = exr` | shown only if `still_format = exr` | shown |
 | `source_start` | always hidden (internal) | always hidden | always hidden |
 | `auto_colorspace` | always hidden (legacy) | always hidden | always hidden |
 | `render_nonce` | always hidden (internal) | always hidden | always hidden |
 
-The practical read of the `start_timecode` row: PNG, TIFF and JPEG have no header field to put a
-timecode in, so the canvas hides the widget for those formats rather than promising a delivery detail
-the file can't actually carry. It still appears for EXR (a real header attribute) and for every video
-container (a real timecode track).
+Where a timecode can land is unchanged, even though there is no longer a field for one: an EXR header
+attribute, and a video container's own timecode track. PNG, TIFF and JPEG have nowhere to put it, so the
+writer simply omits it there rather than promising a delivery detail the file cannot carry.
 
 ### `profile`, in full
 

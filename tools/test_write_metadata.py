@@ -40,6 +40,11 @@ import numpy as np
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# The ONLY route a start timecode reaches a written file since OCIO Write's `start_timecode` field was removed
+# (2026-08-13): it arrives on the `metadata` wire, the way a real plate delivers it. Tests below that assert on
+# a timecode hand this in, so what they prove is INHERITANCE, not a value typed into the node.
+TC_META = '{"attrs": {"timeCode": "01:00:00:00"}}'
+
 
 def _load_io_nodes(tmp):
     fp = types.ModuleType("folder_paths")
@@ -170,7 +175,7 @@ def check_sequence_write(io, tmp):
                   container="sequence", still_format="exr", video_codec="prores_4444", bit_depth="16f",
                   auto_range=False, first_frame=1, last_frame=0, start_number=1001, source_start=1,
                   raw_data=False, output_folder="$OUTPUT/seq", filename="meta", fps=23.976,
-                  start_timecode="01:00:00:00", images=imgs)
+                  metadata=TC_META, images=imgs)
     folder = os.path.join(tmp, "seq")
     files = sorted(f for f in os.listdir(folder) if f.endswith(".exr"))
     assert len(files) == 4, f"expected 4 frames, got {files}"
@@ -209,7 +214,7 @@ def check_sequence_write(io, tmp):
     w.write(profile="none", from_colorspace="sRGB - Display", output_colorspace="ACEScg", container="sequence",
             still_format="exr", video_codec="prores_4444", bit_depth="16f", auto_range=False, first_frame=1,
             last_frame=0, start_number=1, source_start=1, raw_data=True, output_folder="$OUTPUT/raw",
-            filename="r", fps=24.0, start_timecode="01:00:00:00", images=imgs)
+            filename="r", fps=24.0, metadata=TC_META, images=imgs)
     h = _exr_header(os.path.join(tmp, "raw", sorted(os.listdir(os.path.join(tmp, "raw")))[0]))
     assert "chromaticities" not in h and "colorInteropID" not in h, (
         "raw_data claimed a gamut. 'Raw' means the pixels were not converted, so we do not know what they are.")
@@ -232,7 +237,7 @@ def check_reports_only_what_it_wrote(io, tmp):
                       container="still image", still_format=fmt, video_codec="prores_4444", bit_depth=bd,
                       auto_range=False, first_frame=1, last_frame=0, start_number=1, source_start=1,
                       raw_data=False, output_folder="$OUTPUT/nohdr", filename="n_" + fmt, fps=24.0,
-                      start_timecode="01:00:00:00", images=torch.zeros((1, 4, 4, 3)))
+                      metadata=TC_META, images=torch.zeros((1, 4, 4, 3)))
         assert os.path.isfile(res["result"][0]), f"{fmt}: nothing written"
         note = ((res.get("ui") or {}).get("meta") or [""])[0]
         for claim in ("chromaticities", "colorInteropID", "lin_", "srgb_rec709_display", "tc 01:00:00:00"):
@@ -244,7 +249,7 @@ def check_reports_only_what_it_wrote(io, tmp):
     res = w.write(profile="none", from_colorspace="sRGB - Display", output_colorspace="ACEScg",
                   container="still image", still_format="exr", video_codec="prores_4444", bit_depth="16f",
                   auto_range=False, first_frame=1, last_frame=0, start_number=1, source_start=1, raw_data=False,
-                  output_folder="$OUTPUT/hdr", filename="y", fps=24.0, start_timecode="01:00:00:00",
+                  output_folder="$OUTPUT/hdr", filename="y", fps=24.0, metadata=TC_META,
                   images=torch.zeros((1, 4, 4, 3)))
     note = ((res.get("ui") or {}).get("meta") or [""])[0]
     assert "chromaticities" in note and "lin_ap1_scene" in note and "tc 01:00:00:00" in note, (
@@ -267,7 +272,7 @@ def check_passthrough(io, tmp):
     res = w.write(profile="none", from_colorspace="sRGB - Display", output_colorspace="ACEScg",
                   container="sequence", still_format="exr", video_codec="prores_4444", bit_depth="16f",
                   auto_range=False, first_frame=1, last_frame=0, start_number=1, source_start=1, raw_data=False,
-                  output_folder="$OUTPUT/pt", filename="pt", fps=24.0, start_timecode="01:00:00:00",
+                  output_folder="$OUTPUT/pt", filename="pt", fps=24.0,
                   metadata=src, images=torch.zeros((1, 4, 4, 3)))
     h = _exr_header(res["result"][0])
     assert h.get("reel_name") == "A001R2XY" and h.get("lensModel") == "Signature 47mm", (
@@ -295,7 +300,7 @@ def check_passthrough(io, tmp):
     res2 = w.write(profile="none", from_colorspace="sRGB - Display", output_colorspace="ACEScg",
                    container="sequence", still_format="exr", video_codec="prores_4444", bit_depth="16f",
                    auto_range=False, first_frame=1, last_frame=0, start_number=1, source_start=1, raw_data=False,
-                   output_folder="$OUTPUT/pt2", filename="pt2", fps=24.0, start_timecode="01:00:00:00",
+                   output_folder="$OUTPUT/pt2", filename="pt2", fps=24.0,
                    metadata="{not json at all", images=torch.zeros((1, 4, 4, 3)))
     assert os.path.isfile(res2["result"][0]), "malformed source_meta stopped the render"
 
@@ -309,17 +314,30 @@ def check_passthrough(io, tmp):
     res3 = w.write(profile="none", from_colorspace="sRGB - Display", output_colorspace="ARRI LogC4",
                    container="sequence", still_format="exr", video_codec="prores_4444", bit_depth="16f",
                    auto_range=False, first_frame=1, last_frame=0, start_number=1, source_start=1, raw_data=False,
-                   output_folder="$OUTPUT/pt3", filename="pt3", fps=24.0, start_timecode="",
+                   output_folder="$OUTPUT/pt3", filename="pt3", fps=24.0,
                    metadata=hostile, images=torch.zeros((1, 4, 4, 3)))
     assert os.path.isfile(res3["result"][0]), (
         "an incoming attribute of the wrong shape stopped the render. Metadata must never be the reason a render "
         "dies - a rejected attribute is skipped, not raised.")
     h3 = _exr_header(res3["result"][0])
     assert h3.get("reel_name") == "C003", "the good attributes were lost along with the bad one"
-    for k in ("chromaticities", "timeCode", "whiteLuminance", "adoptedNeutral"):
+    for k in ("chromaticities", "whiteLuminance", "adoptedNeutral"):
         assert k not in h3, (
-            f"{k} came from the plate and was written anyway. These describe the INCOMING file's colour and "
-            "timing; we re-author them, and when we cannot they must still not be inherited.")
+            f"{k} came from the plate and was written anyway. These describe the INCOMING file's colour; we "
+            "re-author them, and when we cannot they must still not be inherited.")
+    # timeCode is the ONE of the four that is deliberately taken FROM the plate (2026-08-13, when OCIO Write's
+    # own field was removed) - but taken as a START and re-authored per frame, never copied across. The
+    # difference is visible in the TYPE: our re-authored value is an OpenEXR.TimeCode object, whereas the
+    # plate's raw attribute here is the string "01:00:00:00". A string in this header would mean the value was
+    # inherited wholesale, which is the bug this line still guards.
+    tc3 = h3.get("timeCode")
+    assert tc3 is not None, (
+        "the plate carried a start timecode and none was written. Since the node's own field was removed, the "
+        "`metadata` wire is the only route a code has - dropping it here loses it for good.")
+    assert not isinstance(tc3, str), (
+        f"timeCode came back as {type(tc3).__name__} {tc3!r} - the plate's raw value copied through rather than "
+        "re-authored. A standards-aware reader ignores a string-typed timecode, and a copied one does not "
+        "advance per frame.")
     print("[PASS] pass-through: shot metadata travels, pixel-state claims (C2PA / ST 2086 / ST 2094 / AMF / MHL) "
           "are dropped and named, our own colorimetry wins, bad JSON does not stop a render")
 
@@ -395,24 +413,32 @@ def check_append_only(io):
         "saved workflow read the wrong value into every widget below it (fps would take render_nonce's string). "
         "New widgets go at the END of 'optional'.")
     assert req[-1] == "auto_colorspace", f"a required widget was appended after auto_colorspace ({req[-1]})"
-    assert opt[-3:] == ["start_timecode", "metadata", "write_audio"], (
+    # `start_timecode` sat between 'audio' and 'metadata' until 2026-08-13, when it was removed: the start now
+    # arrives with the plate through the `metadata` wire instead of being typed here. Removing a widget is
+    # otherwise forbidden for the positional reason spelled out above, and was allowed only because that one
+    # never reached a release - no published graph holds a value at its index.
+    assert opt[-3:] == ["audio", "metadata", "write_audio"], (
         f"the last three optional inputs are {opt[-3:]}, expected "
-        "['start_timecode', 'metadata', 'write_audio']. Each was appended so it could only add a trailing "
+        "['audio', 'metadata', 'write_audio']. Each was appended so it could only add a trailing "
         "widgets_values slot / input slot; moving any of them up re-points saved links and values.")
     assert ins["optional"]["metadata"][1].get("forceInput") is True, (
         "source_meta must be forceInput: as a plain STRING it would render a widget and occupy a "
         "widgets_values slot, which is the thing being avoided.")
     # The tail above is the DICT order; what actually indexes widgets_values is the WIDGET order, which skips
-    # the sockets. Asserting the dict tail alone would pass with write_audio inserted ahead of start_timecode as
-    # long as it stayed inside the last three, so the widget sequence is asserted directly.
+    # the sockets. Asserting the dict tail alone would pass with a widget inserted ahead of write_audio as long
+    # as it stayed inside the last three, so the widget sequence is asserted directly.
     _SOCKETS = {"images", "video", "audio", "alpha", "mask"}
     opt_widgets = [k for k in opt
                    if k not in _SOCKETS and not (isinstance(ins["optional"][k][1], dict)
                                                  and ins["optional"][k][1].get("forceInput"))]
-    assert opt_widgets[-2:] == ["start_timecode", "write_audio"], (
-        f"the last two optional WIDGETS are {opt_widgets[-2:]}, expected ['start_timecode', 'write_audio']. "
+    assert opt_widgets[-2:] == ["render_nonce", "write_audio"], (
+        f"the last two optional WIDGETS are {opt_widgets[-2:]}, expected ['render_nonce', 'write_audio']. "
         "widgets_values is positional over widgets only, so this - not the dict tail - is what a saved workflow "
         "reads by index.")
+    assert "start_timecode" not in opt_widgets, (
+        "start_timecode is back. It was removed on 2026-08-13: a code typed into the writer is a code invented "
+        "at delivery, and the start now arrives with the plate through the `metadata` wire. Re-adding it as a "
+        "widget anywhere but the very end would also shift every saved workflow's values by one.")
     assert ins["optional"]["write_audio"][0] == "BOOLEAN" and \
         ins["optional"]["write_audio"][1].get("default") is True, (
         "write_audio must default to True: every graph saved before it existed has no value for it and falls "
@@ -507,6 +533,34 @@ def check_output_folder(io, tmp):
           "(NAS) untouched, default carries no path")
 
 
+def check_umid_is_not_a_reel(io):
+    """A UMID parked in the reel field is not reported as the shot's reel - and is not destroyed either.
+
+    Measured on a real ProRes 4444 XQ master: DaVinci Resolve writes
+    `com.apple.proapps.reel=0x060A2B34...`, a 32-octet SMPTE ST 330M identifier opening with the SMPTE
+    Universal Label prefix. A reel name is 8 characters in a CMX3600 EDL and up to 32 on Avid, so a UMID
+    cannot BE one; reporting it as the reel puts a 64-character hash where an assistant editor expects
+    A001R2XY. The far worse failure would be the opposite - a real reel name refused as a hash - so the
+    honest names are asserted first and in numbers.
+    """
+    for name in ("A001R2XY", "B_0059C005", "A001", "CAM_A_001", "A001_20230224", "deadbeef", "R1", "0910"):
+        assert not io._looks_like_umid(name), (
+            f"{name!r} was taken for a UMID. A reel name refused as a hash is worse than a hash shown as a "
+            "reel: the shot loses its identity in every delivered file.")
+    for umid in ("0x060A2B340101010501010D4313000000F4D4E5CAB3B011EDBFDA8F313F3F0F07",
+                 "060A2B340101010501010D4313000000F4D4E5CAB3B011EDBFDA8F313F3F0F07"):
+        assert io._looks_like_umid(umid), f"a SMPTE UMID was not recognised: {umid[:24]}..."
+    # ...and the identity reduction refuses it while a real name goes through.
+    hashed = {"com.apple.proapps.reel": "0x060A2B340101010501010D4313000000F4D4E5CAB3B011EDBFDA8F313F3F0F07",
+              "timeCode": "19:35:48:13"}
+    ident = io._identity_meta(hashed)
+    assert "reel" not in ident, f"the UMID was reported as a reel: {ident.get('reel')!r}"
+    assert ident.get("timecode"), "the rest of the identity was lost along with it"
+    named = io._identity_meta({"reel_name": "A001R2XY", "shot": "0106"})
+    assert named.get("reel") == "A001R2XY" and named.get("shot") == "0106", f"a real reel was dropped: {named}"
+    print("[PASS] a UMID is not reported as a reel name; real reel names are untouched")
+
+
 def main():
     import tempfile
     tmp = tempfile.mkdtemp(prefix="ocio_meta_test_")
@@ -523,6 +577,7 @@ def main():
     check_output_folder(io, tmp)
     check_derivation(io)
     check_timecode(io)
+    check_umid_is_not_a_reel(io)
     check_sequence_write(io, tmp)
     check_reports_only_what_it_wrote(io, tmp)
     check_passthrough(io, tmp)

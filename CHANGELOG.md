@@ -1,5 +1,64 @@
 # Changelog
 
+## The timecode now comes from the plate, and the reader shows you what the plate says
+
+**OCIO Write's `start_timecode` field is gone.** A code typed into the writer is a code invented at delivery.
+The one that has to survive a round trip is the one that arrived with the footage, so the start is now read
+from whatever you wire into `metadata` and advanced per written frame, into every EXR header and into a
+movie's own timecode track. Nothing wired means no timecode written, which is the honest outcome. The field
+never shipped in a release, so no saved workflow is holding a value where it used to sit.
+
+Removing it exposed a defect on a real camera master. The set of fields this node re-authors for itself was
+matched by exact spelling, and a DaVinci Resolve MXF calls its start code `timecode` where that set says
+`timeCode`. The plate's value sailed past the strip, and the delivered EXR came out carrying **two**
+timecodes: ours, correctly typed and advancing, beside a stale string frozen at the start. Whichever one a
+downstream tool read first decided how the shot conformed. Matching now ignores case and separators.
+
+**OCIO Read has a second disclosure button, `▾ Metadata`,** beside the viewer. It lists the file's own header
+as plain text, one line per field, and a row with nothing to say is not drawn, so a bare EXR shows a few
+lines and a camera master shows many. What it lists is the same read that travels down the `metadata` wire,
+so the panel answers "what will be delivered" rather than offering a separate opinion. It used to fold away
+with the viewer, which tied wanting to see the picture to wanting to read the header.
+
+**A UMID is no longer reported as a reel name.** Some applications park one in the reel field: measured on a
+ProRes 4444 XQ master, Resolve writes `com.apple.proapps.reel=0x060A2B34...`. That is a 32-octet SMPTE ST
+330M identifier, and a reel name is 8 characters in a CMX3600 EDL or up to 32 on Avid, so it could not travel
+as one even if you wanted it to. The value is not discarded; it is written to the output file under its own
+attribute and simply refused the claim of being the shot's reel.
+
+## EXR now defaults to DWAA, and a professional container is read as Rec.709
+
+**`compression` defaults to `dwaa`** where it used to default to `zip`. DWAA is lossy and much smaller, which
+is what most of the industry writes for anything that is not an archival master. Pick `zip` when the file has
+to be bit-exact. A workflow you already saved keeps whatever it stored; the default only reaches a node you
+create fresh.
+
+**An SDR ProRes / DNxHD, or anything in an MXF, is now guessed as `Rec.1886 Rec.709 - Display`** instead of
+`sRGB - Display`. The tags alone cannot separate a camera master from a web clip: a Resolve MXF of ProRes
+4444 XQ reports `color_space=bt709` with primaries and transfer both `unknown`. The container and the codec
+can, because nobody publishes an MXF to the web. Ordinary h264 / hevc keeps sRGB, which is what it was and
+why. A log-encoded ProRes carries no tag saying so and is still guessed as Rec.709, so that one is yours to
+set.
+
+## Reading an EXR no longer depends on an environment variable
+
+The metadata panel read EXR dimensions through OpenCV, whose EXR codec is disabled unless
+`OPENCV_IO_ENABLE_OPENEXR` is set **before** cv2 is imported. When it is not, `cv2.imread` raises rather than
+returning nothing, so the fallback beside it could never catch the failure and the whole panel came back as
+an error. Writing and reading pixels had already been moved off cv2 for this reason; this path had not. It
+now reads the header through the OpenEXR module, which needs no flag, and stopped pulling a 49 MB frame off
+disk to learn its width.
+
+## OCIO VAE Encode and Decode refuse an input they cannot take, in words
+
+A frame whose height or width is not a multiple of the VAE's block size used to die inside einops with
+`Shape mismatch, can't divide axis of length 791 in chunks of 2`: an internal axis, at a size that is the
+frame's height divided by four, with no mention of the frame. A 4-dimensional latent handed to a video VAE
+died in the memory estimate with `IndexError: tuple index out of range`, which says nothing about latents.
+Both now name the number that is wrong. Neither fixes any arithmetic: the stock ComfyUI nodes fail on exactly
+the same inputs in exactly the same way, confirmed by running them. Both guards fail open, so a VAE that will
+not say what it needs gets the input it would have got before.
+
 ## Colorspace filename tags are now spelled out in full
 
 **This renames output files, once, and it is the only breaking change here.** The short tag was ambiguous: 31 of
@@ -317,7 +376,7 @@ verify the color math end-to-end through a real ComfyUI, plus an honest accuracy
 ### Changed
 - **Honest accuracy story in the README.** The per-transform bit-exact parity (0.000e+00) is stated as the
   accuracy number; the end-to-end round-trip figure is added (4.5e-6 max, the residual being OCIO's
-  single-precision LUT interpolation — not bit-for-bit lossless, but ~100x finer than one half-float EXR step
+  single-precision LUT interpolation - not bit-for-bit lossless, but ~100x finer than one half-float EXR step
   near 1.0, i.e. below the storage grid a half-float delivery resolves); `histogram_compare.png` is
   recaptioned as a distribution shape sanity-check, not an accuracy proof.
 

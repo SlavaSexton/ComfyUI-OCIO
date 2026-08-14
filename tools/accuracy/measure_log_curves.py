@@ -21,7 +21,7 @@ LogConvert transfer curves specifically:
       flagged as NOTES, not failures.
 
 Chart: per-curve round-trip max error (log-y bars) + anchor deviation / C1 table.
-Run:  E:/ComfyUI/ComfyUI/ComfyUI/.venv/Scripts/python.exe measure_log_curves.py
+Run:  <ComfyUI>/.venv/Scripts/python.exe measure_log_curves.py
 """
 import math
 import numpy as np

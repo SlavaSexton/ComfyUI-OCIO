@@ -102,6 +102,10 @@ LEAK_GRAPH = '{"1": {"class_type": "KSampler"}}'
 PLATE = {"source": "plate.0001.dpx", "kind": "dpx", "attrs": {
     "reel_name": "A001C086_171217_R0FR", "scene": "S11", "shot": "0106", "take": "3",
     "cameraMake": "ARRI", "cameraModel": "ALEXA 35", "lens": "Zeiss Master Prime 35mm",
+    # THE START TIMECODE ARRIVES WITH THE PLATE. OCIO Write's own `start_timecode` field was removed on
+    # 2026-08-13, so this attribute is now the only route by which a code reaches a written file - which turns
+    # every timecode assertion below into a test of INHERITANCE rather than of a value typed into the node.
+    "timeCode": "01:00:00:00",
     "output_folder": LEAK_PATH, "unc_share": r"\\studio\vault\plates",
     "prompt": LEAK_GRAPH, "workflow": '{"nodes": []}',
     "c2pa.manifest": "signed-blob"}}
@@ -111,6 +115,14 @@ IDENT_FIELDS = ("reel", "scene", "shot", "take", "camera", "lens", "timecode")
 # reason that has nothing to do with metadata.
 _ramp = np.tile(np.linspace(0, 1, 512, dtype=np.float32)[None, :, None], (288, 1, 3))
 IMAGES = torch.from_numpy(np.repeat(_ramp[None], 4, axis=0).copy())
+
+
+def _exr_header(path):
+    """The EXR header as a plain dict. Read through the OpenEXR module rather than cv2, which reports only
+    the nine mandatory attributes and needs an environment flag to open the file at all."""
+    import OpenEXR
+    with OpenEXR.File(path) as f:
+        return dict(f.header())
 
 
 def _png_bitdepth(path):
@@ -128,7 +140,7 @@ def write(**kw):
     a = dict(profile="none", from_colorspace="sRGB - Display", output_colorspace="ACEScg",
              container="sequence", still_format="exr", video_codec="prores_4444", bit_depth="16f",
              auto_range=False, first_frame=1, last_frame=0, start_number=1, source_start=1, raw_data=False,
-             fps=24.0, start_timecode="01:00:00:00", metadata=json.dumps(PLATE), images=IMAGES)
+             fps=24.0, metadata=json.dumps(PLATE), images=IMAGES)
     a.update(kw)
     return io.OCIOWrite().write(**a)
 
@@ -596,16 +608,75 @@ def check_metadata_never_stops_a_render():
         res = write(container="sequence", still_format=fmt, bit_depth=bd,
                     output_folder=f"nometa_{fmt}", filename="q", metadata="")
         check(f"{fmt}: an unconnected source_meta is fine", os.path.isfile(res["result"][0]))
+    # A LOWER-CASE `timecode` IS THE SAME FIELD. Found by a mutation pass: reverting the strip to exact-case
+    # matching left every test green, because this file's PLATE spells it `timeCode` and so does the set of
+    # fields the writer re-authors. A real DaVinci Resolve MXF spells it `timecode`, and with exact matching
+    # the plate's string sailed through beside our re-authored one - two disagreeing timecodes in one header,
+    # ours advancing per frame and the plate's frozen. Whichever a downstream tool reads first wins.
+    lower_tc = {"source": PLATE["source"], "kind": PLATE["kind"],
+                "attrs": {**{k: v for k, v in PLATE["attrs"].items() if k != "timeCode"},
+                          "timecode": "02:00:00:00"}}
+    res = write(container="sequence", still_format="exr", bit_depth="16f",
+                output_folder="lowertc", filename="q", metadata=json.dumps(lower_tc))
+    hdr = _exr_header(res["result"][0])
+    tc_keys = sorted(k for k in hdr if k.lower() == "timecode")
+    check("a lower-case plate timecode leaves exactly ONE timecode in the header",
+          tc_keys == ["timeCode"], f"header carries {tc_keys}")
+    check("...and it is the re-authored, correctly typed one, not the plate's string",
+          not isinstance(hdr.get("timeCode"), str), f"got {type(hdr.get('timeCode')).__name__}")
+    # An OpenEXR.TimeCode is not subscriptable and carries no h/m/s attributes worth relying on; its repr is
+    # the field tuple, e.g. "(2, 0, 0, 0, 0, 0, 0, 0, 0, 0)", so the start is read off that.
+    tc_repr = repr(hdr.get("timeCode"))
+    check("...and the start is the plate's own, 02:00:00:00", tc_repr.startswith("(2, 0, 0, 0"), f"got {tc_repr}")
+
+    # A PLATE THAT CARRIES NO TIMECODE writes normally, and simply carries none. Until 2026-08-13 this was a
+    # node field left empty; the field is gone, so the case now arrives as a plate without the attribute.
+    no_tc = {"source": PLATE["source"], "kind": PLATE["kind"],
+             "attrs": {k: v for k, v in PLATE["attrs"].items() if k != "timeCode"}}
     res = write(container="sequence", still_format="tiff", bit_depth="16",
-                output_folder="notc", filename="q", start_timecode="")
-    check("tiff: an empty start_timecode is fine", os.path.isfile(res["result"][0]))
-    # the one DELIBERATE exception: a hand-typed malformed code must raise
+                output_folder="notc", filename="q", metadata=json.dumps(no_tc))
+    check("tiff: a plate with no timecode is fine", os.path.isfile(res["result"][0]))
+    side = os.path.splitext(res["result"][0])[0].rsplit(".", 1)[0] + ".json"
+    if os.path.isfile(side):
+        j = json.load(open(side, encoding="utf-8"))
+        check("no timecode in, no timecode out", not j.get("startTimecode"),
+              f"got {j.get('startTimecode')!r}")
+    # A MALFORMED CODE IN THE PLATE MUST NOT STOP THE DELIVERY. This reverses the old rule deliberately: the
+    # code used to be typed by hand, where silence would conform the whole delivery to the wrong place, so it
+    # raised. It now arrives inside someone else's file, and a foreign header we cannot parse is not a reason
+    # to fail a render - the frame is written, without a timecode.
+    # THE HARDER CASE FIRST, and a mutation pass is what exposed it: "banana" never reaches the advance at
+    # all, because it fails to parse and the start comes back as None - so removing the try/except around
+    # tc_text left the gate green. A code that PARSES and is still illegal does reach it: 00:01:00:02 is a
+    # legal label at 24 fps and an illegal drop-frame one at 29.97, where frames 00 and 01 do not exist at a
+    # minute that is not a multiple of ten (SMPTE ST 12-1). The advance rejects it loudly, which is right for
+    # a code a human typed and wrong for one a foreign plate carried - the delivery must still be written.
+    illegal_df = {"source": PLATE["source"], "kind": PLATE["kind"],
+                  "attrs": dict(PLATE["attrs"], timeCode="00:01:00:00")}
     try:
-        write(container="sequence", still_format="tiff", bit_depth="16", output_folder="badtc", filename="q",
-              start_timecode="banana")
-        check("a hand-typed malformed start_timecode still raises", False, "it was accepted")
+        res = write(container="sequence", still_format="exr", bit_depth="16f", output_folder="dftc",
+                    filename="q", fps=29.97, metadata=json.dumps(illegal_df))
+        check("an illegal drop-frame code in the plate does not stop the write",
+              os.path.isfile(res["result"][0]))
+    except Exception as e:
+        check("an illegal drop-frame code in the plate does not stop the write", False,
+              f"{type(e).__name__}: {str(e)[:140]}")
+
+    bad_tc = {"source": PLATE["source"], "kind": PLATE["kind"],
+              "attrs": dict(PLATE["attrs"], timeCode="banana")}
+    try:
+        res = write(container="sequence", still_format="tiff", bit_depth="16", output_folder="badtc",
+                    filename="q", metadata=json.dumps(bad_tc))
+        check("a malformed timecode in the plate does not stop the write", os.path.isfile(res["result"][0]))
+    except Exception as e:
+        check("a malformed timecode in the plate does not stop the write", False,
+              f"{type(e).__name__}: {str(e)[:120]}")
+    # ...and the hand-typed guard itself is still armed for anything that DOES parse a human's code.
+    try:
+        io._parse_timecode("banana")
+        check("_parse_timecode still refuses a malformed code", False, "it was accepted")
     except ValueError:
-        check("a hand-typed malformed start_timecode still raises", True)
+        check("_parse_timecode still refuses a malformed code", True)
 
 
 def main():

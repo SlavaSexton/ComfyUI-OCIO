@@ -961,39 +961,86 @@ function updateReadPreview(node) {
 // ---- read-only metadata panel (OCIO Read): a compact DOM widget under the preview, fed by /ocio/meta.
 // Small monospace "Label: value" lines - resolution, format, frame range + count, fps, the auto-detected
 // input colorspace, and alpha presence. Same update trigger as the preview (source change).
+// EVERYTHING THE PLATE ACTUALLY SAYS, in the order an artist reads it: what the file IS, then what the shot
+// IS. The second half comes from the file's own header (reel / scene / shot / take / camera / lens /
+// timecode, resolved server-side by _plate_identity) and is the reason this panel got its own disclosure
+// button: it is the answer to "which picture is this", and OCIO Write no longer has a field to type any of it
+// into. Rows with nothing to say are NOT DRAWN - a header that carries no lens should cost no line.
 const META_ROWS = [
-    ["resolution", "Resolution"], ["format", "Format"], ["range", "Frames"],
-    ["fps", "FPS"], ["input_colorspace", "Colorspace"], ["alpha", "Alpha"],
+    ["resolution", "Resolution"], ["format", "Format"], ["codec", "Codec"], ["pix_fmt", "Pixel format"],
+    ["range", "Frames"], ["missing", "Missing"], ["fps", "FPS"], ["input_colorspace", "Colorspace"],
+    ["color_primaries", "Primaries"], ["color_transfer", "Transfer"], ["alpha", "Alpha"],
+    ["reel", "Reel"], ["scene", "Scene"], ["shot", "Shot"], ["take", "Take"],
+    ["camera", "Camera"], ["lens", "Lens"], ["timecode", "Timecode"],
 ];
 function ensureReadMeta(node) {
     if (node._ocioMeta) return node._ocioMeta;
     const box = document.createElement("div");
     box.style.cssText = "width:100%;font:10px/1.4 monospace;color:#9cf;background:#1a1a1a;padding:4px 6px;box-sizing:border-box;overflow:hidden;white-space:nowrap;";
     const w = node.addDOMWidget("meta", "div", box, { serialize: false });
-    w.computeSize = () => [0, node._ocioReadCollapsed ? 0 : (16 * META_ROWS.length + 8)];   // 0 when the Read Viewer is collapsed
+    // Height follows the rows ACTUALLY rendered, so a plate with no camera tag reclaims those lines instead of
+    // leaving a gap. Folded by its OWN button (not the Viewer's) -> no height at all. undefined means nothing
+    // has rendered yet: one line, so a fresh node does not jump on its first fill.
+    w.computeSize = () => {
+        if (node._ocioReadMetaCollapsed) return [0, 0];
+        const n = node._ocioReadMetaRows === undefined ? 1 : node._ocioReadMetaRows;
+        return [0, n ? 16 * n + 8 : 0];
+    };
     w._ocioAlwaysVisible = true;                      // always shown, regardless of source kind
     node._ocioMeta = box;
     return box;
 }
-function renderMeta(box, data) {
-    if (!data || data.error) { box.innerHTML = ""; return; }
-    const rangeTxt = data.kind === "still" ? "1" :
-        `${data.start}-${data.end} (${data.count})${data.missing ? ", missing " + data.missing : ""}`;
-    const alphaTxt = data.alpha === null || data.alpha === undefined ? "-" : (data.alpha ? "yes" : "no");
-    const values = { resolution: data.resolution || "-", format: (data.format || "-").toUpperCase(),
-        range: rangeTxt, fps: data.fps ? data.fps.toFixed(3) : "-", input_colorspace: data.input_colorspace || "-",
-        alpha: alphaTxt };
-    box.innerHTML = META_ROWS.map(([k, label]) => `<div>${label}: ${values[k]}</div>`).join("");
+// Guarded against re-entry: on the Vue-nodes frontend setSize fires onResize, which comes back through here.
+function _readMetaRelayout(node, rows) {
+    if (node._ocioReadMetaRows === rows) return;
+    node._ocioReadMetaRows = rows;
+    if (node._ocioReadMetaLaying) return;
+    node._ocioReadMetaLaying = true;
+    try { node.setSize([node.size[0], node.computeSize()[1]]); } finally { node._ocioReadMetaLaying = false; }
+}
+function renderMeta(box, data, node) {
+    if (!data || data.error) { box.innerHTML = ""; if (node) _readMetaRelayout(node, 0); return; }
+    const rangeTxt = data.kind === "still" ? "" :
+        `${data.start}-${data.end} (${data.count})`;
+    const alphaTxt = data.alpha === null || data.alpha === undefined ? "" : (data.alpha ? "yes" : "no");
+    const ident = data.identity || {};
+    const values = {
+        resolution: data.resolution || "", format: (data.format || "").toUpperCase(),
+        codec: data.codec || "", pix_fmt: data.pix_fmt || "",
+        range: rangeTxt, missing: data.missing || "",
+        fps: data.fps ? data.fps.toFixed(3) : "", input_colorspace: data.input_colorspace || "",
+        color_primaries: data.color_primaries || "", color_transfer: data.color_transfer || "",
+        alpha: alphaTxt,
+        reel: ident.reel || "", scene: ident.scene || "", shot: ident.shot || "", take: ident.take || "",
+        camera: ident.camera || "", lens: ident.lens || "", timecode: ident.timecode || "",
+    };
+    const shown = META_ROWS.filter(([k]) => _metaHasValue(values[k]));
+    // BUILT AS NODES, NOT AS HTML. Half of these values are strings lifted verbatim out of somebody else's
+    // file header - a reel or lens field can hold anything at all - and interpolating them into innerHTML
+    // would execute whatever markup a plate happened to carry. textContent renders them as the text they are.
+    box.textContent = "";
+    for (const [k, label] of shown) {
+        const row = document.createElement("div");
+        row.textContent = `${label}: ${values[k]}`;
+        box.appendChild(row);
+    }
+    if (node) _readMetaRelayout(node, shown.length);
 }
 async function updateReadMeta(node) {
     const box = ensureReadMeta(node);
     const src = (W(node, "source")?.value || "").trim();
-    if (!src) { box.innerHTML = ""; return; }
+    // The node is passed through so the panel can shrink to the rows it actually drew; clearing it is a
+    // relayout too, or an empty box keeps the height of whatever was in it last.
+    if (!src) { box.textContent = ""; _readMetaRelayout(node, 0); return; }
     try {
         const r = await fetch("/ocio/meta?" + new URLSearchParams({ src }).toString());
         const d = await r.json();
-        renderMeta(box, d);
-    } catch (e) { console.error("OCIO meta", e); box.innerHTML = ""; }
+        renderMeta(box, d, node);
+    } catch (e) {
+        console.error("OCIO meta", e);
+        box.textContent = "";
+        _readMetaRelayout(node, 0);
+    }
 }
 
 // RESPONSIBLE FOR: keeping user-set widget values alive across a workflow load (2026-08-09, issue #3).
@@ -1329,9 +1376,10 @@ async function listDir(path, wantFiles, sequence) {
 // A picked output folder -> what gets STORED in the widget. Anything under the ComfyUI output root becomes
 // relative, because this value is saved into widgets_values and core SaveVideo / SaveImage embed the whole
 // workflow JSON inside the files they write - an absolute server path there ships with the delivery.
-// Comparison is case-insensitive and slash-agnostic: on Windows "E:/ComfyUI/output" and "e:\ComfyUI\Output" are
-// the same folder, and the old byte-exact startsWith left a hand-typed path absolute for no reason. A path
-// genuinely OUTSIDE the output root is returned untouched - targeting a NAS is deliberate, not a mistake.
+// Comparison is case-insensitive and slash-agnostic, because on Windows the same folder can be written
+// with either slash and in either case: the old byte-exact startsWith treated those as different places
+// and left a hand-typed path absolute for no reason. A path genuinely OUTSIDE the output root is returned
+// untouched - targeting a NAS is deliberate, not a mistake.
 function relToOutput(absPath, outputRoot) {
     if (!outputRoot) return absPath;
     const norm = (s) => s.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -2400,14 +2448,27 @@ app.registerExtension({
                     _setWidgetLabel(viewerToggle, (c ? "▸" : "▾") + " Viewer");   // same chevron fix as the Player's Info toggle
                     const p = self._ocioPrev;
                     if (p && p.box) p.box.style.display = c ? "none" : "flex";
-                    if (self._ocioMeta) self._ocioMeta.style.display = c ? "none" : "";
                     if (p && p.transport) p.transport.bar.style.display = c ? "none" : ((p.pb && p.pb.showTransport) ? "flex" : "none");
                     self.setSize([self.size[0], self.computeSize()[1]]);
                     self.setDirtyCanvas(true, true);
                 }, { serialize: false });
                 viewerToggle._ocioAlwaysVisible = true;
                 ensureReadPreview(this);                                          // instant preview at the bottom
-                ensureReadMeta(this);                                             // metadata panel, under the preview
+                // Metadata: its OWN disclosure, below the viewer, built to match it - same chevron, down when
+                // open and right when closed. It used to fold away with the Viewer, which tied "I want to see
+                // the picture" to "I want to read the header"; they are separate questions, and the header is
+                // the one an artist checks before delivering. What it lists is whatever the file actually
+                // carries, timecode included - which is where the timecode lives now that OCIO Write has no
+                // field for one. Runtime-only, not serialized, exactly like the Viewer toggle.
+                const metaToggle = this.addWidget("button", "▾ Metadata", null, () => {
+                    const c = self._ocioReadMetaCollapsed = !self._ocioReadMetaCollapsed;
+                    _setWidgetLabel(metaToggle, (c ? "▸" : "▾") + " Metadata");
+                    if (self._ocioMeta) self._ocioMeta.style.display = c ? "none" : "";
+                    self.setSize([self.size[0], self.computeSize()[1]]);
+                    self.setDirtyCanvas(true, true);
+                }, { serialize: false });
+                metaToggle._ocioAlwaysVisible = true;
+                ensureReadMeta(this);                                             // the panel itself, under its button
                 this._ocioAllWidgets = this.widgets.slice();                      // full ordered list, captured once
                 onChange(this, "source", (v) => { setW(this, "input_colorspace", autoInCs(v)); fillRange(this, v); updateReadMeta(this); });   // fillRange calls updateReadPreview once _ocioSeq is known
                 for (const w of ["input_colorspace", "output_colorspace", "raw_data"]) {
@@ -2489,8 +2550,6 @@ app.registerExtension({
                 const applyCompressionVis = () => {
                     const c = W(node, "container")?.value, isVideo = c === "video";
                     showWidget(node, W(node, "compression"), !isVideo && W(node, "still_format")?.value === "exr");
-                    const tcw = W(node, "start_timecode");                     // same EXR-or-video rule as applyContainer
-                    if (tcw) showWidget(node, tcw, W(node, "container")?.value === "video" || W(node, "still_format")?.value === "exr");
                 };
                 const applyContainer = () => {
                     const c = W(node, "container")?.value, isVideo = c === "video", isStill = c === "still image";
@@ -2507,10 +2566,10 @@ app.registerExtension({
                     if (fpsW) showWidget(node, fpsW, isVideo);
                     showWidget(node, W(node, "source_start"), false);          // internal (set by the wire)
                     showWidget(node, W(node, "auto_colorspace"), false);       // legacy LTX auto-detect, superseded by profile="auto"
-                    // start_timecode only lands somewhere for EXR (header attribute) and video (timecode track).
-                    // PNG / JPEG / TIFF have nowhere to put it, so showing the field there promises a delivery
-                    // detail the file cannot carry.
-                    showWidget(node, W(node, "start_timecode"), isVideo || W(node, "still_format")?.value === "exr");
+                    // A `start_timecode` field used to be shown here for EXR and video only. It is gone: the start
+                    // now arrives with the plate through the `metadata` wire, so there is no field to reveal or
+                    // hide. Where the code can actually land is unchanged - an EXR header attribute and a movie's
+                    // timecode track - and the writer still simply omits it for PNG / JPEG / TIFF.
                     const ff = W(node, "first_frame");                         // relabel the shared field
                     if (ff) {
                         ff.label = isStill ? "frame to save" : "first_frame";
@@ -2591,8 +2650,9 @@ app.registerExtension({
                 const node = this;
                 // A GRAPH SAVED BEFORE write_audio EXISTED LOADS IT AS null, AND null STRIPS THE SOUND.
                 // widgets_values is positional over ALL widgets, and this pack's two BUTTONS ("Output Folder",
-                // "▶ Render") are widgets too, serialised as null. write_audio was appended after start_timecode
-                // and therefore landed exactly where the first button's null used to sit, so an old 23-value
+                // "▶ Render") are widgets too, serialised as null. write_audio was appended after what was then
+                // the last field and therefore landed exactly where the first button's null used to sit, so an
+                // old 23-value
                 // graph loads write_audio = null - falsy, and the write then drops the audio it used to keep.
                 // Reproduced in the canvas: every other value survived (filename, fps 25, timecode 02:00:00:00)
                 // and only this one came back null. "A missing optional input falls through to the Python

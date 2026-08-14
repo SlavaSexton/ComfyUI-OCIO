@@ -14,7 +14,7 @@ Paths measured on the 24-patch X-Rite ColorChecker (sRGB fixture):
 Plus an HDR-safety probe on the EXR write/read path (negatives and super-white must survive, not clip to 0..1)
 and an OCIO-parity cross-check (our _convert vs a RAW PyOpenColorIO processor) so a wiring bug cannot hide.
 
-Run:  E:/ComfyUI/ComfyUI/ComfyUI/.venv/Scripts/python.exe measure_roundtrip.py
+Run:  <ComfyUI>/.venv/Scripts/python.exe measure_roundtrip.py
 """
 import os
 import tempfile

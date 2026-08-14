@@ -213,7 +213,11 @@ Load a **still / image sequence / video** off disk and color-manage it on the wa
 - **frame_mode** - `auto` (a numbered file with siblings loads the whole sequence, Nuke's "grab sequence"),
   `single` (just that file), `sequence` (force-collapse the siblings). A folder is always a sequence; a video is
   always its full clip.
-- **input_colorspace** - the colorspace the file *is* in. Auto-suggested by type (EXR -> ACEScg, else sRGB).
+- **input_colorspace** - the colorspace the file *is* in. Auto-suggested from the file: EXR / HDR -> ACEScg;
+  a PQ or HLG clip -> the matching Rec.2100 space; an SDR **ProRes / DNxHD, or anything in an MXF** ->
+  `Rec.1886 Rec.709 - Display`, because a post codec in a professional container is a camera or mastering
+  file rather than a web deliverable; everything else -> `sRGB - Display`. It is a guess from the container,
+  and yours to overrule - a log-encoded ProRes carries no tag saying so and will be guessed as Rec.709.
 - **output_colorspace** - the working space the IMAGE comes out in (default `sRGB - Display`).
 - **raw_data** - skip the conversion; pass the file's values through untouched (Nuke's *Raw Data*).
 - **start_frame / end_frame** - the frame-number range to load (auto-filled to the detected range). Frames
@@ -224,9 +228,20 @@ Load a **still / image sequence / video** off disk and color-manage it on the wa
   frame, or `error`. Missing frames are detected automatically and listed on the node and in the `info` output.
 - **fps** - taken from the video metadata (24 for stills); flows to **OCIO Write** through the wire.
 
+**Two panels on the node face, each with its own disclosure button.** `▾ Viewer` folds the picture away -
+thumbnail and transport. `▾ Metadata` folds the header read-out: plain text, one line per field, and **rows
+with nothing to say are not drawn**, so a bare EXR shows a handful of lines and a camera master shows many.
+It lists what the file IS (resolution, format, codec, pixel format, frame range, fps, colorspace, primaries
+and transfer, alpha) and then which picture it is (reel, scene, shot, take, camera, lens, **timecode**) -
+the same read that travels down the `metadata` wire, so what you see is what gets delivered. A UMID parked
+in the reel field by some applications is not shown as a reel (it is a machine identifier, not a name), but
+it is still written into the output file.
+
 **Outputs:** `OCIO Img/Seq/Vid` (the frame batch), `alpha` (MASK, the file's alpha channel), `fps`, `info`
-(frames / resolution / format / range / missing frames), and `ComfyUI Video` (a native ComfyUI VIDEO of the same
-color-managed batch, to feed Load Video / Save Video / Video Combine and the like).
+(frames / resolution / format / range / missing frames), `ComfyUI Video` (a native ComfyUI VIDEO of the same
+color-managed batch, to feed Load Video / Save Video / Video Combine and the like), and `metadata` - the
+plate's own header, JSON, to wire into **OCIO Write** so the camera, lens, editorial fields and the start
+timecode survive into the delivered file.
 
 ### OCIO Write
 
@@ -239,6 +254,9 @@ Color-manage an IMAGE batch and **write it to disk** (Nuke: *Write*).
 - **still_format** - `exr` / `tiff` / `png` / `jpeg` (used for still / sequence).
 - **video_codec** - `prores_4444` / `prores_422hq` / `prores_422` / `dnxhr_hq` / `h264` / `hevc` (used for video).
 - **bit_depth** - narrows to the format: JPEG 8; PNG 8 / 16; TIFF 8 / 16 / 32f; EXR 16f / 32f.
+- **compression** (EXR only) - defaults to **DWAA**, which is lossy and much smaller, the way most of the
+  industry writes anything that is not an archival master. Pick `zip` (or `zips` / `rle` / `piz`) when the
+  file has to be bit-exact. Your choice is saved with the workflow; the default only applies to a new node.
 - **auto_range** - pull `first_frame` / `last_frame` / `start_number` / `fps` **automatically from the OCIO Read**
   at the other end of the wire (through any number of nodes). Edit them by hand and it turns off; turn it back on
   to re-detect.
@@ -250,7 +268,16 @@ Color-manage an IMAGE batch and **write it to disk** (Nuke: *Write*).
   Read's `fps` to carry the source rate.
 - **video** (optional, mutually exclusive with the image input) - wire a **ComfyUI Video** (Load Video or any
   native VIDEO source) to record it with all of these settings; the container inherits the clip's own frame rate.
+- **metadata** (optional, wire only) - wire **OCIO Read**'s `metadata` output here and the plate's own header
+  travels into the file you write: camera, lens, reel / scene / shot / take, and the **start timecode**.
 - **raw_data** - write the pixels as-is, skipping the conversion.
+
+**There is no timecode field, deliberately.** A code typed into the writer is a code invented at delivery;
+the one that matters arrives with the plate. Wire `metadata` and the start comes from the source, with this
+node advancing it per written frame - into every EXR header and into a movie's own timecode track. Nothing
+wired, no timecode written. What the file already answered for itself (chromaticities, frame rate, frame
+counter, timecode) is always re-authored rather than copied, in whatever spelling it arrived under, so one
+file can never end up carrying two disagreeing timecodes.
 
 The node **previews the first written frame** in its output colorspace (a wrong colorspace pick looks visibly
 wrong) and reports **"wrote N frame(s)"**. The **▶ Render** button queues the graph.

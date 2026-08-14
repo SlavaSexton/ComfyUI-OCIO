@@ -25,7 +25,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PACK_DIR = os.path.abspath(os.path.join(HERE, "..", ".."))            # the ComfyUI-OCIO repo root
 FIXT_DIR = os.path.join(HERE, "fixtures")
 PLOTS_DIR = os.path.join(HERE, "plots")
-COMFY_DIR = r"E:/ComfyUI/ComfyUI/ComfyUI"                             # for folder_paths (guarded in the pack anyway)
+# Where ComfyUI itself lives, for the folder_paths stub (the pack guards against its absence anyway).
+# Taken from the environment rather than written in: a path baked into a file is one machine's layout and
+# is wrong on every other one. Set COMFYUI_PATH if a script here needs the real install.
+COMFY_DIR = os.environ.get("COMFYUI_PATH", "")
 
 
 # --------------------------------------------------------------------------- load the shipped pack

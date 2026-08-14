@@ -65,7 +65,7 @@ def run(label, images, want, **kw):
     a = dict(profile="none", from_colorspace="ACEScg", output_colorspace="ACEScg",
              container="still image", still_format="exr", video_codec="prores_4444", bit_depth="16f",
              auto_range=False, first_frame=1, last_frame=0, start_number=1, source_start=1, raw_data=True,
-             output_folder=sub, filename="clip", colorspace_in_name=False, fps=24.0, start_timecode="",
+             output_folder=sub, filename="clip", colorspace_in_name=False, fps=24.0,
              metadata="", images=images)
     a.update(kw)
     try:

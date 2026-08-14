@@ -16,7 +16,7 @@ Two measurements, both through the SHIPPED pack path (io_nodes._convert), scored
 _convert wants a [N,H,W,3] torch tensor (io_nodes.py:676 -> nodes.py:_apply_processor unpacks b,h,w,c),
 so the 24 patches are shaped [1,24,1,3] -- the real batched-image layout the node runs on.
 
-Run:  E:/ComfyUI/ComfyUI/ComfyUI/.venv/Scripts/python.exe measure_deltaE_colorchecker.py
+Run:  <ComfyUI>/.venv/Scripts/python.exe measure_deltaE_colorchecker.py
 """
 import os
 import json

@@ -30,15 +30,9 @@ NODE_DISPLAY_NAME_MAPPINGS.update(_IO_NAMES)
 NODE_CLASS_MAPPINGS.update(_VAE_CLASSES)
 NODE_DISPLAY_NAME_MAPPINGS.update(_VAE_NAMES)
 
-# OCIO Metadata (2026-08-13), class key OCIOMetadata, from meta_nodes.py. The twelfth node. OCIO Read's metadata
-# output had exactly one possible destination - OCIO Write's metadata input - so the plate's identity could travel
-# and be delivered but could not be seen or corrected. This node sits on that wire: it reports what is there and
-# lets a reel, scene, shot, take, camera or lens be set or fixed, writing the same spellings every writer in this
-# pack already reads (io_nodes._IDENTITY_FROM), so nothing else needed changing.
-from .meta_nodes import (NODE_CLASS_MAPPINGS as _META_CLASSES,
-                         NODE_DISPLAY_NAME_MAPPINGS as _META_NAMES)
-NODE_CLASS_MAPPINGS.update(_META_CLASSES)
-NODE_DISPLAY_NAME_MAPPINGS.update(_META_NAMES)
+# A standalone OCIO Metadata node was registered here on 2026-08-13 and removed the same day: what it offered -
+# seeing the plate's identity and correcting it - belongs where the plate is opened, so it now lives as the
+# Metadata panel on OCIO Read rather than as a node on the wire between Read and Write.
 
 # OCIO Grade / Grade Match / Apply Grade disabled 2026-07-04 (see above) - NOT registered:
 # NODE_CLASS_MAPPINGS.update(_GRADE_CLASSES)

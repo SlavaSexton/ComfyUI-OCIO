@@ -167,6 +167,10 @@ def check_real_encode(io, tmp):
     w = io.OCIOWrite()
     src = json.dumps({"source": "plate.0001.exr", "kind": "exr", "attrs": {
         "title": "SHOT TITLE", "comment": "a note", "reel_name": "A001R2XY", "lensModel": "Signature 47mm",
+        # The start code arrives WITH THE PLATE - OCIO Write's own `start_timecode` field was removed on
+        # 2026-08-13. The tmcd-track assertion below therefore now proves that a MOVIE CONTAINER inherits the
+        # plate's timecode, which is the thing a post tool actually conforms from.
+        "timeCode": "10:00:00:00",
         "c2pa.manifest": "<blob>", "masteringDisplayLuminance": "1000", "amf": "s.amf.xml"}})
     for cs, tag, want in (("Rec.2100-HLG - Display", "hlg", ("bt2020", "arib-std-b67", "bt2020nc")),
                           ("Rec.2100-PQ - Display", "pq", ("bt2020", "smpte2084", "bt2020nc")),
@@ -176,7 +180,7 @@ def check_real_encode(io, tmp):
                       still_format="exr", video_codec="prores_422hq", bit_depth="16f", auto_range=False,
                       first_frame=1, last_frame=0, start_number=1, source_start=1, raw_data=False,
                       output_folder="$OUTPUT/vid", filename="v_" + tag, fps=25.0,
-                      start_timecode="10:00:00:00", metadata=src, images=imgs)
+                      metadata=src, images=imgs)
         mov = res["result"][0]
         assert os.path.isfile(mov), f"{tag}: no file written"
         prim, trc, spc, tags, tmcd = _probe(mov)

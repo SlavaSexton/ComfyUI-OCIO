@@ -141,7 +141,7 @@ def _read_dpx(path):
 
     Normalisation matters: 10-bit code / 1023, NOT value / 65535. ffmpeg scales 10-bit into 16-bit by exactly
     64, so dividing that by 65535 is off by 0.1% - small, but this is a colour pipeline.
-    Added 2026-08-12 after the owner's own plate would not load.
+    Added 2026-08-12, after a real 10-bit DPX plate would not load.
     """
     with open(path, "rb") as f:
         hdr = f.read(2048)
@@ -474,7 +474,7 @@ def _video_frame_count(info):
     return int(round(dur * fps)) if (fps > 0 and dur > 0) else 0
 
 
-def _video_input_cs(info):
+def _video_input_cs(info, ext=None):
     """OCIO input colorspace for a video, mapped from its ffprobe color metadata (color_primaries /
     color_transfer / color_space), GUARDED to names that exist in the active config. Only overrides the working
     sRGB - Display default for HDR / wide-gamut sources (PQ / HLG / bt2020), where the tag genuinely matters.
@@ -496,8 +496,19 @@ def _video_input_cs(info):
         cs = pick("Rec.2100-HLG - Display")
     elif prim == "bt2020" or spc in ("bt2020nc", "bt2020c"):     # wide-gamut UHD
         cs = pick("Rec.2100-PQ - Display", "Rec.2100-HLG - Display")
-    # SDR Rec.709 / Rec.601 / plain sRGB: fall through to WORKING (sRGB - Display) - the internet-delivery default
-    # ordinary mp4/mov users expect. The widget stays editable if a bt709 camera plate really wants Rec.709.
+    # SDR, and now the fork the original note left to the artist: "the widget stays editable if a bt709 camera
+    # plate really wants Rec.709". A CAMERA MASTER IS NOT AN INTERNET DELIVERABLE, and the file says which it
+    # is. MXF is a professional container - nobody publishes one to the web - and ProRes / DNxHD / DNxHR are
+    # post codecs; those are graded and viewed on BT.1886 reference displays, so sRGB's transfer is the wrong
+    # answer for them. An h264 / hevc mp4 keeps sRGB, which is what it was and why (2026-07-04).
+    # Measured on a real master: a Resolve MXF of ProRes 4444 XQ tags color_space=bt709 with primaries and
+    # transfer both 'unknown', so the tags alone cannot separate the two cases - the container and codec can.
+    if cs is None:
+        codec = (info.get("codec_name", "") or "").lower()
+        is_post = codec in ("prores", "dnxhd") or (ext or "").lower() == ".mxf"
+        sdr_709 = spc in ("bt709", "smpte170m", "bt470bg") or prim == "bt709" or trc in ("bt709", "unknown", "")
+        if is_post and sdr_709:
+            cs = pick("Rec.1886 Rec.709 - Display")
     return cs or WORKING
 
 
@@ -766,8 +777,12 @@ def _seq_range(source):
     s = source if os.path.isabs(source) else os.path.join(_input_dir(), source)
     ext = os.path.splitext(s)[1].lower()
     if ext in VIDEO_EXTS:
+        # codec_name is asked for here as well as in read_meta, because _video_input_cs needs it to tell a
+        # camera master from an internet deliverable. Without it this path and the panel's path would answer
+        # the colorspace question differently for the same file - the widget filled one way, the panel showing
+        # another.
         pr = subprocess.run([_FFPROBE, "-v", "error", "-select_streams", "v:0", "-show_entries",
-                             "stream=nb_frames,r_frame_rate,avg_frame_rate,duration,"
+                             "stream=nb_frames,r_frame_rate,avg_frame_rate,duration,codec_name,"
                              "color_primaries,color_transfer,color_space",
                              "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1", s],
                             capture_output=True, text=True)
@@ -777,7 +792,7 @@ def _seq_range(source):
         nb = _video_frame_count(info)   # robust: nb_frames, or duration x fps when nb_frames is 'N/A' (MXF)
         # video frame numbering is 1-BASED (frame 1 is the first frame, not 0) - a 451-frame clip is 1..451
         return {"kind": "video", "start": 1, "end": nb, "count": nb, "fps": _video_fps(info),
-                "input_cs": _video_input_cs(info)}   # colorspace from the video's color metadata
+                "input_cs": _video_input_cs(info, ext)}   # colorspace from the video's color metadata
     files = _frame_files(s)
     if not files and os.path.isfile(s):
         files = _sequence_siblings(s)
@@ -799,8 +814,39 @@ def _still_shape_alpha(path):
     count off the decoded array before any padding."""
     ext = os.path.splitext(path)[1].lower()
     a, bands = None, None
-    if ext in (".exr", ".hdr", ".dpx") and cv2 is not None:
-        a = cv2.imread(path, cv2.IMREAD_UNCHANGED | cv2.IMREAD_ANYDEPTH)
+    if ext == ".exr":
+        # THE HEADER ANSWERS THIS, so no pixels are decoded at all - the panel used to pull a whole 49 MB
+        # frame off disk to learn its width.
+        #
+        # It also has to, for the reason _read_still spells out at length: cv2's EXR codec is gated on
+        # OPENCV_IO_ENABLE_OPENEXR being set BEFORE cv2 is imported, and when it is not, `cv2.imread` RAISES
+        # rather than returning None - so the `if a is None` fallback below could never catch it and the whole
+        # metadata read failed with a raw grfmt_exr.cpp error. Reproduced on the live server 2026-08-13:
+        # /ocio/meta answered {"error": "... OpenEXR codec is disabled ..."} and the panel stayed empty, while
+        # reading and writing pixels were both fine - they had already been moved off cv2, and this had not.
+        try:
+            import OpenEXR
+
+            with OpenEXR.File(path) as f:
+                lo, hi = f.parts[0].header["dataWindow"]
+                w_, h_ = int(hi[0]) - int(lo[0]) + 1, int(hi[1]) - int(lo[1]) + 1
+                ch = f.channels()
+                names = set(ch)
+                has_a = ("A" in names) or any("A" in k for k in ("RGBA",) if k in names)
+                if w_ > 0 and h_ > 0:
+                    return h_, w_, bool(has_a)
+        except Exception:
+            pass
+        if cv2 is not None:
+            try:
+                a = cv2.imread(path, cv2.IMREAD_UNCHANGED | cv2.IMREAD_ANYDEPTH)
+            except Exception:
+                a = None
+    elif ext in (".hdr", ".dpx") and cv2 is not None:
+        try:
+            a = cv2.imread(path, cv2.IMREAD_UNCHANGED | cv2.IMREAD_ANYDEPTH)
+        except Exception:
+            a = None
     elif ext in (".tif", ".tiff") and tifffile is not None:
         a = np.asarray(tifffile.imread(path))
     if a is None:
@@ -1394,11 +1440,11 @@ def _parse_timecode(s):
         return None
     m = re.match(r"^(\d{1,2})[:;.](\d{1,2})[:;.](\d{1,2})[:;.](\d{1,3})$", txt)
     if not m:
-        raise ValueError(f"OCIO Write: start_timecode {txt!r} is not HH:MM:SS:FF (e.g. 01:00:00:00). "
+        raise ValueError(f"OCIO Write: timecode {txt!r} is not HH:MM:SS:FF (e.g. 01:00:00:00). "
                          "Leave it empty to write no timecode.")
     h, mi, se, fr = (int(g) for g in m.groups())
     if h > 23 or mi > 59 or se > 59:
-        raise ValueError(f"OCIO Write: start_timecode {txt!r} is out of range (HH<=23, MM<=59, SS<=59).")
+        raise ValueError(f"OCIO Write: timecode {txt!r} is out of range (HH<=23, MM<=59, SS<=59).")
     return h, mi, se, fr
 
 
@@ -1435,7 +1481,7 @@ def _tc_advance(start, offset, fps):
         # docstring of _parse_timecode already commits to failing loudly on exactly that class of mistake.
         if fr < (nom // 15) and mi % 10 != 0 and se == 0:
             raise ValueError(
-                f"OCIO Write: start_timecode "
+                f"OCIO Write: timecode "
                 f"{_timecode_string(h, mi, se, fr, True)} is not a legal drop-frame code at "
                 f"{fps:g} fps - frames 00 and 01 do not exist at minute {mi:02d} (SMPTE ST 12-1). "
                 f"Use {_timecode_string(h, mi, se, nom // 15, True)} or a minute that is a multiple of ten.")
@@ -1523,6 +1569,21 @@ _META_RE_AUTHORED = frozenset({
     "chromaticities", "adoptedNeutral", "whiteLuminance", "colorInteropID",
     "framesPerSecond", "captureRate", "timeCode", "imageCounter",
 })
+# The same names normalised, because a plate spells them however its writer felt like. Measured on a real
+# camera master: DaVinci Resolve's MXF writes `timecode`, this set writes `timeCode`, and an exact-match strip
+# let the plate's value through - so the delivered EXR carried two timecodes at once, ours advancing per frame
+# and the plate's frozen at the start. Case and separators are dropped, the way _forbidden_meta_keys already
+# normalises, and the timecode spellings this pack knows from elsewhere are folded in rather than restated.
+_META_RE_AUTHORED_NORM = frozenset(
+    k.lower().replace(" ", "").replace("-", "").replace("_", "")
+    for k in tuple(_META_RE_AUTHORED) + ("timecode", "dpx:TimeCode", "smpte:TimeCode")
+)
+
+
+def _is_re_authored(key):
+    """True when this incoming key names something OCIO Write authors itself, in any spelling."""
+    k = str(key).lower().replace(" ", "").replace("-", "").replace("_", "")
+    return k in _META_RE_AUTHORED_NORM
 
 
 def _forbidden_meta_keys(attrs):
@@ -1600,8 +1661,16 @@ def _frame_attrs(attrs, frame_offset, as_text=False):
         else:
             try:
                 out["timeCode"] = _exr_timecode(tc[1], frame_offset, tc[2])
-            except ImportError:
-                out.pop("timeCode", None)                   # no OpenEXR module -> cv2 fallback writes no attrs anyway
+            except Exception:
+                # WIDER THAN ImportError, which is all this caught until 2026-08-13, while the text branch
+                # three lines up already caught everything. The asymmetry became a real failure once the start
+                # stopped being typed here and started arriving from a foreign file: _tc_advance REJECTS an
+                # illegal drop-frame label (frames 00/01 do not exist at a minute that is not a multiple of ten
+                # at 29.97, SMPTE ST 12-1), which is correct for a code a human entered and fatal for one a
+                # plate carried - the whole write died on someone else's malformed header. Found by a mutation
+                # pass: the case that exposed it must PARSE and still be illegal, so "banana" never reached
+                # here at all. A frame ships without a timecode rather than not shipping.
+                out.pop("timeCode", None)
     if "imageCounter" in out:
         out["imageCounter"] = int(out["imageCounter"]) + int(frame_offset)
     return out
@@ -1713,6 +1782,28 @@ _IDENTITY_FROM = {
 }
 
 
+def _looks_like_umid(value):
+    """True when this value is a SMPTE UMID rather than anything a person named.
+
+    A UMID (SMPTE ST 330M) is a machine identifier: 32 octets for the Basic form, 64 for the Extended, and it
+    opens with the SMPTE Universal Label prefix 06 0A 2B 34. A REEL NAME is a different kind of thing entirely
+    and a much smaller one - 8 characters in a CMX3600 EDL, up to 32 on Avid - so a UMID cannot be a reel name
+    even in principle; it does not fit in the field it would have to travel in.
+
+    It ends up in the reel field anyway because some applications park it there: measured on a real ProRes 4444
+    XQ master, DaVinci Resolve writes `com.apple.proapps.reel=0x060A2B34...`. Reporting that as the shot's reel
+    puts a 64-character hash where an assistant editor expects `A001R2XY`, and nothing downstream can use it.
+    The value is NOT discarded - it stays in the attributes and is written to the delivered file under its own
+    key. It is only refused the claim of being an identity field.
+    """
+    s = str(value or "").strip().lower()
+    if s.startswith("0x"):
+        s = s[2:]
+    if not s or len(s) < 32 or any(c not in "0123456789abcdef" for c in s):
+        return False
+    return s.startswith("060a2b34") or len(s) in (64, 128)
+
+
 def _first_meta(attrs, spellings):
     """The first of `spellings` present in attrs as usable text, or None. Same refusals as _identity_meta."""
     for k in spellings:
@@ -1722,9 +1813,37 @@ def _first_meta(attrs, spellings):
         if v is None or isinstance(v, bool) or not isinstance(v, (str, int, float)):
             continue
         s = str(v).strip()
-        if s and not _meta_is_private(k, s):
+        if s and not _meta_is_private(k, s) and not _looks_like_umid(s):
             return s
     return None
+
+
+def _timecode_from_source(attrs):
+    """The start timecode INHERITED from the plate, as (h, m, s, f), or None when it carries none.
+
+    OCIO Write has no timecode field: a code typed into the writer is a code invented at delivery, while the
+    one that has to survive the round trip arrives with the plate. Both spellings this pack actually meets are
+    accepted - the SMPTE string ('14:48:24:22') and OpenEXR's TimeCode tuple rendered as text
+    ('(14, 48, 24, 22, 0, 0, 0, 0, 0, 0)'), whose first four fields are hours, minutes, seconds, frame.
+
+    NEVER RAISES, which is the difference from _parse_timecode: that one guards a value a human typed, where
+    silence would conform the delivery to the wrong place. This one reads whatever a foreign file happened to
+    carry, and a plate with an unreadable code must write no timecode rather than fail the render.
+    """
+    raw = _first_meta(attrs, _IDENTITY_FROM["timecode"])
+    if not raw:
+        return None
+    try:
+        return _parse_timecode(raw)
+    except ValueError:
+        pass
+    m = re.match(r"^\(\s*(\d{1,2})\s*,\s*(\d{1,2})\s*,\s*(\d{1,2})\s*,\s*(\d{1,3})\s*[,)]", str(raw).strip())
+    if not m:
+        return None
+    h, mi, se, fr = (int(g) for g in m.groups())
+    if h > 23 or mi > 59 or se > 59:
+        return None
+    return h, mi, se, fr
 
 
 def _identity_meta(attrs):
@@ -1943,11 +2062,43 @@ def _write_meta_sidecar(out_path, payload, strip_frame=False):
         return None
 
 
+def _plate_identity(source):
+    """The shot's identity as {field: text} for OCIO Read's Metadata panel, or {} when the plate carries none.
+
+    THE SAME READ THE WIRE USES. read_source_meta is what OCIO Read hands to OCIO Write, and _identity_meta is
+    the reduction every writer applies to it - so the panel shows the values that will actually be delivered,
+    not a second opinion derived some other way. Timecode is one of those seven fields, which is how it reaches
+    the panel at all now that OCIO Write no longer offers anywhere to type one.
+
+    Never raises: this backs a UI panel, and a plate whose header will not parse must show fewer rows rather
+    than break the node.
+    """
+    try:
+        meta = read_source_meta(source) or {}
+        attrs = meta.get("attrs") or {}
+        ident = dict(_identity_meta(attrs) or {})
+        # SHOWN THE WAY A HUMAN READS A TIMECODE. _identity_meta hands back whatever spelling the header used,
+        # and an EXR's is OpenEXR's TimeCode tuple stringified - "(14, 48, 24, 22, 0, 0, 0, 0, 0, 0)", which
+        # is a data structure, not a code. Parsed through the same reader the writer uses, so the panel and the
+        # delivered file can never show different codes. A code that will not parse is dropped rather than
+        # printed raw: the panel exists to be read at a glance.
+        if "timecode" in ident:
+            tc = _timecode_from_source(attrs)
+            if tc:
+                ident["timecode"] = _timecode_string(*tc, False)
+            else:
+                ident.pop("timecode", None)
+        return ident
+    except Exception:
+        return {}
+
+
 def read_meta(source):
     """Read-only metadata panel data for the front-end (/ocio/meta): resolution, format, frame range + count,
-    fps, the auto-detected input colorspace, and whether the file carries an alpha channel. Reuses _seq_range
-    for the range/count/fps/kind (same detection the auto-fill uses) and adds the fields _seq_range does not
-    need: resolution, container/codec, and alpha presence. Never raises - callers get {"error": ...} instead,
+    fps, the auto-detected input colorspace, whether the file carries an alpha channel, and the shot identity
+    the plate itself holds (reel / scene / shot / take / camera / lens / timecode). Reuses _seq_range for the
+    range/count/fps/kind (same detection the auto-fill uses) and adds the fields _seq_range does not need:
+    resolution, container/codec, and alpha presence. Never raises - callers get {"error": ...} instead,
     matching /ocio/thumb's contract, since this backs a UI panel that must not 500 on a bad path."""
     source = (source or "").strip().rstrip("/")
     if not source:
@@ -1971,10 +2122,11 @@ def read_meta(source):
             return {"kind": "video", "resolution": f"{w}x{h}", "format": ext.lstrip("."),
                     "codec": info.get("codec_name", "") or "", "pix_fmt": pix_fmt,
                     "start": rng.get("start", 0), "end": rng.get("end", 0), "count": rng.get("count", 0),
-                    "fps": rng.get("fps", 0.0), "input_colorspace": _video_input_cs(info),
+                    "fps": rng.get("fps", 0.0), "input_colorspace": _video_input_cs(info, ext),
                     "alpha": pix_fmt.endswith("a") or "argb" in pix_fmt or "rgba" in pix_fmt,
                     "color_primaries": info.get("color_primaries", "") or "",
-                    "color_transfer": info.get("color_transfer", "") or ""}
+                    "color_transfer": info.get("color_transfer", "") or "",
+                    "identity": _plate_identity(source)}
         # still / sequence: resolve the same first frame _seq_range/load_source would pick
         files = _frame_files(s)
         if not files and os.path.isfile(s):
@@ -1995,7 +2147,8 @@ def read_meta(source):
                 "count": rng.get("count", 1), "fps": rng.get("fps", 0.0),
                 "input_colorspace": _auto_input_cs(first),
                 "alpha": has_alpha,
-                "missing": rng.get("missing", ""), "missing_count": rng.get("missing_count", 0)}
+                "missing": rng.get("missing", ""), "missing_count": rng.get("missing_count", 0),
+                "identity": _plate_identity(source)}
     except Exception as e:
         return {"error": str(e)[:250]}
 
@@ -2999,8 +3152,12 @@ class OCIOWrite:
                              "tooltip": "Video only. The node's footer states the depth once you pick: 12-bit only from ProRes 4444, 10-bit from ProRes 422 HQ / 422 and DNxHR HQX / 444, 8-bit from the rest. Measured table: README.md."}),
             "bit_depth": (["16f", "32f", "16", "8"], {"default": "16f",
                           "tooltip": "Per format: JPEG 8; PNG 8/16; TIFF 8/16/32f; EXR 16f/32f. The list narrows to the chosen format."}),
-            "compression": (["zip", "zips", "piz", "pxr24", "dwaa", "dwab", "rle", "none"], {"default": "zip",
-                            "tooltip": "EXR compression (Nuke Write style). ZIP / ZIPS = lossless (default). PIZ = lossless, good for grain. DWAA / DWAB = smaller, lossy. Applies to EXR only."}),
+            # DEFAULT DWAA since 2026-08-13, where it used to be ZIP. DWAA is LOSSY and ZIP is not, so
+            # this is a deliberate trade of exactness for size on the format people reach for most - it is the
+            # house default across VFX for anything that is not an archival master. A graph saved before this
+            # keeps whatever it stored; the default only reaches newly created nodes.
+            "compression": (["zip", "zips", "piz", "pxr24", "dwaa", "dwab", "rle", "none"], {"default": "dwaa",
+                            "tooltip": "EXR compression (Nuke Write style). DWAA (default) / DWAB = much smaller, LOSSY. ZIP / ZIPS = lossless. PIZ = lossless, good for grain. Applies to EXR only."}),
             # THE CAVEAT IS IN THE TOOLTIP because the parameter is genuinely front-end only: write() never reads
             # it. That is by construction - the detection walks the GRAPH to find the upstream OCIO Read, which
             # only the canvas can do - but the old wording did not say so, and a reviewer driving the pack through
@@ -3040,12 +3197,14 @@ class OCIOWrite:
             # Appended LAST on purpose: AUDIO carries no widget, so widgets_values is untouched, and a new
             # trailing input slot cannot reindex the saved links of the slots above it.
             "audio": ("AUDIO", {"tooltip": "Optional track. A video container muxes it in, trimmed to the frames written so it cannot drift; a sequence gets a sidecar .wav, because EXR / TIFF / PNG hold no audio. Formats per container: docs/NODES_IO.md."}),
-            # APPENDED LAST, and it has to stay last. widgets_values is POSITIONAL and follows INPUT_TYPES order
-            # (required first, then optional), so a widget inserted anywhere above this shifts every later value
-            # in every saved workflow - fps would start reading render_nonce's string. A trailing widget only ever
-            # adds a new slot at the end. Same reason 'audio' was appended rather than grouped with the inputs.
-            "start_timecode": ("STRING", {"default": "01:00:00:00",
-                               "tooltip": "HH:MM:SS:FF (SMPTE ST 12-1), written per EXR header and as a movie's timecode track. It ADVANCES per frame; one code repeated on every frame conforms wrong. Drop-frame only at 29.97 / 59.94. Empty = no timecode."}),
+            # A `start_timecode` STRING widget sat here from 2026-08-13 until later the same day. A code typed
+            # into the writer is a code invented at delivery; the one that matters arrives with the plate, and
+            # the writer's job is to carry it and advance it per frame. The start now comes from the wired
+            # `metadata` (see _timecode_from_source), so there is nothing to type and nothing to get wrong.
+            # Removing a widget is normally forbidden here, because widgets_values is POSITIONAL and dropping one
+            # shifts every later value in every saved workflow. It is safe in this one case only because the
+            # widget never reached a release: `git grep start_timecode origin/main` finds nothing, and no tag
+            # contains the commit that added it, so no published graph can be holding a value at that index.
             # forceInput -> a SOCKET with no widget, so it adds nothing to widgets_values at all, and appending it
             # last keeps every existing optional socket at the index a saved graph already stored.
             # NAMED `metadata`, matching OCIO Read's output of the same name. It was `source_meta` against Read's
@@ -3053,8 +3212,8 @@ class OCIOWrite:
             # (renamed 2026-08-13, before any release carried it: `source_meta` has zero occurrences in
             # origin/main, so no published graph can be holding the old key).
             "metadata": ("STRING", {"forceInput": True,
-                         "tooltip": "(optional) Wire OCIO Read's 'metadata' output here to carry the plate's camera, lens and editorial attributes into the written file. Claims a colour transform invalidates are dropped, not copied: docs/NODES_IO.md."}),
-            # APPENDED AFTER start_timecode, and it must stay the last WIDGET for the positional reason above.
+                         "tooltip": "(optional) Wire OCIO Read's 'metadata' output here to carry the plate's camera, lens, editorial attributes AND its start timecode into the written file. Claims a colour transform invalidates are dropped, not copied: docs/NODES_IO.md."}),
+            # The last WIDGET, and it must stay last for the positional reason above.
             # It covers a case the 'audio' socket cannot: a native ComfyUI Video input carries its own track and
             # write() adopts it when nothing is wired, so there is no wire to disconnect in order to decline it.
             # A socket can only ADD a track; only a widget can refuse one. Default True, which is the behaviour
@@ -3078,7 +3237,7 @@ class OCIOWrite:
               bit_depth, auto_range, first_frame, last_frame, start_number, source_start, raw_data,
               output_folder, filename, colorspace_in_name=True, auto_colorspace=True, compression="zip",
               alpha=None, fps=24.0, render_nonce="", images=None, video=None, audio=None,
-              start_timecode="01:00:00:00", metadata="", write_audio=True):   # render_nonce: cache-buster (see INPUT_TYPES). images/video: mutually-exclusive inputs.
+              metadata="", write_audio=True):   # render_nonce: cache-buster (see INPUT_TYPES). images/video: mutually-exclusive inputs.
         if video is not None:                                        # a native ComfyUI VIDEO -> render it out with ALL these Write settings (container, codec, colorspace, bit depth)
             images, _vfps, _vaudio = _video_unwrap(video)
             if _vfps and _vfps > 0:
@@ -3174,9 +3333,10 @@ class OCIOWrite:
         rate = float(fps) if fps and fps > 0 else 24.0
         apcm, audio_note = None, ""
         # ---- metadata: what WE author about our own output, then whatever the source plate can legally add ----
-        start_tc = _parse_timecode(start_timecode)                         # raises on a malformed code; see _parse_timecode
-        meta_note, dropped_keys, src_meta = "", [], {}
-        base_attrs = _authored_attrs(output_colorspace, rate, start_number, start_tc, raw_data)
+        # THE PLATE IS READ FIRST, because the start timecode is now inherited from it rather than typed into
+        # this node, and _authored_attrs needs that start before it can lay the per-frame code down. Everything
+        # else about the ordering is unchanged: our authored values still win over the plate's.
+        meta_note, dropped_keys, src_meta, src_attrs = "", [], {}, {}
         if metadata:
             import json as _json
             try:
@@ -3188,8 +3348,20 @@ class OCIOWrite:
             dropped_keys = _forbidden_meta_keys(src_attrs)
             for k in dropped_keys:
                 src_attrs.pop(k, None)
+        # Read BEFORE _META_RE_AUTHORED strips timeCode out of src_attrs below: that strip exists because the
+        # plate's own per-frame code describes the plate's frame, not ours - we re-author it from this start,
+        # advancing it per written frame, which is the only form that conforms correctly.
+        start_tc = _timecode_from_source(src_attrs)
+        base_attrs = _authored_attrs(output_colorspace, rate, start_number, start_tc, raw_data)
+        if metadata:
+            # MATCHED WITHOUT REGARD TO CASE OR SPELLING, because the same field arrives under whatever name the
+            # writing application felt like. Found on a real camera master: an MXF out of DaVinci Resolve calls
+            # its start code `timecode`, the set below spells it `timeCode`, so the plate's value sailed past
+            # the strip and the delivered EXR ended up carrying TWO timecodes - ours, typed and advancing per
+            # frame, beside a stale string frozen at the start. Whichever one a downstream tool reads first
+            # decides how the shot conforms, which is precisely the coin-toss this strip exists to prevent.
             for k in list(src_attrs):
-                if k in _EXR_STRUCTURAL or k in _META_RE_AUTHORED:         # a 640x352 dataWindow on a 1280x704 render
+                if k in _EXR_STRUCTURAL or _is_re_authored(k):             # a 640x352 dataWindow on a 1280x704 render
                     src_attrs.pop(k, None)
             # OUR authored values WIN: they describe the file being written, the plate's describe the file that
             # came in. A plate's chromaticities stamped on a converted render is the same lie as a stale dataWindow.
@@ -3206,9 +3378,21 @@ class OCIOWrite:
         side = None
 
         def tc_text(offset):
-            """The SMPTE start code for the frame at `offset`, or None when no timecode was given. Resolved from
-            the SAME _tc_advance the headers use, so a sidecar can never disagree with the frame beside it."""
-            return _timecode_string(*_tc_advance(start_tc, offset, rate)) if start_tc is not None else None
+            """The SMPTE start code for the frame at `offset`, or None when the plate carried no usable code.
+            Resolved from the SAME _tc_advance the headers use, so a sidecar can never disagree with the frame
+            beside it.
+
+            SWALLOWS the advance's own error, which _frame_attrs already does for the header it writes. That
+            became necessary when the start stopped being typed here and started arriving from a foreign file:
+            _tc_advance rejects an illegal drop-frame label loudly, which is right for a code a human entered
+            and wrong for one a plate happened to carry - a delivery must not fail because someone else's
+            header is malformed."""
+            if start_tc is None:
+                return None
+            try:
+                return _timecode_string(*_tc_advance(start_tc, offset, rate))
+            except Exception:
+                return None
         if container == "still image":
             idx = min(max(0, first_frame - base), n - 1)                   # frame number -> batch index
             # a still grabbed from a sequence / video (n>1) stamps its SOURCE frame number in the name
@@ -3298,13 +3482,21 @@ class OCIOWrite:
                 bits.append(f"adoptedNeutral {an[0]:.5g},{an[1]:.5g}")
             if base_attrs.get("colorInteropID"):
                 bits.append(base_attrs["colorInteropID"])
-            if start_tc is not None:
-                bits.append("tc " + tc_text(0))
+            # tc_text can decline even when a start WAS read: the plate's code may parse and still be an
+            # illegal drop-frame label, in which case the frame ships without a timecode. Reporting one we
+            # did not write would be worse than reporting none.
+            _tc0 = tc_text(0)
+            if _tc0:
+                bits.append("tc " + _tc0)
         elif container == "video":
             # The movie carries the NCLC colour tags, the mappable container tags and a tmcd timecode track; the
             # colorimetry and everything the container cannot hold is in the sidecar named below.
-            if start_tc is not None:
-                bits.append("tc " + tc_text(0))
+            # tc_text can decline even when a start WAS read: the plate's code may parse and still be an
+            # illegal drop-frame label, in which case the frame ships without a timecode. Reporting one we
+            # did not write would be worse than reporting none.
+            _tc0 = tc_text(0)
+            if _tc0:
+                bits.append("tc " + _tc0)
         else:
             # STILL TRUE AND STILL SAID: neither TIFF nor PNG has a header for chromaticities or a real timecode.
             # What they DO now carry is the shot's identity, and naming exactly that - rather than the colorimetry

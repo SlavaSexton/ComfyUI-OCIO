@@ -15,7 +15,7 @@ PackedImageDesc). Reference is _common.ocio_reference (a raw processor built fre
 wiring bug in the node path cannot hide). Panels A/B compare distributions of two DIFFERENT ways to reach the
 same transform; near-identical is the correct result. Panel C compares an image to its own round-trip.
 
-Run:  E:/ComfyUI/ComfyUI/ComfyUI/.venv/Scripts/python.exe measure_histogram_compare.py
+Run:  <ComfyUI>/.venv/Scripts/python.exe measure_histogram_compare.py
 """
 import os
 import numpy as np

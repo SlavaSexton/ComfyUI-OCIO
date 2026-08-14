@@ -18,7 +18,7 @@ Metrics per read:
       round model     : np.round(clip*255)/255      (harness _common.quantise)
       truncate model  : np.floor(clip*255)/255      (what .astype(uint8) actually does on x*255)
 
-Run with:  E:/ComfyUI/ComfyUI/ComfyUI/.venv/Scripts/python.exe measure_quantisation_dither.py
+Run with:  <ComfyUI>/.venv/Scripts/python.exe measure_quantisation_dither.py
 """
 import os
 os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")   # must precede cv2 import (the ComfyUI server sets

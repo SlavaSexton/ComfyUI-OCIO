@@ -3358,12 +3358,25 @@ class OCIOWrite:
                              "tooltip": "Video only. The node's footer states the depth once you pick. FFV1 is the only one that returns this pack's input unchanged (16-bit, .mkv, archival). HEVC 4:4:4 12-bit is the only genuine 12-bit encode - ffmpeg's ProRes and DNxHR encoders top out at 10 whatever the format is nominally worth. 8-bit: DNxHR HQ, h264, hevc, and those two move to 10-bit on an HDR output. Measured table: README.md."}),
             "bit_depth": (["16f", "32f", "16", "8", "10"], {"default": "16f",
                           "tooltip": "Per format: JPEG 8; PNG 8/16; TIFF 8/16/32f; EXR 16f/32f; DPX 10/16. The list narrows to the chosen format."}),
-            # DEFAULT DWAA since 2026-08-13, where it used to be ZIP. DWAA is LOSSY and ZIP is not, so
-            # this is a deliberate trade of exactness for size on the format people reach for most - it is the
-            # house default across VFX for anything that is not an archival master. A graph saved before this
-            # keeps whatever it stored; the default only reaches newly created nodes.
-            "compression": (["zip", "zips", "piz", "pxr24", "dwaa", "dwab", "rle", "none"], {"default": "dwaa",
-                            "tooltip": "EXR compression. DWAA (default) / DWAB: much smaller, LOSSY, and they quantise float32 to HALF before compressing - so 32f + DWAA is a half-precision file that still says 'float'. ZIP / ZIPS / RLE lossless; PIZ lossless and good for grain. Use ZIP for a 32-bit master and for data passes (depth, normals, IDs), which DWA destroys. EXR only."}),
+            # BACK TO ZIP, 2026-08-14. It was DWAA for one day, on the argument that lossy-and-small is the
+            # house default across VFX for anything that is not a master. Measured on a real camera frame at
+            # 1920x1318, raw_data on so only the compressor was under test:
+            #
+            #   16f zip   6342 KB   1843 distinct greens   max abs error 0.000118
+            #   16f dwaa  1164 KB    855 distinct greens   max abs error 0.009525
+            #   32f zip  14267 KB  19118 distinct greens   max abs error 0.000000
+            #   32f dwaa  1164 KB    855 distinct greens   max abs error 0.009525
+            #
+            # DWAA does deliver its side of the bargain: 5.4x smaller. It also costs 54% of the distinct values
+            # and multiplies the error by eighty, and it does that to 16f as well - which nothing in this pack
+            # said, because the documented caveat was only about 32f being quantised to half. A pack whose whole
+            # argument is that it does not throw information away should not have a lossy default, and Nuke,
+            # whose Write node this one is modelled on, defaults to Zip.
+            #
+            # DWAA stays one pick away for a review or comp copy, which is what it is for. A graph saved with
+            # either value keeps it; a default only ever reaches a node created fresh.
+            "compression": (["zip", "zips", "piz", "pxr24", "dwaa", "dwab", "rle", "none"], {"default": "zip",
+                            "tooltip": "EXR compression. ZIP (default) / ZIPS / RLE are lossless; PIZ is lossless and suits grain. DWAA / DWAB are much smaller and LOSSY: measured on a real frame they cost about half the distinct values and multiply the error by eighty, at 16f as well as 32f, and they quantise float32 to HALF before compressing - so 32f + DWAA is a half-precision file that still says 'float'. Pick DWAA for a review or comp copy, never for a master or a data pass (depth, normals, IDs). EXR only."}),
             # THE CAVEAT IS IN THE TOOLTIP because the parameter is genuinely front-end only: write() never reads
             # it. That is by construction - the detection walks the GRAPH to find the upstream OCIO Read, which
             # only the canvas can do - but the old wording did not say so, and a reviewer driving the pack through
@@ -3441,7 +3454,7 @@ class OCIOWrite:
 
     def write(self, profile, from_colorspace, output_colorspace, container, still_format, video_codec,
               bit_depth, auto_range, first_frame, last_frame, start_number, source_start, raw_data,
-              output_folder, filename, colorspace_in_name=True, auto_colorspace=True, compression="dwaa",
+              output_folder, filename, colorspace_in_name=True, auto_colorspace=True, compression="zip",
               alpha=None, fps=24.0, render_nonce="", images=None, video=None, audio=None,
               metadata="", write_audio=True):   # render_nonce: cache-buster (see INPUT_TYPES). images/video: mutually-exclusive inputs.
         if video is not None:                                        # a native ComfyUI VIDEO -> render it out with ALL these Write settings (container, codec, colorspace, bit depth)

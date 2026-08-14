@@ -1,5 +1,26 @@
 # Changelog
 
+## EXR compression goes back to zip, because the measurement said so
+
+`compression` defaulted to `dwaa` for one day. The argument was that lossy-and-small is the house default
+across VFX for anything that is not an archival master, and it sounded right. Measuring it on a real camera
+frame at 1920x1318, with `raw_data` on so only the compressor was under test:
+
+| | file | distinct green values | max abs error |
+| --- | --- | --- | --- |
+| `16f` + `zip` | 6342 KB | 1843 | 0.000118 |
+| `16f` + `dwaa` | 1164 KB | 855 | 0.009525 |
+| `32f` + `zip` | 14267 KB | 19118 | 0.000000 |
+| `32f` + `dwaa` | 1164 KB | 855 | 0.009525 |
+
+DWA keeps its promise on size, 5.4x smaller. It also costs 54% of the distinct values and multiplies the error
+by eighty, **and it does that at `16f` too** - which this pack never said, because the caveat it documented was
+only about `32f` being quantised to half. A pack whose argument is that it does not throw information away
+should not ship a lossy default, and Nuke, whose Write node this one is modelled on, defaults to Zip.
+
+`dwaa` stays one pick away, which is what it is for: a review or a comp copy. Never a master, never a data
+pass. A graph saved with either value keeps it.
+
 ## OCIO Write stops answering a bad input with something that looks like success
 
 Five defects from an adversarial pass over the write path. They share a failure mode rather than a mechanism:
@@ -66,7 +87,9 @@ attribute and simply refused the claim of being the shot's reel.
 
 **`compression` defaults to `dwaa`** where it used to default to `zip`. DWAA is lossy and far smaller, which
 suits a review or comp copy. A workflow you already saved keeps whatever it stored; the default only reaches
-a node you create fresh.
+a node you create fresh. *(Reverted before this release shipped: measured on a real frame, DWA costs 54% of
+the distinct values and eighty times the error at `16f` as well as `32f`, so the default went back to `zip`.
+See the entry at the top of this file.)*
 
 Two consequences the node now reports rather than leaving you to find. DWA **quantises float32 to half before
 compressing** - that is OpenEXR's own behaviour, stated in `ImfDwaCompressor` - so `32f` + DWAA writes half

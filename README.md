@@ -291,12 +291,15 @@ Color-manage an IMAGE batch and **write it to disk** (Nuke: *Write*).
   `dnxhr_hq_mxf_opatom`), and `ffv1` / `hevc_444_12` / `h264` / `hevc`. The format table further down says
   what each one is for and which pixel format it is handed.
 - **bit_depth** - narrows to the format: JPEG 8; PNG 8 / 16; TIFF 8 / 16 / 32f; EXR 16f / 32f; DPX 10 / 16.
-- **compression** (EXR only) - defaults to **DWAA**: lossy, and far smaller for a review or comp copy. Two
-  things to know before leaving it there. DWA **quantises float32 to half before compressing**, so `32f` +
-  DWAA is a half-precision file whose header still says `float` - the node says so in its report when you
-  do it. And it destroys data passes: a depth pass came back with an error of 172 units, normals lost unit
-  length. Pick `zip` (or `zips` / `rle` / `piz`) for a 32-bit master, for any data pass, and whenever the
-  file has to be bit-exact. Your choice is saved with the workflow; the default only applies to a new node.
+- **compression** (EXR only) - defaults to **`zip`**, which is lossless. `dwaa` / `dwab` are far smaller and
+  lossy: measured on a real camera frame, `16f` at `zip` held 1843 distinct green values with a maximum error
+  of 0.000118, and the same frame at `dwaa` held 855 with an error of 0.009525 - a fifth of the file size for
+  half the values and eighty times the error, **at `16f` as well as `32f`**. Two more things about DWA: it
+  **quantises float32 to half before compressing**, so `32f` + DWAA is a half-precision file whose header
+  still says `float`, and the node says so in its report when you do it; and it destroys data passes, where a
+  depth pass came back with an error of 172 units and normals lost unit length. Pick `dwaa` for a review or
+  comp copy, never for a master or a data pass. Your choice is saved with the workflow; a default only ever
+  reaches a node you create fresh.
 - **auto_range** - pull `first_frame` / `last_frame` / `start_number` / `fps` **automatically from the OCIO Read**
   at the other end of the wire (through any number of nodes). Edit them by hand and it turns off; turn it back on
   to re-detect.

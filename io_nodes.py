@@ -286,9 +286,10 @@ def _read_still(path):
         if a is None:
             raise RuntimeError(
                 f"OCIO Read: could not decode {os.path.basename(path)}. The primary reader here is the "
-                f"OpenEXR module - install it into ComfyUI's environment with `pip install \"OpenEXR>=3.2\"`. "
-                f"The cv2 fallback additionally needs OPENCV_IO_ENABLE_OPENEXR=1 set in the environment "
-                f"BEFORE ComfyUI starts, which is why it is not relied on.")
+                f"OpenEXR module - install it into ComfyUI's environment with `pip install \"OpenEXR>=3.3\"`. "
+                f"The cv2 fallback cannot stand in for it: on OpenCV 4 it needs OPENCV_IO_ENABLE_OPENEXR=1 set "
+                f"BEFORE ComfyUI starts, and on OpenCV 5 no environment variable helps, because those wheels "
+                f"carry no EXR codec at all.")
     elif ext == ".hdr":
         if cv2 is not None:
             try:
@@ -537,11 +538,13 @@ def _video_input_cs(info, ext=None):
 
 
 def _exr_fps(path):
-    """The OpenEXR `framesPerSecond` rational attribute as a float, or None if absent/unreadable. OpenEXR is
-    NOT a hard dependency of this pack (requirements ship cv2/tifffile/PIL for pixels; ffprobe does NOT read the
-    EXR fps attribute - it reports the image2 demuxer default 25). Import it lazily so a machine without the
-    module just falls back to the default fps instead of breaking sequence detection. Reads only the header, so
-    it is cheap even on a 50 MB EXR. Added 2026-07-03: sequence fps from EXR metadata (see _seq_fps)."""
+    """The OpenEXR `framesPerSecond` rational attribute as a float, or None if absent/unreadable. Nothing else
+    reads it: ffprobe does NOT report this attribute, it answers with the image2 demuxer default of 25.
+
+    The import stays lazy and the failure stays quiet even though OpenEXR became a hard requirement in v1.3.0,
+    because losing fps detection is not worth taking sequence detection down with it. An install that somehow
+    lacks the module falls back to the default fps and keeps working. Reads only the header, so it is cheap even
+    on a 50 MB EXR. Added 2026-07-03: sequence fps from EXR metadata (see _seq_fps)."""
     if os.path.splitext(path)[1].lower() != ".exr":
         return None
     try:
@@ -2517,8 +2520,9 @@ def _save_still(path, rgb, fmt, bit_depth, alpha=None, colorspace=None, compress
         if not os.path.exists(path) or os.path.getsize(path) == 0:
             raise RuntimeError(
                 f"EXR write produced no file at {os.path.basename(path)}. Install the OpenEXR module "
-                f"(`pip install \"OpenEXR>=3.3\"`), or start ComfyUI with OPENCV_IO_ENABLE_OPENEXR=1 - "
-                f"OpenCV's EXR codec is disabled by default.")
+                f"(`pip install \"OpenEXR>=3.3\"`). Setting OPENCV_IO_ENABLE_OPENEXR=1 before ComfyUI starts "
+                f"revives cv2 on OpenCV 4, where the codec is present but off by default; it does nothing on "
+                f"OpenCV 5, whose wheels ship without the codec entirely.")
         return
     if fmt == "dpx":
         # DPX WRITING, WHICH THIS PACK COULD READ BUT NOT PRODUCE. That asymmetry mattered more than it looks:

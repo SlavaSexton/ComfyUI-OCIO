@@ -1,12 +1,15 @@
 opencolorio>=2.2
 opencv-python-headless
-# OpenEXR is the EXR reader AND writer here. cv2 can do both, but only when OPENCV_IO_ENABLE_OPENEXR is set in
-# the environment BEFORE cv2 is imported - which no ComfyUI launcher does (opencv/opencv#21326, the gate added
-# after the 2022 EXR CVEs), and which this pack cannot fix from inside itself once another node pack has already
-# imported cv2. Both halves were hit for real: a write returned without a file while Write still reported
-# "saved name.0001.exr" (found by Andrei Orehov, PR #5), and a read raised a raw grfmt_exr.cpp traceback
-# (reported as issue #4). OpenEXR needs no environment variable, and it is also the only way to write EXR
-# header attributes at all.
+# OpenEXR is the EXR reader AND writer here, because cv2 cannot be relied on for EXR at either major version.
+# On OpenCV 4 the codec is present but gated on OPENCV_IO_ENABLE_OPENEXR being set in the environment BEFORE
+# cv2 is imported (opencv/opencv#21326, the gate added after the 2022 EXR CVEs) - which no ComfyUI launcher
+# does, and which this pack cannot fix from inside itself once another node pack has already imported cv2.
+# OpenCV 5 removes the codec outright: measured on 5.0.0.93, getBuildInformation reports `OpenEXR: NO`, IlmImf
+# is gone from the third-party list, and a write raises "could not find a writer for the specified extension"
+# even with the variable set. Both OpenCV 4 failures were hit for real: a write returned without a file while
+# Write still reported "saved name.0001.exr" (found by Andrei Orehov, PR #5), and a read raised a raw
+# grfmt_exr.cpp traceback (issue #4, where the OpenCV 5 half was called correctly by the reporter). OpenEXR
+# needs no environment variable on any version, and it is also the only way to write EXR header attributes.
 # The floor is 3.3, not 3.2: that is where the OpenEXR.File API this pack calls in four places landed.
 OpenEXR>=3.3
 tifffile

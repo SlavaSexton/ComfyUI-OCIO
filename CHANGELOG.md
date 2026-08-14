@@ -53,7 +53,14 @@ The metadata panel read EXR dimensions through OpenCV, whose EXR codec is disabl
 returning nothing, so the fallback beside it could never catch the failure and the whole panel came back as
 an error. Writing and reading pixels had already been moved off cv2 for this reason; this path had not. It
 now reads the header through the OpenEXR module, which needs no flag, and stopped pulling a 49 MB frame off
-disk to learn its width.
+disk to learn its width. Reported independently as
+[#4](https://github.com/SlavaSexton/ComfyUI-OCIO/issues/4) by
+[@Sudhzpatil](https://github.com/Sudhzpatil), out of the source, before the fix shipped.
+
+`tools/test_exr_read_no_envflag.py` now runs a fourth arrangement, cv2 not importable at all, which is how the
+pack behaves on an OpenCV build with no EXR codec. The three existing cases all had cv2 present, so nothing
+exercised the path where the OpenEXR module is the only reader. The case reports whether cv2 was really absent,
+because otherwise a green result cannot be told from an import block that failed to take.
 
 ## OCIO VAE Encode and Decode refuse an input they cannot take, in words
 

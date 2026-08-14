@@ -86,9 +86,11 @@ function autoOutCs(container, stillFormat) {
 }
 
 // bit-depth options + default per still format
-const BITS = { exr: ["16f", "32f"], tiff: ["8", "16", "32f"], png: ["8", "16"], jpeg: ["8"] };
-const BIT_DEF = { exr: "16f", tiff: "16", png: "8", jpeg: "8" };
-const STILL_EXT = { exr: "exr", tiff: "tif", png: "png", jpeg: "jpg" };
+// dpx is integer-only and takes 10 or 16: 16-bit is what Netflix's archival-master spec names first for log
+// material, 10-bit matches a 10-bit camera original. No float entry, because DPX has no float variant here.
+const BITS = { exr: ["16f", "32f"], tiff: ["8", "16", "32f"], png: ["8", "16"], jpeg: ["8"], dpx: ["10", "16"] };
+const BIT_DEF = { exr: "16f", tiff: "16", png: "8", jpeg: "8", dpx: "16" };
+const STILL_EXT = { exr: "exr", tiff: "tif", png: "png", jpeg: "jpg", dpx: "dpx" };
 
 // video codec -> real bit depth + extension (mirrors io_nodes.py save_video's codec->pix_fmt map). bit_depth
 // stays hidden for video (still-format 16f/32f/16/8 don't map to video 8/10/12) - this footer shows the real,
@@ -104,12 +106,31 @@ const CODEC_INFO = {
     h264: { bits: "8-bit", ext: ".mp4" }, hevc: { bits: "8-bit", ext: ".mp4" },
     dnxhr_hq_mxf: { bits: "8-bit", ext: ".mxf" }, dnxhr_hq_mxf_opatom: { bits: "8-bit", ext: ".mxf" },
     dnxhr_hqx: { bits: "10-bit", ext: ".mov" }, dnxhr_444: { bits: "10-bit", ext: ".mov" },
+    // MXF above 8 bits. Until these existed the only route into an MXF was dnxhr_hq, which is 8-bit by
+    // profile, so the one container the industry hands masters around in was the one place this pack could
+    // not put a master. A real camera MXF measured for this read ProRes 4444, yuv444p12le, 12-bit.
+    prores_4444_mxf: { bits: "12-bit", ext: ".mxf" }, prores_4444xq_mxf: { bits: "12-bit", ext: ".mxf" },
+    dnxhr_hqx_mxf: { bits: "10-bit", ext: ".mxf" }, dnxhr_444_mxf: { bits: "10-bit", ext: ".mxf" },
+    // The only genuinely 12-bit encode in this build. ProRes 4444 reads back as 12-bit because that is what
+    // the FORMAT is, but every ffmpeg ProRes encoder tops out at 10-bit data; libx265 writes 12.
+    hevc_444_12: { bits: "12-bit", ext: ".mp4" },
+    prores_4444xq: { bits: "12-bit", ext: ".mov" },
+    // The only encode here that returns this pack's own 16-bit input unchanged, measured by md5. Matroska is
+    // the container the Library of Congress pairs it with, not MOV.
+    ffv1: { bits: "16-bit", ext: ".mkv" },
 };
+// h264 and hevc say 8-bit because that is what they write for an SDR delivery, and the parity test measures
+// exactly that. Choose a BT.2100 output colorspace and the backend moves them to 10-bit, because HLG and PQ
+// are not defined below it; the 8-bit DNxHR profiles refuse that combination outright instead.
 const CODEC_LABEL = {
     prores_4444: "ProRes 4444", prores_422hq: "ProRes 422 HQ", prores_422: "ProRes 422",
     dnxhr_hq: "DNxHR HQ", h264: "H.264", hevc: "HEVC",
     dnxhr_hq_mxf: "DNxHR HQ - MXF OP1a", dnxhr_hq_mxf_opatom: "DNxHR HQ - MXF OPAtom",
     dnxhr_hqx: "DNxHR HQX", dnxhr_444: "DNxHR 444",
+    prores_4444_mxf: "ProRes 4444 - MXF OP1a", prores_4444xq_mxf: "ProRes 4444 XQ - MXF OP1a",
+    dnxhr_hqx_mxf: "DNxHR HQX - MXF OP1a", dnxhr_444_mxf: "DNxHR 444 - MXF OP1a",
+    hevc_444_12: "HEVC 4:4:4 12-bit (mastering)",
+    prores_4444xq: "ProRes 4444 XQ", ffv1: "FFV1 lossless (archival)",
 };
 
 // hide / show ONE widget with a TRUE collapse (no blank row). 2026-07-04: switched off the old OCIO_HIDDEN

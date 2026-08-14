@@ -26,8 +26,8 @@
 Eleven color-management nodes for ComfyUI, modelled on **The Foundry Nuke's OCIO node set** and backed by
 **OpenColorIO** with the built-in **ACES** config. Convert between colorspaces, grade with ASC CDL, apply a
 display transform or a LUT, scrub the result in an on-node viewer, and - the two big ones - **Read** any
-still / image sequence / video off disk and **Write** it back out color-managed, in EXR / TIFF / PNG / JPEG
-or ProRes / DNxHR / h264 / hevc.
+still / image sequence / video off disk and **Write** it back out color-managed, in EXR / DPX / TIFF / PNG / JPEG
+or ProRes / DNxHR / FFV1 / h264 / hevc, in MOV, MXF, MP4 or Matroska.
 
 Every node is a standard ComfyUI node, so it interoperates with the whole ecosystem on plain `IMAGE` / `MASK` /
 `FLOAT` / `STRING` types: pipe **OCIO Read** into any node, and any node into **OCIO Write**. The six color nodes
@@ -97,22 +97,41 @@ copied from a table:
 
 | `video_codec` | container | pixel format | depth | chroma |
 | --- | --- | --- | --- | --- |
-| `prores_4444` | `.mov` | `yuv444p12le` | 12-bit | 4:4:4 |
+| `ffv1` | `.mkv` | `gbrp16le` | **16-bit, bit-exact** | RGB 4:4:4 |
+| `hevc_444_12` | `.mp4` | `yuv444p12le` | **12-bit** | 4:4:4 |
+| `prores_4444` | `.mov` | `yuv444p10le` | 10-bit (reads back as 12, see below) | 4:4:4 |
+| `prores_4444xq` | `.mov` | `yuv444p10le` | 10-bit (reads back as 12) | 4:4:4 |
 | `prores_422hq` | `.mov` | `yuv422p10le` | 10-bit | 4:2:2 |
 | `prores_422` | `.mov` | `yuv422p10le` | 10-bit | 4:2:2 |
-| `dnxhr_hq` | `.mov` | `yuv422p` | 8-bit | 4:2:2 |
 | `dnxhr_hqx` | `.mov` | `yuv422p10le` | 10-bit | 4:2:2 |
 | `dnxhr_444` | `.mov` | `yuv444p10le` | 10-bit | 4:4:4 |
-| `dnxhr_hq_mxf` | `.mxf` | `yuv422p` | 8-bit | 4:2:2 |
-| `dnxhr_hq_mxf_opatom` | `.mxf` | `yuv422p` | 8-bit | 4:2:2 |
-| `h264` | `.mp4` | `yuv420p` | 8-bit | 4:2:0 |
-| `hevc` | `.mp4` | `yuv420p` | 8-bit | 4:2:0 |
+| `dnxhr_hq` | `.mov` | `yuv422p` | 8-bit | 4:2:2 |
+| `prores_4444_mxf`, `prores_4444xq_mxf` | `.mxf` | `yuv444p10le` | 10-bit | 4:4:4 |
+| `dnxhr_hqx_mxf` | `.mxf` | `yuv422p10le` | 10-bit | 4:2:2 |
+| `dnxhr_444_mxf` | `.mxf` | `yuv444p10le` | 10-bit | 4:4:4 |
+| `dnxhr_hq_mxf`, `dnxhr_hq_mxf_opatom` | `.mxf` | `yuv422p` | 8-bit | 4:2:2 |
+| `h264` | `.mp4` | `yuv420p`, `yuv420p10le` on HDR | 8-bit, 10-bit on HDR | 4:2:0 |
+| `hevc` | `.mp4` | `yuv420p`, `yuv420p10le` on HDR | 8-bit, 10-bit on HDR | 4:2:0 |
 
-Three things worth knowing before choosing:
+Things worth knowing before choosing:
 
+- **`ffv1` is the only one that loses nothing.** This pack hands ffmpeg 16-bit RGB, and FFV1 hands it back
+  unchanged: md5 of the decoded stream equals md5 of what went in. Every other entry differs, including a
+  `lossless=1` x265, because a 12-bit pixel format has already dropped four bits before the lossless part
+  starts. It is described by RFC 9043, and FFV1 in Matroska has been a Library of Congress Preferred Format
+  for preservation since December 2023. The cost is size: 700939 bytes against 113879 for ProRes 4444 on the
+  same clip of random noise.
+- **ProRes reads back as 12-bit and carries 10.** All three ProRes encoders in ffmpeg advertise exactly
+  `yuv422p10le yuv444p10le yuva444p10le`; there is no 12-bit format for any of them. Asking for one prints
+  `Incompatible pixel format 'yuv444p12le' for codec 'prores_ks', auto-selecting format 'yuv444p10le'` and
+  encodes 10-bit. `ffprobe` still reports 12 because ProRes 4444 is nominally a 12-bit format, so the label
+  comes from the specification and not from the samples. For real 12-bit use `hevc_444_12`.
+- **An HDR output space moves h264 and hevc to 10-bit, and refuses the 8-bit DNxHR profiles.** ITU-R BT.2100
+  defines HLG and PQ at 10 or 12 bits per sample and at nothing below, so an 8-bit file carrying `bt2020` and
+  `arib-std-b67` tags states a standard it cannot hold. `dnxhr_hq` and its two MXF wrappers are 8-bit by
+  profile, so they raise and name the codec to use instead rather than writing that file.
 - **The DNx encoder here has no 12-bit pixel format at all.** It advertises exactly
-  `yuv422p yuv422p10le yuv444p10le gbrp10le`, so `dnxhr_444` buys full chroma rather than more bits. For 12 bit
-  the route is ProRes 4444.
+  `yuv422p yuv422p10le yuv444p10le gbrp10le`, so `dnxhr_444` buys full chroma rather than more bits.
 - **These figures describe the files this pack writes, and claim nothing about the Avid formats themselves.**
   Avid's own sources disagree with the widely-repeated 8/10/12 table: its historical *High Resolution Workflows
   Guide* calls both HQX and 444 12-bit, while its current naming page (April 2026) says that after the 2025
@@ -483,6 +502,68 @@ are feeding it a real HDR plate and want to know what the model was actually giv
 
 ---
 
+## Every format this pack reads and writes, and the standards behind them
+
+Generated from the node's own tables, not restated by hand. `tools/test_bit_depth_ceiling.py` writes one file
+per row and reads the depth back with a third-party reader, so a silent drop to 8-bit fails the gate.
+
+**Stills, written**
+
+| format | depths | notes |
+| --- | --- | --- |
+| **EXR** | 16f, 32f | float, keeps negatives and values above 1.0. Compression: `zip`, `zips`, `piz`, `pxr24`, `dwaa`, `dwab`, `rle`, `none` |
+| **DPX** | 10, 16 | integer, SMPTE ST 268. 16-bit is `rgb48le`, 10-bit is `gbrp10le` |
+| **TIFF** | 8, 16, 32f | 32f is float and keeps both tails |
+| **PNG** | 8, 16 | lossless, carries the identity fields as `iTXt` |
+| **JPEG** | 8 | always 4:2:0, review only |
+
+**Video, written** (pixel format is what ffmpeg is handed, verified by reading the file back)
+
+| codec | container | pixel format | what it is for |
+| --- | --- | --- | --- |
+| `ffv1` | `.mkv` | `gbrp16le` | **bit-exact.** The only encoder here that returns this pack's 16-bit input unchanged, confirmed by md5. RFC 9043; FFV1 in Matroska is a Library of Congress Preferred Format for preservation |
+| `hevc_444_12` | `.mp4` | `yuv444p12le` | the only genuine 12-bit encode available in ffmpeg |
+| `prores_4444`, `prores_4444xq` | `.mov` | `yuv444p10le` | 4:4:4. See the ProRes note below |
+| `prores_422hq`, `prores_422` | `.mov` | `yuv422p10le` | 10-bit review and edit masters |
+| `dnxhr_444` | `.mov` | `yuv444p10le` | 10-bit 4:4:4 Avid |
+| `dnxhr_hqx` | `.mov` | `yuv422p10le` | 10-bit 4:2:2 Avid |
+| `dnxhr_hq` | `.mov` | `yuv422p` | 8-bit by profile |
+| `prores_4444_mxf`, `prores_4444xq_mxf` | `.mxf` | `yuv444p10le` | MXF OP1a, the interchange wrapper |
+| `dnxhr_hqx_mxf`, `dnxhr_444_mxf` | `.mxf` | 10-bit | MXF OP1a |
+| `dnxhr_hq_mxf`, `dnxhr_hq_mxf_opatom` | `.mxf` | `yuv422p` | OP1a and OPAtom, 8-bit |
+| `h264`, `hevc` | `.mp4` | `yuv420p`, **`yuv420p10le` when the output space is HDR** | review. BT.2100 has no 8-bit form, so an HDR delivery moves up automatically |
+
+**Read** (OCIO Read and OCIO Player): `.exr`, `.dpx`, `.hdr`, `.tif`, `.tiff`, `.png`, `.jpg`, `.jpeg`, `.bmp`
+for stills, and `.mov`, `.mp4`, `.mkv`, `.avi`, `.webm`, `.mxf`, `.m4v` for movies. DPX is decoded by this
+pack's own reader, because OpenCV returns nothing for a real 10-bit plate and Pillow cannot open DPX at all.
+
+### Against Netflix's archival-master specification
+
+Their [Non-Graded Archival Master spec](https://partnerhelp.netflixstudios.com/hc/en-us/articles/21669570043283-Non-Graded-Archival-Master-NAM-Specifications)
+names the primary formats by transfer function, and this pack writes both:
+
+| Netflix asks for | this pack |
+| --- | --- |
+| log: **16-bit DPX** (10-bit only if half the capture was 10-bit or lower) | `dpx` at `bit_depth 16`, and `10` |
+| linear: **16-bit half-float EXR**, uncompressed, ZIP or PIZ | `exr` at `16f` with `none`, `zip` or `piz` |
+| QuickTime exception, HDR: **12-bit** DNxHR 444 or ProRes 4444 XQ | **not reachable, see below** |
+| QuickTime exception, SDR: 10-bit DNxHR 444 or ProRes 4444 | `dnxhr_444`, `prores_4444` |
+
+**The one line that is not covered, stated plainly rather than papered over.** ffmpeg cannot write 12-bit
+ProRes or 12-bit DNxHR at all. All three of its ProRes encoders advertise exactly
+`yuv422p10le yuv444p10le yuva444p10le`, and `dnxhd` advertises `yuv422p yuv422p10le yuv444p10le gbrp10le`.
+Asking either for 12 bits is a silent no-op: the same input encoded at `yuv444p12le` and `yuv444p10le` produces
+a byte-identical stream, verified by md5, while `ffprobe` still reports 12 because ProRes 4444 is nominally a
+12-bit format. So a file from here will *read* as 12-bit and carry 10. For genuinely 12-bit samples use
+`hevc_444_12`; for a master that loses nothing at all, use `ffv1`.
+
+Also deliberately absent: **JPEG 2000 for DCP and IMF**. It is mandatory there (DCI, and SMPTE ST 2067-21 for
+IMF App 2E allows no other essence), and ffmpeg can produce the codestream, but a DCP additionally needs ST 429
+packaging, CPL and PKL, and an ST 422 MXF wrap, none of which ffmpeg does. Offering "DCP export" would be a
+claim this pack cannot honour.
+
+---
+
 ## Color accuracy, measured
 
 Accuracy is a number here, not a claim. The pack ships a color-accuracy regression suite (`tools/accuracy`) that
@@ -597,7 +678,7 @@ than us.
 
 <div align="center">
 
-<img src="docs/assets/ltx25_pipeline.svg" width="880" alt="The LTX-2.5 ACEScct pipeline in three columns. INPUT: OCIO Read of a folder of EXR frames in ACEScg scene-linear, into OCIO LogConvert set to Linear to Log with the ACEScct curve, giving ACEScct codes in 0 to 1, into OCIO VAE Encode, which runs at float32 and reports any value landing outside the range the VAE was trained on. MODEL: LTX-2.5, a 22B transformer with a 128-channel video VAE trained alongside it, and a separate audio VAE producing the synchronised track, which bypasses colour entirely. OUTPUT: OCIO VAE Decode in float32 with no clamp, giving ACEScct codes back, into OCIO LogConvert set to Log to Linear, giving scene-linear HDR, which feeds two writes: an EXR 16f or 32f master with compression set to zip for a lossless master, and a ProRes 4444 12-bit review movie carrying the audio track.">
+<img src="docs/assets/ltx25_pipeline.svg" width="880" alt="The LTX-2.5 ACEScct pipeline in three columns. INPUT: OCIO Read of a folder of EXR frames in ACEScg scene-linear, into OCIO LogConvert set to Linear to Log with the ACEScct curve, giving ACEScct codes in 0 to 1, into OCIO VAE Encode, which runs at float32 and reports any value landing outside the range the VAE was trained on. MODEL: LTX-2.5, a 22B transformer with a 128-channel video VAE trained alongside it, and a separate audio VAE producing the synchronised track, which bypasses colour entirely. OUTPUT: OCIO VAE Decode in float32 with no clamp, giving ACEScct codes back, into OCIO LogConvert set to Log to Linear, giving scene-linear HDR, which feeds two writes: an EXR 16f or 32f master with compression set to zip for a lossless master, and a ProRes 4444 review movie carrying the audio track.">
 
 </div>
 

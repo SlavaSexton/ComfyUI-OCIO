@@ -127,7 +127,9 @@ filename, so the cost is one rename on your side.
 Every depth in the README table now comes from writing a file and reading it back with `ffprobe`, and one figure
 changed as a result: **`dnxhr_444` is 10-bit here, not 12**. The DNx encoder ffmpeg ships advertises exactly
 `yuv422p yuv422p10le yuv444p10le gbrp10le` and no 12-bit format at all, so 444 buys full chroma rather than more
-bits. For 12-bit the route is ProRes 4444.
+bits. For 12-bit the route is ProRes 4444. *(Corrected later in this same release: it is not. ffmpeg's ProRes
+encoders top out at 10-bit as well, and the 12 that `ffprobe` reports comes from the format's definition rather
+than from the samples in the file. The genuine 12-bit route is `hevc_444_12`; the lossless one is `ffv1`.)*
 
 The README no longer states what those names mean as Avid *formats*, because Avid's own sources disagree: its
 historical guide calls both HQX and 444 12-bit, while its current naming page says that after the 2025 revision of

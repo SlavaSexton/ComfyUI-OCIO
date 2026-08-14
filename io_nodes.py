@@ -2508,6 +2508,36 @@ def _save_still(path, rgb, fmt, bit_depth, alpha=None, colorspace=None, compress
                 f"(`pip install \"OpenEXR>=3.3\"`), or start ComfyUI with OPENCV_IO_ENABLE_OPENEXR=1 - "
                 f"OpenCV's EXR codec is disabled by default.")
         return
+    if fmt == "dpx":
+        # DPX WRITING, WHICH THIS PACK COULD READ BUT NOT PRODUCE. That asymmetry mattered more than it looks:
+        # DPX is how plates move between a film pipeline and everyone else, and Netflix's own Non-Graded
+        # Archival Master specification names "16-bit DPX" first for log material, with 10-bit allowed only
+        # when half the primary capture was 10-bit or lower. The pack could ingest that and never hand it back.
+        #
+        # Written through ffmpeg rather than by hand: SMPTE ST 268 has enough header variants (film vs
+        # television offsets, packing modes, endianness) that a hand-rolled writer would be a second decoder to
+        # maintain, and this pack already learned that lesson from the two copies of the extension rule.
+        # 10-bit uses gbrp10le, which is the packed RGB layout a film pipeline expects; 16-bit uses rgb48le.
+        _require_ffmpeg()
+        pf = {"10": "gbrp10le", "16": "rgb48le"}.get(str(bit_depth))
+        if pf is None:
+            raise RuntimeError(
+                f"DPX is an integer format and takes bit_depth 10 or 16, not {bit_depth!r}. Use 16 for an "
+                f"archival master (Netflix NAM asks for 16-bit DPX on log material), 10 for a plate matching "
+                f"a 10-bit camera original, or write EXR if you need float.")
+        h, w = rgb.shape[:2]
+        buf = (np.clip(rgb, 0, 1) * 65535.0).round().astype("<u2").tobytes()
+        proc = subprocess.run(
+            [_FFMPEG, "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb48le", "-s", f"{w}x{h}",
+             "-i", "-", "-frames:v", "1", "-c:v", "dpx", "-pix_fmt", pf, path],
+            input=buf, capture_output=True)
+        # NEVER REPORT A WRITE THAT DID NOT LAND - the same check Andrei Orehov's EXR fix put on the cv2 path,
+        # for the same reason: a return code is not proof of a file.
+        if proc.returncode != 0 or not os.path.exists(path) or os.path.getsize(path) == 0:
+            raise RuntimeError(
+                f"DPX write produced no file at {os.path.basename(path)}: "
+                f"{proc.stderr.decode('utf-8', 'ignore')[:200]}")
+        return
     if fmt in ("tif", "tiff"):
         if bit_depth == "32f":
             data = with_a(rgb.astype(np.float32))
@@ -2774,7 +2804,9 @@ def _save_wav24(path, samples, sr):
 # Resolve its own metadata import - neither is written here yet.
 #
 # Out of scope and NOT claimed: ST 377-1 descriptive metadata schemes and IMF ST 2067 packages.
-_MXF_MUXER = {"dnxhr_hq_mxf": "mxf", "dnxhr_hq_mxf_opatom": "mxf_opatom"}
+_MXF_MUXER = {"dnxhr_hq_mxf": "mxf", "dnxhr_hq_mxf_opatom": "mxf_opatom",
+              "prores_4444_mxf": "mxf", "prores_4444xq_mxf": "mxf",
+              "dnxhr_hqx_mxf": "mxf", "dnxhr_444_mxf": "mxf"}
 
 
 def video_ext(video_codec):
@@ -2789,10 +2821,33 @@ def video_ext(video_codec):
     c = str(video_codec)
     if c in _MXF_MUXER:
         return ".mxf"
+    # FFV1's preservation pairing is with Matroska, and that is the combination the Library of Congress lists,
+    # not FFV1 in a MOV. Tested before the prores/dnxhr prefix for the same reason MXF is: a prefix test decides
+    # by spelling rather than by fact, which is the bug this function was written to end.
+    if c == "ffv1":
+        return ".mkv"
     return ".mov" if c.startswith(("prores", "dnxhr")) else ".mp4"
 
 
-def _video_encoder_args(codec):
+_HDR_8BIT_PROFILES = {
+    # Profiles that are 8-bit by definition, so no pixel format can rescue them. Named with the way out.
+    "dnxhr_hq": "dnxhr_hqx (10-bit) or prores_4444 (12-bit)",
+    "dnxhr_hq_mxf": "dnxhr_hqx_mxf (10-bit) or prores_4444_mxf (12-bit)",
+    "dnxhr_hq_mxf_opatom": "dnxhr_hqx_mxf (10-bit) or prores_4444_mxf (12-bit)",
+}
+
+
+def _is_hdr_colorspace(cs):
+    """True when this delivery space is an ITU-R BT.2100 HDR one (HLG or PQ).
+
+    ONE predicate, read by both the tag writer and the encoder chooser. They answer the same question - is this
+    file claiming HDR - and if each carried its own spelling they would drift apart, which is how a pack ends up
+    tagging a file one way and encoding it another. The terms match _video_color_tags' own branches."""
+    c = (cs or "").lower()
+    return ("hlg" in c or "b67" in c or "2100" in c or "2084" in c or "pq" in c)
+
+
+def _video_encoder_args(codec, hdr=False):
     """The ffmpeg encoder arguments for a codec choice. THE one place these live.
 
     Module level rather than a local dict inside save_video so a test can measure what this pack really writes
@@ -2800,8 +2855,18 @@ def _video_encoder_args(codec):
     copy, which is exactly how the front end came to disagree about extensions.
 
     Unknown codec -> h264, matching save_video's original .get() default."""
+    # PRORES IS ASKED FOR 10-BIT, NOT 12, AND THE REASON IS THE ENCODER RATHER THAN THE FORMAT. ProRes 4444 is a
+    # 12-bit format on paper and every reader will tell you so: ffprobe reports pix_fmt=yuv444p12le and
+    # bits_per_raw_sample=12 on our files, and on a real Resolve-written camera master too. But ffmpeg's ProRes
+    # encoders cannot produce it. All three of them - prores, prores_aw, prores_ks - advertise exactly
+    # "yuv422p10le yuv444p10le yuva444p10le", with no 12-bit entry anywhere, and asking for yuv444p12le makes
+    # ffmpeg print "Incompatible pixel format 'yuv444p12le' for codec 'prores_ks', auto-selecting format
+    # 'yuv444p10le'" and encode 10-bit regardless. So the old request was a request ffmpeg silently declined; the
+    # file was always 10-bit data wearing a 12-bit label. Asking for what happens keeps the code honest
+    # and changes not one byte of output. For genuinely 12-bit samples the only route in this build is libx265
+    # (yuv444p12le), which is why hevc_444_12 exists below.
     return {
-        "prores_4444": ["-c:v", "prores_ks", "-profile:v", "4", "-pix_fmt", "yuv444p12le"],
+        "prores_4444": ["-c:v", "prores_ks", "-profile:v", "4", "-pix_fmt", "yuv444p10le"],
         "prores_422hq": ["-c:v", "prores_ks", "-profile:v", "3", "-pix_fmt", "yuv422p10le"],
         "prores_422": ["-c:v", "prores_ks", "-profile:v", "2", "-pix_fmt", "yuv422p10le"],
         "dnxhr_hq": ["-c:v", "dnxhd", "-profile:v", "dnxhr_hq", "-pix_fmt", "yuv422p"],
@@ -2827,9 +2892,43 @@ def _video_encoder_args(codec):
         # patterns measured end to end (see _MXF_MUXER).
         "dnxhr_hq_mxf": ["-c:v", "dnxhd", "-profile:v", "dnxhr_hq", "-pix_fmt", "yuv422p"],
         "dnxhr_hq_mxf_opatom": ["-c:v", "dnxhd", "-profile:v", "dnxhr_hq", "-pix_fmt", "yuv422p"],
-        "h264": ["-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p"],
-        "hevc": ["-c:v", "libx265", "-crf", "18", "-pix_fmt", "yuv420p"],
-    }.get(codec, ["-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p"])
+        # MXF AT MORE THAN 8 BITS. Until now the only way into an MXF here was dnxhr_hq, which is 8-bit by
+        # profile, so the one container the industry uses to hand masters around was the one place this pack
+        # could not carry a master. A real camera MXF measured for this: ProRes 4444, yuv444p12le,
+        # bits_per_raw_sample=12, written by Resolve, OP1a. All four below were written and read back with
+        # ffprobe before being listed.
+        "prores_4444_mxf": ["-c:v", "prores_ks", "-profile:v", "4", "-pix_fmt", "yuv444p10le"],
+        "prores_4444xq_mxf": ["-c:v", "prores_ks", "-profile:v", "5", "-pix_fmt", "yuv444p10le"],
+        # ProRes 4444 XQ in a MOV, which is its home container. It existed only as an MXF entry, which is
+        # backwards: XQ is Apple's highest-bitrate ProRes (~500 Mb/s against ~330 for 4444) and the one their
+        # own white paper describes as built for HDR and for grades that stretch the tails.
+        "prores_4444xq": ["-c:v", "prores_ks", "-profile:v", "5", "-pix_fmt", "yuv444p10le"],
+        # THE ONLY ENCODER HERE THAT IS LOSSLESS FOR THIS PACK'S INPUT. save_video hands ffmpeg 16-bit
+        # RGB (rgb48le), and FFV1 at gbrp16le is the one option that gives it back unchanged: md5 of the
+        # decoded stream equals md5 of what went in. Everything else differs, including a "lossless" x265,
+        # because gbrp12le has already dropped four bits before the lossless part starts; ProRes and DNxHR
+        # differ for that reason plus the trip through YCbCr. RFC 9043 describes the format, and FFV1 in
+        # Matroska has been a Library of Congress Preferred Format for preservation since December 2023.
+        # The cost is size: 700939 bytes against 113879 for ProRes 4444 on the same random-noise clip, so this
+        # is an archival master rather than a review copy.
+        "ffv1": ["-c:v", "ffv1", "-level", "3", "-g", "1", "-pix_fmt", "gbrp16le"],
+        "dnxhr_hqx_mxf": ["-c:v", "dnxhd", "-profile:v", "dnxhr_hqx", "-pix_fmt", "yuv422p10le"],
+        "dnxhr_444_mxf": ["-c:v", "dnxhd", "-profile:v", "dnxhr_444", "-pix_fmt", "yuv444p10le"],
+        # 10-BIT IS THE HDR FLOOR, NOT A PREFERENCE. ITU-R BT.2100 defines HLG and PQ at 10 or 12 bits per
+        # sample and at nothing less. Writing bt2020 + arib-std-b67 tags onto an 8-bit stream produces a file
+        # that states an HDR standard it cannot hold, which is worse than an untagged one: a player believes
+        # it. Measured before this existed: hevc and h264 both came out yuv420p while carrying honest HLG
+        # tags. The SDR entries stay 8-bit, because High/Main 8-bit is the compatible thing to hand someone
+        # for review and there is nothing to misstate.
+        "h264": ["-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p10le" if hdr else "yuv420p"],
+        "hevc": ["-c:v", "libx265", "-crf", "18", "-pix_fmt", "yuv420p10le" if hdr else "yuv420p"],
+        # THE ONLY GENUINELY 12-BIT PATH IN THIS BUILD. Not a review format: 4:4:4 with no chroma subsampling
+        # and 12 bits per sample, which is what BT.2100 recommends for mastering and what no ProRes or DNxHR
+        # encoder here can reach. Measured, not assumed: libx265 advertises yuv444p12le and writes it, and
+        # ffprobe reads the result back as 12-bit Rext 4:4:4.
+        "hevc_444_12": ["-c:v", "libx265", "-crf", "12", "-pix_fmt", "yuv444p12le",
+                        "-x265-params", "profile=main444-12"],
+    }.get(codec, ["-c:v", "libx264", "-crf", "16", "-pix_fmt", "yuv420p10le" if hdr else "yuv420p"])
 
 
 def save_video(arr01, out_path, codec, fps, output_colorspace=None, audio_pcm=None,
@@ -2841,7 +2940,17 @@ def save_video(arr01, out_path, codec, fps, output_colorspace=None, audio_pcm=No
     the full set has to live beside the movie or it does not survive at all."""
     _require_ffmpeg()
     n, h, w, _ = arr01.shape
-    enc = _video_encoder_args(codec)
+    # A FILE MUST NOT STATE A STANDARD IT CANNOT HOLD. When the delivery space is BT.2100 (HLG or PQ) the
+    # tags below say bt2020 + arib-std-b67 / smpte2084, and BT.2100 defines those at 10 or 12 bits per sample.
+    # h264 and hevc move up to 10-bit here; the DNxHR profiles that are 8-bit by definition cannot, so this
+    # refuses in words and names the codec that can, rather than writing an HDR file that is not one.
+    hdr = _is_hdr_colorspace(output_colorspace)
+    if hdr and codec in _HDR_8BIT_PROFILES:
+        raise RuntimeError(
+            f"{codec} is 8-bit by profile and cannot carry {output_colorspace}: ITU-R BT.2100 defines HLG and "
+            f"PQ at 10 or 12 bits per sample. Use {_HDR_8BIT_PROFILES[codec]}, or pick an SDR output "
+            f"colorspace such as 'Rec.1886 Rec.709 - Display'.")
+    enc = _video_encoder_args(codec, hdr=hdr)
     muxer = _MXF_MUXER.get(codec)
     cmd = [_FFMPEG, "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb48le",
            "-s", f"{w}x{h}", "-r", _fps_arg(fps), "-i", "-"]
@@ -3083,7 +3192,7 @@ class OCIORead:
         return (rgb, mask, out_fps, txt, _make_video(rgb, out_fps), meta_txt)   # VIDEO from the SAME color-managed batch + fps
 
 
-_STILL_EXT = {"exr": "exr", "tiff": "tif", "png": "png", "jpeg": "jpg"}
+_STILL_EXT = {"exr": "exr", "tiff": "tif", "png": "png", "jpeg": "jpg", "dpx": "dpx"}
 
 
 def _cs_tag(name):
@@ -3227,13 +3336,17 @@ class OCIOWrite:
             "from_colorspace": _cs_combo(WORKING),
             "output_colorspace": _cs_combo("ACEScg"),
             "container": (["still image", "sequence", "video"], {"default": "sequence"}),
-            "still_format": (["exr", "tiff", "png", "jpeg"], {"default": "exr",
-                             "tooltip": "Used for still image / sequence (hidden for video)."}),
+            "still_format": (["exr", "tiff", "png", "jpeg", "dpx"], {"default": "exr",
+                             "tooltip": "Used for still image / sequence (hidden for video). EXR keeps float, so negatives and values above 1.0 survive. DPX is the film-pipeline interchange format, integer, 10 or 16 bit. TIFF is float only at 32f. PNG and JPEG are integer and clip both tails; JPEG is always 4:2:0."}),
             # APPENDED, never inserted: a combo's saved value is matched by STRING, so adding entries at the END
             # leaves every existing saved graph resolving to exactly what it did before. The two MXF entries are
             # the same DNxHR HQ essence as dnxhr_hq with a different muxer, not a new codec.
             "video_codec": (["prores_4444", "prores_422hq", "prores_422", "dnxhr_hq", "h264", "hevc",
-                             "dnxhr_hq_mxf", "dnxhr_hq_mxf_opatom", "dnxhr_hqx", "dnxhr_444"],
+                             "dnxhr_hq_mxf", "dnxhr_hq_mxf_opatom", "dnxhr_hqx", "dnxhr_444",
+                             # APPENDED, never inserted: this list is positional in a saved workflow, so a new
+                             # entry in the middle would silently re-point every graph that stored an index.
+                             "prores_4444_mxf", "prores_4444xq_mxf", "dnxhr_hqx_mxf", "dnxhr_444_mxf",
+                             "hevc_444_12", "prores_4444xq", "ffv1"],
                             {"default": "prores_4444",
                              # SHORT ON PURPOSE. This tooltip was 855 characters and `profile`'s was 1181;
                              # measured in the live canvas, where a tooltip is a hover at the moment of a
@@ -3242,9 +3355,9 @@ class OCIOWrite:
                              # actually writes", which is where someone comparing options will actually look.
                              # The node draws the chosen codec's depth in its footer, so the number an artist
                              # needs is on screen without hovering at all.
-                             "tooltip": "Video only. The node's footer states the depth once you pick: 12-bit only from ProRes 4444, 10-bit from ProRes 422 HQ / 422 and DNxHR HQX / 444, 8-bit from the rest. Measured table: README.md."}),
-            "bit_depth": (["16f", "32f", "16", "8"], {"default": "16f",
-                          "tooltip": "Per format: JPEG 8; PNG 8/16; TIFF 8/16/32f; EXR 16f/32f. The list narrows to the chosen format."}),
+                             "tooltip": "Video only. The node's footer states the depth once you pick. FFV1 is the only one that returns this pack's input unchanged (16-bit, .mkv, archival). HEVC 4:4:4 12-bit is the only genuine 12-bit encode - ffmpeg's ProRes and DNxHR encoders top out at 10 whatever the format is nominally worth. 8-bit: DNxHR HQ, h264, hevc, and those two move to 10-bit on an HDR output. Measured table: README.md."}),
+            "bit_depth": (["16f", "32f", "16", "8", "10"], {"default": "16f",
+                          "tooltip": "Per format: JPEG 8; PNG 8/16; TIFF 8/16/32f; EXR 16f/32f; DPX 10/16. The list narrows to the chosen format."}),
             # DEFAULT DWAA since 2026-08-13, where it used to be ZIP. DWAA is LOSSY and ZIP is not, so
             # this is a deliberate trade of exactness for size on the format people reach for most - it is the
             # house default across VFX for anything that is not an archival master. A graph saved before this

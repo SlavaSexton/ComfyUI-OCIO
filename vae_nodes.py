@@ -814,11 +814,23 @@ class OCIOVAEDecode:
                 # other six are AUDIO VAEs (689, 851, 881, 926, 952, 1003), which take the same VAE socket and
                 # land here too - and telling someone their audio "emits 0..1 natively" is simply false. What is
                 # true of every one of them is that the transform is a pass-through.
+                #
+                # AND "NOTHING WAS CLAMPING IT" IS A SEPARATE CLAIM, which this used to make and could not
+                # support (corrected 2026-08-14). A pass-through wrapper only proves the WRAPPER is not
+                # clamping. A decoder is free to clamp inside itself and hand the wrapper values that are
+                # already in range, which is exactly why some of these eleven are identities in the first
+                # place. MiniMax H3 is the clear case: comfy/ldm/minimax/vae.py:398-401 ends every decode
+                # path in .clamp_(0.0, 1.0), so sd.py:976 has nothing left to do. Telling that user "nothing
+                # was clamping your output" is false, and it sends them looking for highlights that were
+                # destroyed two layers down where this node cannot reach.
                 logging.info("OCIO VAE Decode: this VAE's process_output is a pass-through (the identity - e.g. "
-                             "TAEHV at comfy/sd.py:894, and every audio VAE). Nothing was clamping its output, "
-                             "so nothing was changed and the 'clamp' switch has no effect here.")
-                notes.append("this VAE's process_output is a pass-through (the identity); nothing was clamping "
-                             "its output, so 'clamp' had no effect")
+                             "TAEHV at comfy/sd.py:894, and every audio VAE), so there was no clamp here for "
+                             "this node to remove and the 'clamp' switch has no effect. That is a statement "
+                             "about the wrapper only: some decoders clamp inside themselves before this point "
+                             "(MiniMax H3 does), and nothing downstream can recover what they discarded.")
+                notes.append("this VAE's process_output is a pass-through (the identity), so this node found no "
+                             "clamp to remove and 'clamp' had no effect - note that some decoders clamp "
+                             "internally before this point, so unclamped output is not guaranteed")
             else:
                 logging.warning("OCIO VAE Decode: this VAE's process_output is not a shape this node "
                                 "recognises, so it was left untouched and the 'clamp' switch had no effect. "

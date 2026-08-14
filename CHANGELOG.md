@@ -1,5 +1,32 @@
 # Changelog
 
+## "Nothing was clamping its output" was a claim the node could not make
+
+When `OCIO VAE Decode` meets a VAE whose `process_output` is the identity, it reported that nothing had been
+clamping the output and that the `clamp` switch therefore made no difference. The second half is true. The
+first half is a statement about the *decoder*, and a pass-through wrapper is no evidence for it.
+
+MiniMax H3 is the case that breaks it. `comfy/ldm/minimax/vae.py:398-401` ends every decode in
+`.clamp_(0.0, 1.0)`, which is precisely why `comfy/sd.py:976` can install the identity: the pixels arrive
+already in range. Checked against all three entry points, since one clamped path proves nothing about the
+others: `decode()` either finalises a single frame itself or hands off to `decode_temporal()`, which
+finalises each chunk, and `decode_tiled()` calls `decode()`. Nothing reaches a caller unclamped.
+
+So on that model the note told the artist the opposite of the truth, and sent them looking for highlights
+that had been discarded two layers below anything this pack can reach. It now says what it can support: the
+wrapper was a pass-through, this node found no clamp to remove, and some decoders clamp internally before
+this point, so unclamped output is not guaranteed. `docs/NODES_VAE.md` carries the same correction, including
+one sentence there that drew the wrong conclusion outright, that the eleven identity VAEs are models "where
+neither path clamps".
+
+Two assertions in `tools/test_vae_decode_tiling.py` hold the wording now: the false half must be absent and
+the caveat must be present. Verified by restoring the old sentence and watching both go red, since a check
+written after the fix proves nothing until it has failed once.
+
+The distinction is worth carrying into how the pack is described. Removing the clamp is what these nodes do
+on LTX-2.5, where it lives in the wrapper. On a model that clamps inside its own decoder, what they offer is
+the rest of it: float32 with no 8-bit quantisation and no compressor in the way, and colour management.
+
 ## The install advice in our own error messages was wrong about OpenCV 5
 
 Measuring the two OpenCV majors side by side settled a question this pack had been answering from memory, and

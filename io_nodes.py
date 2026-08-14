@@ -2078,12 +2078,17 @@ def _sidecar_payload(out_path, attrs, timecode, source_meta, fps, codec, kind="v
         # from a ComfyUI PNG, whose text chunks are `prompt` and `workflow`.
         src_withheld = []
         out["source"]["attrs"] = {}
-        for k, v in (source_meta.get("attrs") or {}).items():
+        # Read through a mapping check rather than `or {}`. `or {}` only rescues falsy attrs; a list or a string
+        # passes it and then raises AttributeError on .items(), which is a second door onto the same crash the
+        # caller closes. This function is reachable from more than one writer, so it does not lean on the caller.
+        _src_a = source_meta.get("attrs")
+        _src_a = _src_a if isinstance(_src_a, dict) else {}
+        for k, v in _src_a.items():
             if _meta_is_private(k, v):
                 src_withheld.append(str(k))
             else:
                 out["source"]["attrs"][str(k)] = _meta_scalar(v)
-        drop = _forbidden_meta_keys(source_meta.get("attrs") or {})
+        drop = _forbidden_meta_keys(_src_a)
         if drop:
             out["source"]["dropped_pixel_state_claims"] = drop
             for k in drop:
@@ -2569,6 +2574,35 @@ def _save_still(path, rgb, fmt, bit_depth, alpha=None, colorspace=None, compress
 _SRGB_TRC = "iec61966-2-1"
 
 
+def _fps_arg(fps):
+    """ffmpeg's `-r` value as a string, with the NTSC family written as its exact rational.
+
+    `str(23.976)` makes ffmpeg parse the decimal literally and land on 2997/125, which is NOT 24000/1001. MOV and
+    MP4 accept the odd rational and carry it (measured: r_frame_rate=2997/125 in the written file), but the MXF
+    muxer is strict and refuses outright: `Unsupported frame rate 2997/125`. That took out both MXF codecs at
+    23.976 and 29.97 - the pack's own _SEQ_FPS_DEFAULT and two of its own _DROP_FRAME_RATES - while the same
+    call with `-r 24000/1001` exits 0. Verified against raw ffmpeg outside this pack, so it is the argument
+    form, not our encoder options.
+
+    The test is a round trip rather than a lookup table, so 47.952 and 119.88 are covered without listing them:
+    take the nearest integer N to fps*1001/1000 and accept N*1000/1001 only if it lands within a RELATIVE 1e-5
+    of fps. The tolerance is relative because the absolute gap grows with the rate - a 3-decimal spelling sits
+    2.4e-5 away at 23.976 but 1.2e-4 away at 119.88, so an absolute 1e-4 window silently dropped the high frame
+    rates while appearing to cover them. Integer and non-NTSC rates (24, 25, 30, 48, 50, 60) fall through
+    unchanged: 24 is a relative 1e-3 from 24000/1001, a hundred times outside the window, so a true 24 can never
+    be rewritten as 23.976."""
+    try:
+        f = float(fps)
+    except (TypeError, ValueError):
+        return str(fps)
+    if f > 0:
+        n = int(round(f * 1001.0 / 1000.0))
+        exact = (n * 1000.0) / 1001.0
+        if n > 0 and abs(f - exact) < exact * 1e-5:
+            return f"{n * 1000}/1001"
+    return str(fps)
+
+
 def _video_color_tags(output_colorspace):
     """Map the (already-converted-to) output colorspace to ffmpeg NCLC color tags, so the written file is
     tagged and does not gamma-shift across players (untagged files currently show color_primaries/transfer =
@@ -2582,7 +2616,17 @@ def _video_color_tags(output_colorspace):
     what actually lands all three tags for every codec tested - confirmed by a real encode+ffprobe per codec.
     So this returns BOTH the (still-needed, still-correct) trailing output options AND the setparams -vf; the
     caller must place the -vf before the output path same as any other output option."""
-    cs = (output_colorspace or "").lower()
+    # raw_data hands us None, and None means "these pixels were not converted to any delivery space". There is
+    # nothing true to say about them, so we say nothing: no primaries, no transfer, no matrix, no colr atom.
+    # The still path already works this way (EXR and TIFF under raw_data write neither chromaticities nor
+    # colorInteropID), and video was the odd one out - it fell through to the sRGB default below and stamped
+    # bt709 / iec61966-2-1 with full confidence onto pixels that may be ACEScg, log, or a data pass. An untagged
+    # file leaves a player guessing, which is honest; a confidently mistagged one makes it guess wrong and
+    # believe it is right. Empty string is NOT treated this way: that is a caller passing a colorspace it could
+    # not name, which still lands on the documented sRGB default.
+    if output_colorspace is None:
+        return []
+    cs = output_colorspace.lower()
     # HLG IS TESTED BEFORE PQ, and that order is the whole fix. The old predicate was `"2100" in cs or "pq" in cs`
     # -> PQ, and the config's HLG space is literally named "Rec.2100-HLG - Display", so it matched on "2100" and
     # every HLG master was written claiming smpte2084 (measured 2026-08-12: trc=smpte2084 on an HLG pick). A player
@@ -2796,7 +2840,7 @@ def save_video(arr01, out_path, codec, fps, output_colorspace=None, audio_pcm=No
     enc = _video_encoder_args(codec)
     muxer = _MXF_MUXER.get(codec)
     cmd = [_FFMPEG, "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb48le",
-           "-s", f"{w}x{h}", "-r", str(fps), "-i", "-"]
+           "-s", f"{w}x{h}", "-r", _fps_arg(fps), "-i", "-"]
     a_opts, a_path = [], None
     if audio_pcm is not None and muxer == "mxf_opatom":
         # OPAtom IS ONE ESSENCE PER FILE, by design (SMPTE ST 390): picture and sound are separate atoms that an
@@ -2825,7 +2869,7 @@ def save_video(arr01, out_path, codec, fps, output_colorspace=None, audio_pcm=No
     mux_opts = ["-f", muxer] if muxer else []
     try:
         cmd += [*enc, *_video_color_tags(output_colorspace), *_video_tag_args(out_path, meta_attrs), *tc_opts,
-                *a_opts, *mux_opts, "-r", str(fps), out_path]
+                *a_opts, *mux_opts, "-r", _fps_arg(fps), out_path]
         proc = subprocess.run(cmd, input=(np.clip(arr01, 0, 1) * 65535).astype("<u2").tobytes(), capture_output=True)
         if proc.returncode != 0:
             raise RuntimeError(f"ffmpeg encode failed: {proc.stderr.decode('utf-8', 'ignore')[:300]}")
@@ -3389,7 +3433,20 @@ class OCIOWrite:
             except Exception:
                 src_meta = {}
                 meta_note = "metadata ignored (not JSON)"
-            src_attrs = dict((src_meta.get("attrs") or {}) if isinstance(src_meta, dict) else {})
+            # `attrs` IS CHECKED FOR BEING A MAPPING, not just the wrapper around it. The isinstance here used to
+            # guard only `src_meta`, so valid JSON whose attrs was a list, a string or a number walked into
+            # `dict()` and killed the render with a bare TypeError / ValueError. This socket is forceInput and
+            # documented to take a wire from ANY source, and a JS-side `Object.entries()` serialisation produces
+            # exactly the list-of-pairs shape that survives this line only to die later in _sidecar_payload. The
+            # pack's rule is that metadata never stops a render: a plate description we cannot read is dropped
+            # with a note and the pixels still get written.
+            _raw_attrs = src_meta.get("attrs") if isinstance(src_meta, dict) else None
+            if _raw_attrs is not None and not isinstance(_raw_attrs, dict):
+                meta_note = "source attrs ignored (not an object)"
+                _raw_attrs = None
+                src_meta = dict(src_meta)
+                src_meta["attrs"] = {}      # every later reader of src_meta sees the same sanitised shape
+            src_attrs = dict(_raw_attrs or {})
             dropped_keys = _forbidden_meta_keys(src_attrs)
             for k in dropped_keys:
                 src_attrs.pop(k, None)
@@ -3439,7 +3496,21 @@ class OCIOWrite:
             except Exception:
                 return None
         if container == "still image":
-            idx = min(max(0, first_frame - base), n - 1)                   # frame number -> batch index
+            # THE CLAMP WAS REMOVED, and it was not a rounding nicety. `min(max(0, first_frame - base), n - 1)`
+            # answered every out-of-range request with the nearest frame it had: asking for frame 999 of a
+            # 3-frame batch wrote `name.0999.exr` containing frame 3, reported success, and said nothing about
+            # the substitution - a file whose name is a claim about which frame it is, and the claim was false.
+            # On an empty batch the same expression underflowed to -1 and died on `arr[-1]` with a bare
+            # IndexError. The sequence branch below already refuses an empty range in words, and OCIO Read
+            # exposes edge_mode for callers who genuinely want a hold or a loop, so silence was never the
+            # house style here; this branch had just never been told.
+            if n == 0:
+                raise RuntimeError("nothing to write (input has 0 frames)")
+            idx = first_frame - base
+            if not 0 <= idx < n:
+                raise RuntimeError(
+                    f"frame {first_frame} is not in the input (frames {base}-{base + n - 1}, {n} frame(s)). "
+                    f"Set first_frame inside that range, or use OCIO Read's edge_mode if you want a hold.")
             # a still grabbed from a sequence / video (n>1) stamps its SOURCE frame number in the name
             # (name_cs.0039.png, not name_cs.png); a genuine single image (n==1) keeps the plain name.
             saved = _wp(1, still_frame=(first_frame if n > 1 else None))[0]

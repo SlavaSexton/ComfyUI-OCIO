@@ -584,6 +584,17 @@ CLI: their pipeline rotates the source primaries to AP1 *before* compressing, so
 codes already in ACEScg primaries** and only the transfer has to be undone. Feed 2.5 material through the 2.3
 preset and log gets treated as linear: the frame comes out flat and grey.
 
+**This is their choice, not ours, and it is written down.** Lightricks' own
+[HDR documentation](https://github.com/Lightricks/LTX-2/blob/main/packages/ltx-pipelines/docs/hdr.md) defines
+the flag as `--hdr {SRGB_LINEAR,ACESCG,ACESCCT}` and states what each value does on load: `SRGB_LINEAR` and
+`ACESCG` are both **compressed to ACEScct for the VAE**, while `ACESCCT` means the codes are already ACEScct and
+pass through with no load-time transfer. ACEScct is the space the VAE actually speaks; the other two are
+conveniences that get converted into it. The same page records that their decode runs in **float32** for HDR
+while SDR stays bf16, and that it writes half-float EXR frames plus a BT.2020/HLG master, which is why this
+pack's `LTX 2.5 HDR (ACEScct)` profile forces EXR 16f. ACEScct itself is a published standard, ACES log with a
+toe, black at `0.0729`, defined in SMPTE S-2016-001 - so both ends of the chain are specified by someone other
+than us.
+
 <div align="center">
 
 <img src="docs/assets/ltx25_pipeline.svg" width="880" alt="The LTX-2.5 ACEScct pipeline in three columns. INPUT: OCIO Read of a folder of EXR frames in ACEScg scene-linear, into OCIO LogConvert set to Linear to Log with the ACEScct curve, giving ACEScct codes in 0 to 1, into OCIO VAE Encode, which runs at float32 and reports any value landing outside the range the VAE was trained on. MODEL: LTX-2.5, a 22B transformer with a 128-channel video VAE trained alongside it, and a separate audio VAE producing the synchronised track, which bypasses colour entirely. OUTPUT: OCIO VAE Decode in float32 with no clamp, giving ACEScct codes back, into OCIO LogConvert set to Log to Linear, giving scene-linear HDR, which feeds two writes: an EXR 16f or 32f master with compression set to zip for a lossless master, and a ProRes 4444 12-bit review movie carrying the audio track.">

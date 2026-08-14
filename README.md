@@ -539,6 +539,10 @@ pack's own reader, because OpenCV returns nothing for a real 10-bit plate and Pi
 
 ### Against Netflix's archival-master specification
 
+**This is a statement about file formats, and only about file formats.** A delivery conforms to that spec; a
+node cannot. What follows is which of the formats it names this pack can produce, and it is deliberately not a
+claim of compliance.
+
 Their [Non-Graded Archival Master spec](https://partnerhelp.netflixstudios.com/hc/en-us/articles/21669570043283-Non-Graded-Archival-Master-NAM-Specifications)
 names the primary formats by transfer function, and this pack writes both:
 
@@ -546,8 +550,23 @@ names the primary formats by transfer function, and this pack writes both:
 | --- | --- |
 | log: **16-bit DPX** (10-bit only if half the capture was 10-bit or lower) | `dpx` at `bit_depth 16`, and `10` |
 | linear: **16-bit half-float EXR**, uncompressed, ZIP or PIZ | `exr` at `16f` with `none`, `zip` or `piz` |
+| ACES: **Linear / AP0**, SMPTE ST 2065-1 | `ACES2065-1` as `output_colorspace` |
+| scene-referred, no output or display transform applied | what the pack does by default |
 | QuickTime exception, HDR: **12-bit** DNxHR 444 or ProRes 4444 XQ | **not reachable, see below** |
 | QuickTime exception, SDR: 10-bit DNxHR 444 or ProRes 4444 | `dnxhr_444`, `prores_4444` |
+
+**`ACEScct` is a working space, not a delivery.** The LTX-2.5 recipe further down uses it because that is what
+the model's VAE speaks, and the same spec says in as many words that **"ACEScct encoded files will not be
+accepted"**. Convert back to `ACES2065-1` or to scene-linear before writing anything intended as a master. The
+recipe does exactly that, with `OCIO LogConvert` set to `Log to Linear`; it is worth naming here because the
+two sections read in isolation could suggest otherwise.
+
+**Everything else that spec requires is outside any node, and it is most of it.** Resolution no lower than
+3840x2160 with the full active picture and no cropping or matting; continuous frame numbering within each
+asset; textless inserts delivered cut-to-cut and numbered to match their texted counterparts; the folder
+structure and file-naming convention from their separate document; and the content itself being the fully
+conformed, locked picture with final VFX. This pack can hand you a file in the right format. The rest is
+delivery discipline, and no software supplies it.
 
 **The one line that is not covered, stated plainly rather than papered over.** ffmpeg cannot write 12-bit
 ProRes or 12-bit DNxHR at all. All three of its ProRes encoders advertise exactly

@@ -1,5 +1,34 @@
 # Changelog
 
+## The install advice in our own error messages was wrong about OpenCV 5
+
+Measuring the two OpenCV majors side by side settled a question this pack had been answering from memory, and
+answering incorrectly. `cv2.getBuildInformation()` reports `OpenEXR: build (ver 2.3.0)` on
+`opencv-python-headless 4.13.0.92` and `OpenEXR: NO` on `5.0.0.93`, where `IlmImf` has also left the
+third-party list. A write to a `.exr` path on 5.0.0.93 raises `could not find a writer for the specified
+extension` with `OPENCV_IO_ENABLE_OPENEXR=1` set before the import. The codec is not gated there; it is gone.
+
+That makes the original report in [#4](https://github.com/SlavaSexton/ComfyUI-OCIO/issues/4) by
+[@Sudhzpatil](https://github.com/Sudhzpatil) right on the point it was corrected on. Both failures are real
+and land on the same line: on OpenCV 4 the codec is present but locked off by an import order this pack does
+not control, and on OpenCV 5 there is nothing to unlock.
+
+Two messages told the artist otherwise. `OCIO Read` advised `pip install "OpenEXR>=3.2"` while the
+requirements had moved to `>=3.3`, so following it to the letter installed a version without the
+`OpenEXR.File` API this pack calls in four places, and landed back on the same failure. Both it and the EXR
+write error offered `OPENCV_IO_ENABLE_OPENEXR=1` as a general remedy, which does nothing on OpenCV 5. Both now
+say which major each remedy applies to.
+
+Nothing was checking either message, which is how the two versions drifted apart in the first place.
+`tools/test_install_advice_matches_deps.py` asserts that every `pip install "OpenEXR>=X"` in shipped code names
+the floor the requirements actually declare, and that `requirements.txt` and `pyproject.toml` agree with each
+other. It checks agreement, not wording, so the sentences stay free to change.
+
+The rest of what this pack calls from cv2 was re-run against 5.0.0.93 while the environment was up: the eight
+EXR compression constants, both EXR type constants, `INTER_AREA`, a bit-exact 16-bit PNG round trip and the
+preview encoder all pass. EXR is the only thing OpenCV 5 cannot do here, and it is the one thing that no longer
+goes through it.
+
 ## EXR compression goes back to zip, because the measurement said so
 
 `compression` defaulted to `dwaa` for one day. The argument was that lossy-and-small is the house default

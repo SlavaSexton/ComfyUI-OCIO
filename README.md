@@ -121,6 +121,20 @@ Things worth knowing before choosing:
   starts. It is described by RFC 9043, and FFV1 in Matroska has been a Library of Congress Preferred Format
   for preservation since December 2023. The cost is size: 700939 bytes against 113879 for ProRes 4444 on the
   same clip of random noise.
+
+<div align="center">
+
+<img src="docs/assets/ltx25_write_compare.png" width="880" alt="One LTX-2.5 generation, one latent, one frame, written to disk three ways. Panel 1, the shot: a dark room with sun outside a window, with a box marking the patch shown in the next three panels. Panel 2, our nodes, ProRes 4444 at 10-bit, brightened three stops: 3520 distinct brightness levels in the file, and a smooth if noisy gradient. Panel 3, the stock LTX workflow as shipped, 8-bit Save Video, same brightening: 220 levels, collapsed into flat blocks of solid colour. Panel 4, the same workflow set to 10-bit: 882 levels, better but visibly blocky from H.264 compression rather than from bit depth. Panels 5 and 6 map where each of their files differs from the float master, brighter meaning more visible, with the 8-bit map far brighter than the 10-bit one. Panel 7 is a bar chart of distinct brightness levels counted on the luma plane: source float master 2304, our nodes 3520, their workflow as shipped 220, their workflow at 10-bit 882. Panel 8 is a log-scale chart of how much of the picture a viewer could tell apart, above one just-noticeable difference: ours 0.0001 percent, theirs 8-bit 5.8098 percent, theirs 10-bit 0.0596 percent.">
+
+</div>
+
+  The figure above is the write path measured the same way, on one LTX-2.5 generation: **3520 distinct
+  brightness levels** through our nodes against **220** through the stock workflow as it ships and **882** with
+  its bit depth turned up. The last panel is the part that matters to an eye rather than a histogram, the share
+  of the picture that changed visibly above one just-noticeable difference: **0.0001% against 5.81%**. Three
+  things differ between those paths and only one of them is bit depth: chroma sampling (4:2:0 against 4:4:4)
+  and compression (lossy H.264 against ProRes) carry the rest, which is why the blockiness in panel 4 survives
+  at 10-bit.
 - **ProRes reads back as 12-bit and carries 10.** All three ProRes encoders in ffmpeg advertise exactly
   `yuv422p10le yuv444p10le yuva444p10le`; there is no 12-bit format for any of them. Asking for one prints
   `Incompatible pixel format 'yuv444p12le' for codec 'prores_ks', auto-selecting format 'yuv444p10le'` and

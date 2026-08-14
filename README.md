@@ -586,7 +586,7 @@ preset and log gets treated as linear: the frame comes out flat and grey.
 
 <div align="center">
 
-<img src="docs/assets/ltx25_pipeline.svg" width="880" alt="The LTX-2.5 ACEScct pipeline in three columns. INPUT: OCIO Read of a folder of EXR frames in ACEScg scene-linear, into OCIO LogConvert set to Linear to Log with the ACEScct curve, giving ACEScct codes in 0 to 1, then scaled to the VAE's own range. MODEL: LTX-2.5, a 22B transformer with a 128-channel video VAE trained alongside it, and a separate audio VAE producing the synchronised track, which bypasses colour entirely. OUTPUT: OCIO VAE Decode in float32 with no clamp, giving ACEScct codes back, into OCIO LogConvert set to Log to Linear, giving scene-linear HDR, which feeds two writes: an EXR 16f or 32f master with lossless zip compression, and a ProRes 4444 12-bit review movie carrying the audio track.">
+<img src="docs/assets/ltx25_pipeline.svg" width="880" alt="The LTX-2.5 ACEScct pipeline in three columns. INPUT: OCIO Read of a folder of EXR frames in ACEScg scene-linear, into OCIO LogConvert set to Linear to Log with the ACEScct curve, giving ACEScct codes in 0 to 1, into OCIO VAE Encode, which runs at float32 and reports any value landing outside the range the VAE was trained on. MODEL: LTX-2.5, a 22B transformer with a 128-channel video VAE trained alongside it, and a separate audio VAE producing the synchronised track, which bypasses colour entirely. OUTPUT: OCIO VAE Decode in float32 with no clamp, giving ACEScct codes back, into OCIO LogConvert set to Log to Linear, giving scene-linear HDR, which feeds two writes: an EXR 16f or 32f master with compression set to zip for a lossless master, and a ProRes 4444 12-bit review movie carrying the audio track.">
 
 </div>
 

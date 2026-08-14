@@ -1,6 +1,6 @@
 <svg viewBox="0 0 920 660" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
 <title id="title">A professional LTX-2.5 pipeline through the ComfyUI-OCIO nodes</title>
-<desc id="desc">An EXR sequence is read by OCIO Read, compressed to ACEScct and fed to LTX-2.5. The result is decoded in float32 without clamping, expanded back to scene-linear, and written by two OCIO Write nodes: an EXR master and a ProRes review file. Audio goes from the model straight into the second Write, bypassing the colour nodes.</desc>
+<desc id="desc">An EXR sequence is read by OCIO Read, compressed to ACEScct, and encoded to a latent by OCIO VAE Encode, which runs at float32 and reports any value outside the range the VAE was trained on. LTX-2.5 generates from that latent. The result is decoded by OCIO VAE Decode in float32 without clamping, expanded back to scene-linear, and written by two OCIO Write nodes: an EXR master and a ProRes review file. Audio goes from the model straight into the second Write, bypassing the colour nodes.</desc>
 <style>
 .box{fill:#f6f6f5;stroke:#d8d8d5;stroke-width:1.5}
 .ours{fill:#eff6ff;stroke:#3b82f6;stroke-width:2}
@@ -37,10 +37,10 @@
 
 <path class="wg" d="M470 74 L518 74" marker-end="url(#arb)"/>
 
-<rect class="box" x="520" y="38" width="200" height="72" rx="8"/>
-<text x="534" y="62" class="n">to VAE range</text>
-<text x="534" y="80" class="s">x*2-1, conditioning</text>
-<text x="534" y="97" class="tag">[-1, 1]</text>
+<rect class="box ours" x="520" y="38" width="200" height="72" rx="8"/>
+<text x="534" y="62" class="n">OCIO VAE Encode</text>
+<text x="534" y="80" class="s">float32, reports out-of-range</text>
+<text x="534" y="97" class="tag">x*2-1 into [-1, 1]</text>
 
 <path class="w" d="M620 110 L620 158" marker-end="url(#ar)"/>
 
@@ -74,7 +74,7 @@
 <rect class="box ours" x="180" y="430" width="300" height="86" rx="8"/>
 <text x="196" y="456" class="n">OCIO Write 1: master</text>
 <text x="196" y="476" class="s">sequence · exr · 16f or 32f</text>
-<text x="196" y="494" class="s">zip compression, lossless</text>
+<text x="196" y="494" class="s">compression set to zip, lossless</text>
 <text x="196" y="510" class="tag">name_acescg.0001.exr …</text>
 
 <rect class="box ours" x="516" y="430" width="300" height="86" rx="8"/>
@@ -86,5 +86,5 @@
 <rect x="20" y="556" width="880" height="86" rx="8" fill="#ececea"/>
 <text x="36" y="580" class="s">Blue boxes are the OCIO nodes; the dashed box is the Lightricks model. The amber line is audio: it goes from the model straight to the second Write.</text>
 <text x="36" y="600" class="s">Both Write nodes hang off the same scene-linear output. One writes the master, the other a review file with sound.</text>
-<text x="36" y="620" class="s">Nothing on this path passes through 8 bits. The stock route clamps the decode to 0..1 and encodes 8-bit 4:2:0 at the end.</text>
+<text x="36" y="620" class="s">Nothing here passes through 8 bits. The stock route clamps the decode to 0..1, encodes 8-bit 4:2:0, and never mentions out-of-range input.</text>
 </svg>

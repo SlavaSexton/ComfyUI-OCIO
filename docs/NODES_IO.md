@@ -407,9 +407,20 @@ on node creation and on every `container`/`still_format` change.
 | `auto_colorspace` | always hidden (legacy) | always hidden | always hidden |
 | `render_nonce` | always hidden (internal) | always hidden | always hidden |
 
-Where a timecode can land is unchanged, even though there is no longer a field for one: an EXR header
-attribute, and a video container's own timecode track. PNG, TIFF and JPEG have nowhere to put it, so the
-writer simply omits it there rather than promising a delivery detail the file cannot carry.
+Where a timecode lands is unchanged, even though there is no longer a field for one. Measured by writing one
+short sequence per format and reading each file back with a third-party reader rather than trusting the
+node's own report:
+
+| format | shot identity | timecode | how it is carried |
+|---|---|---|---|
+| **EXR** 16f / 32f | yes | yes | header attributes; the timecode is a typed `OpenEXR.TimeCode`, advancing per frame |
+| **TIFF** 8 / 16 / 32f | yes | yes | real TIFF tags plus an XMP packet |
+| **PNG** 8 / 16 | yes | yes | `iTXt` chunks, written ahead of the first `IDAT` |
+| **JPEG** 8 | **no** | **no** | only the colorspace, as a JFIF comment |
+| **ProRes / DNxHR / h264 / hevc / MXF** | reel where the container defines one | yes | a real `tmcd` timecode track, not a tag |
+
+JPEG is the one that carries nothing, so nothing is promised for it. Every format gets the sidecar `.json`
+regardless, which is where the full set always survives.
 
 **Drop-frame comes from the plate, not from the frame rate.** At 29.97 and 59.94 both counts are legal and
 both are in daily use, and the source says which it is: `;` before the frames is SMPTE's drop-frame marker,

@@ -28,6 +28,21 @@ MID_CS = "ACEScg"             # ACES working space
 DISP_CS = "sRGB - Display"    # the display target the reviewer's "->(display)" refers to; confirmed in config (query above)
 
 NYC = os.path.join(os.path.dirname(C.__file__), "..", "..", "example_workflows", "nyc_skyline.png")
+# ONE BIN PER CODE OF THE SOURCE, which is what 256 is here and why it is not an arbitrary round number.
+# The fixture is an 8-bit PNG: measured, it holds 256 / 252 / 244 distinct values in R / G / B, so 256 bins put
+# exactly one bin on each code the file can contain. Fewer would merge codes the source distinguishes; more
+# would open empty bins between them, and a difference landing in an empty bin reads as a difference in shape
+# when it is only a difference in resolution.
+#
+# The verdict does not rest on this number, which is the part worth stating. Accuracy in this suite is
+# `max_abs_pixel_diff` and PSNR, both computed per pixel with no binning at all; the four histogram figures are
+# a distribution cross-check beside them. Measured across bin counts on the same comparison, correlation,
+# chi-square, intersection and Bhattacharyya come out identical at 64, 128, 256, 512 and 1024, and only start
+# to move at 4096, where bins outnumber codes. The reading is stable across a factor of sixteen around the
+# value chosen.
+#
+# Raised by Sam Hodge as issue #2, asking whether there was a reason behind the number. There was; it was not
+# written down, which for a reader is the same as not having one.
 BINS = 256
 RNG = (0.0, 1.0)
 

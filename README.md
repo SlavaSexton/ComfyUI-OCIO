@@ -404,6 +404,38 @@ for an 8-bit preview and destructive for anything else: on an HDR decode the val
 are simply gone, and no float container recovers them afterwards because the range never reached the tensor. This
 node keeps them.
 
+**The magnitude, measured.** One LTX-2.5 generation, one latent, decoded twice with the decode path as the
+only variable. 2 703 360 samples per frame, read back off disk:
+
+| decode | range | below 0 | above 1 | distinct values | file |
+| --- | --- | --- | --- | --- | --- |
+| **OCIO VAE Decode**, float32, no clamp | −1.02126 … +1.08093 | **2 109 178** | 2 021 | **2 387 986** | 10.2 MB |
+| stock `VAEDecode` | 0.00000 … 1.00000 | 0 | 0 | 3 301 | 2.7 MB |
+
+**78.0% of the frame lay below zero**, and the clamp maps every one of those samples to exactly 0.0. That is
+a projection onto the boundary rather than a roll-off, and a projection is not invertible: the pre-image
+cannot be recovered afterwards, which is why no float container downstream restores it. The distinct-value
+counts say the same thing in the domain, a reduction of about 723x, and the file size says it a third time,
+because an entropy coder has materially less information left to encode.
+
+That comparison holds two variables at once. Separating them, with precision fixed at the VAE's own bf16:
+
+| decode | range | below 0 | above 1 |
+| --- | --- | --- | --- |
+| ours, `clamp` off | −0.01172 … +1.03906 | 16 | 1 695 |
+| ours, `clamp` on | 0.00000 … 1.00000 | 0 | 0 |
+| stock `VAEDecode` | 0.00000 … 1.00000 | 0 | 0 |
+
+With the clamp reinstated, our output is identical to the stock output. Holding dtype constant isolates the
+clamp as the cause, and the third row shows our path introduces no other divergence from the reference
+implementation; the remaining difference between the two tables is precision, which
+[docs/NODES_VAE.md](docs/NODES_VAE.md) quantifies separately. The `clamp` widget exists so this is
+falsifiable on your own material in one toggle rather than taken on trust.
+
+Replicated across content, a single frame being a sample of one: a city exterior returned
+−0.01953 … +1.04297 with 1 355 samples above white, an interior −0.00391 … +1.03906 with 601. The stock path
+returned exactly 0..1 on both.
+
 - **clamp** - off by default. On, it reproduces the stock node exactly, for comparison.
 - **precision** - `float32` (the default) or `float16`. The precision is always named: a colour pipeline should
   state the dtype it ran at rather than inherit whichever one the checkpoint's branch of `comfy/sd.py` happens to

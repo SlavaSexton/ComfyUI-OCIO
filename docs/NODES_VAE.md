@@ -29,6 +29,51 @@ The `add_(1).div_(2)` half is the VAE's own convention. These models are trained
 `.clamp_(0.0, 1.0)` on the end is a different kind of decision. It is a display decision, and it is
 irreversible.
 
+### The magnitude of that decision, measured
+
+The argument above is structural; this section is the measurement. One LTX-2.5 generation, one latent,
+decoded twice with the decode path as the only variable. Each frame is 2 703 360 samples, and both files
+were read back off disk rather than sampled in memory:
+
+| decode | range | samples below 0 | samples above 1 | distinct values | file |
+| --- | --- | --- | --- | --- | --- |
+| **OCIO VAE Decode**, float32, no clamp | −1.02126 … +1.08093 | **2 109 178** | 2 021 | **2 387 986** | 10.2 MB |
+| stock `VAEDecode` | 0.00000 … 1.00000 | 0 | 0 | 3 301 | 2.7 MB |
+
+**78.0% of the frame lay below zero**, and the clamp maps every one of those samples to exactly 0.0. The
+operation is not a soft roll-off or a compression of range; it is a projection onto the boundary, and a
+projection is not injective. Once applied, the pre-image cannot be recovered from the result, which is why
+no downstream float container restores it: the information is destroyed before the tensor is written, not
+after.
+
+The distinct-value counts state the same loss in the domain rather than the range. 3 301 against 2 387 986
+is a reduction of roughly 723x in the number of representable states actually present in the frame. File
+size follows from that, and is the same fact a third time: an entropy coder compresses the clamped frame to
+a quarter of the size because there is materially less information left in it to encode.
+
+That table conflates two independent variables, which is a weakness in it, so they are separated here. The
+same latent, three decodes, with precision held constant at the VAE's own bf16:
+
+| decode | range | samples below 0 | samples above 1 |
+| --- | --- | --- | --- |
+| ours, `clamp` off | −0.01172 … +1.03906 | 16 | 1 695 |
+| ours, `clamp` on | 0.00000 … 1.00000 | 0 | 0 |
+| stock `VAEDecode` | 0.00000 … 1.00000 | 0 | 0 |
+
+With the clamp reinstated our output is identical to the stock output. This is the controlled comparison:
+holding dtype fixed isolates the clamp as the sole cause of the difference in the first two rows, and the
+third row establishes that our path introduces no other divergence from the reference implementation. The
+residual difference between the two tables is therefore attributable to precision, `float32` against bf16,
+which section 3.2 quantifies separately.
+
+The `clamp` widget exists for exactly this reason. A claim of this kind should be falsifiable by the reader
+on their own material in a single toggle, rather than accepted on the authority of a table.
+
+Replication across scene content, since a single frame is a sample of one: a city exterior returned
+−0.01953 … +1.04297 with 1 355 samples above white, and an interior returned −0.00391 … +1.03906 with 601.
+The stock path returned exactly 0.00000 … 1.00000 on both, with zero samples outside the interval on either
+side. The magnitude of the out-of-range content is content-dependent, as expected; its presence is not.
+
 One correction to how this is usually stated, including in this pack's own README. The clamp is not in the
 body of the stock `VAEDecode` node. That node is nine lines (`nodes.py:313-338`) and all it does is call
 `vae.decode(latent)`. The clamp is applied inside, by the VAE object, at `comfy/sd.py:1215`:

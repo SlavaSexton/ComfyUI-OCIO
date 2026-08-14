@@ -601,6 +601,28 @@ than us.
 
 </div>
 
+**What this buys you is resolution inside `0..1`, not a wider range - and that is the point.** ACEScct codes
+land in `0..1` for anything a camera shoots, so the question is not whether the values fit, it is how
+many distinct values survive the trip. Measured on one frame of a real 12-bit ProRes 4444 camera master (a
+graded interior, linear `0.1116` to `0.4282`):
+
+| | distinct ACEScct code values in that frame |
+| --- | --- |
+| float32, the path this pack uses | **20 310** |
+| the same frame quantised to 10-bit | 114 |
+| the same frame quantised to 8-bit | **30** |
+
+Every pixel of it sits inside `0..1` - zero samples below, zero above - so nothing here depends on carrying
+out-of-range values. It depends on the step size. The frame occupies about 11% of the code range, so an 8-bit
+grid leaves it **thirty** steps to live on, and banding is decided before the model generates anything at all.
+
+For completeness, because "no clamps" appears throughout this README and could be read as a claim about the
+whole chain: Lightricks' own `ltx-core/hdr.py` does clamp on its side, `clamp(min=0)` on the linear input and
+`clamp(0, 1)` on the codes, in both directions. On the frame above that clamp never fires. It only bites on
+values brighter than linear ~223, which is where an ACEScct code passes 1.0, and on negatives out of a gamut
+conversion. `OCIO VAE Encode` reports those rather than hiding them, and its `out_of_range` widget can match
+their behaviour exactly if you want the input the model was trained on.
+
 **Two ways to undo the curve, and they are equivalent.** The diagram shows the explicit one, which is the clearer
 starting point: **OCIO LogConvert** with `operation = Log to Linear` and `curve = ACEScct` after the decode, and
 the mirror of it (`Linear to Log`, `ACEScct`) before the encode. The short one is **OCIO Write**'s

@@ -284,9 +284,13 @@ Color-manage an IMAGE batch and **write it to disk** (Nuke: *Write*).
 - **output_colorspace** - the colorspace to encode into. The format picks the right default (EXR -> ACEScg,
   PNG / TIFF / JPEG -> sRGB). Written into the file metadata where the format allows it.
 - **container** - `still image` (one frame), `sequence` (numbered frames), or `video`.
-- **still_format** - `exr` / `tiff` / `png` / `jpeg` (used for still / sequence).
-- **video_codec** - `prores_4444` / `prores_422hq` / `prores_422` / `dnxhr_hq` / `h264` / `hevc` (used for video).
-- **bit_depth** - narrows to the format: JPEG 8; PNG 8 / 16; TIFF 8 / 16 / 32f; EXR 16f / 32f.
+- **still_format** - `exr` / `dpx` / `tiff` / `png` / `jpeg` (used for still / sequence).
+- **video_codec** - seventeen of them (used for video): ProRes `prores_4444` / `prores_4444xq` /
+  `prores_422hq` / `prores_422`, DNxHR `dnxhr_444` / `dnxhr_hqx` / `dnxhr_hq`, the MXF wrappings of both
+  (`prores_4444_mxf`, `prores_4444xq_mxf`, `dnxhr_444_mxf`, `dnxhr_hqx_mxf`, `dnxhr_hq_mxf`,
+  `dnxhr_hq_mxf_opatom`), and `ffv1` / `hevc_444_12` / `h264` / `hevc`. The format table further down says
+  what each one is for and which pixel format it is handed.
+- **bit_depth** - narrows to the format: JPEG 8; PNG 8 / 16; TIFF 8 / 16 / 32f; EXR 16f / 32f; DPX 10 / 16.
 - **compression** (EXR only) - defaults to **DWAA**: lossy, and far smaller for a review or comp copy. Two
   things to know before leaving it there. DWA **quantises float32 to half before compressing**, so `32f` +
   DWAA is a half-precision file whose header still says `float` - the node says so in its report when you

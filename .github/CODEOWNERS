@@ -1,0 +1,8 @@
+# Every file needs an approving review from the repository owner before it can reach main.
+#
+# This exists so the "require review from Code Owners" rule has something to point at. Without this file that
+# rule matches nothing, and "one approval" would be satisfied by anyone with access - including collaborators
+# added later, and including a second account of the same person.
+#
+# Andrei Orehov has write access and opens pull requests; this decides who signs them off, not who may work.
+* @SlavaSexton

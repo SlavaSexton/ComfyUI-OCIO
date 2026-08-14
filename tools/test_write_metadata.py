@@ -532,7 +532,16 @@ def check_output_folder(io, tmp):
     assert n(r("$OUTPUT/a/b")) == n(os.path.join(tmp, "a", "b")), "a nested token path did not resolve"
     assert n(r("shot_010")) == n(os.path.join(tmp, "shot_010")), "a plain relative path changed behaviour"
     # An absolute path stays absolute: pointing a Write at a NAS is deliberate, not a mistake to be corrected.
-    for absolute in (os.path.join("D:" + os.sep, "shots", "out"), r"\\nas\vfx\out"):
+    # What counts as absolute is `os.path.isabs`, which answers per platform: a drive letter and a UNC share are
+    # absolute on Windows and plain relative names on Linux. Asking Linux about "D:/shots/out" therefore tests
+    # that the resolver failed to honour something nobody asked it to, which is how this fails in the container
+    # while passing on Windows. Same assertion either way, on paths the running platform calls absolute.
+    if os.name == "nt":
+        absolutes = (os.path.join("D:" + os.sep, "shots", "out"), r"\\nas\vfx\out")
+    else:
+        absolutes = (os.path.join(os.sep, "mnt", "nas", "vfx", "out"), os.path.join(os.sep, "shots", "out"))
+    for absolute in absolutes:
+        assert os.path.isabs(absolute), f"the test's own example {absolute} is not absolute on this platform"
         assert r(absolute) == absolute, f"absolute path {absolute} was rewritten to {r(absolute)}"
     # And the default the node ships with must not be an absolute path in the first place - it is stored in
     # widgets_values, and core SaveVideo / SaveImage embed the whole workflow JSON inside the files they write.

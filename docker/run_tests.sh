@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Unit + smoke test entrypoint for the `test` compose service.
 #   1. Run every standalone tools/test_*.py (exit non-zero on any failure).
-#   2. Boot ComfyUI headless and assert all 9 OCIO nodes register (proves the pack imports in ComfyUI).
+#   2. Boot ComfyUI headless and assert every OCIO node registers (proves the pack imports in ComfyUI).
 #   3. Optional: tools/accuracy regression suite when RUN_ACCURACY=1.
 set -uo pipefail
 
@@ -34,7 +34,7 @@ echo "==================== ComfyUI node-registration smoke ===================="
 python - <<'PY'
 import subprocess, sys, os
 sys.path.insert(0, os.path.join(os.environ.get("OCIO_PACK_DIR", "/opt/ComfyUI/custom_nodes/ComfyUI-OCIO"), "docker"))
-from comfyui_client import ComfyUIClient
+from comfyui_client import ComfyUIClient, OCIO_NODE_CLASSES
 comfy = os.environ.get("COMFYUI_DIR", "/opt/ComfyUI")
 log = open("/tmp/comfyui-smoke.log", "wb")
 proc = subprocess.Popen([sys.executable, "main.py", "--cpu", "--port", "8188", "--listen", "127.0.0.1"],
@@ -45,7 +45,7 @@ try:
     c.wait_until_ready(timeout=300)
     ok, missing = c.check_nodes()
     if ok:
-        print("  ok: all 9 OCIO nodes registered in ComfyUI")
+        print(f"  ok: all {len(OCIO_NODE_CLASSES)} OCIO nodes registered in ComfyUI")
     else:
         print(f"  FAILED: missing nodes {missing}")
         rc = 1

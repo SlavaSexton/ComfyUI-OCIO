@@ -783,14 +783,14 @@ through OCIO Write with the frame count intact.
 
 ## Example workflow
 
-`example_workflows/OCIO_Nodes.json` shows all eight nodes on one image. To open it:
+There is no shipped example graph at the moment. The one that used to sit here was written for an earlier node
+set and would have to be rebuilt around the eleven nodes and the VAE path, which is worth doing properly
+rather than shipping a graph that opens and misleads. The LTX-2.5 recipe above describes that chain node by
+node, with a diagram.
 
-1. Copy `example_workflows/nyc_skyline.png` and `example_workflows/warm_demo.cube` into your **ComfyUI/input**
-   folder.
-2. Load `OCIO_Nodes.json` in ComfyUI and press **Queue**.
-
-You get the source image run through each of the six color nodes (with a preview each), plus an OCIO Read ->
-OCIO Write pair.
+`example_workflows/nyc_skyline.png` stays, and not as a leftover: it is the source image the accuracy suite
+measures against, in `measure_ocio_parity.py`, `measure_histogram_compare.py` and `gen_fixtures.py`. Remove it
+and the published parity and histogram numbers stop being reproducible.
 
 ## Why this exists (and what's next)
 

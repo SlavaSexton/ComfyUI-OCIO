@@ -87,7 +87,20 @@ exactly what people say it is: by the time a tensor leaves the stock node, every
 0.0 is gone. But the distinction matters twice over. It is why this pack could not fix the problem by
 wrapping the node, and it is why the node has to ask the VAE what its transform is instead of assuming.
 Eleven other places in that same file install the identity instead of the line above, and on those there is
-no clamp to remove. See trap 2.
+no clamp for this node to remove. See trap 2.
+
+**An identity transform does not prove the values are free**, and that is worth stating plainly because the
+sentence above invites the opposite reading. It says only that the *wrapper* is not clamping. A model can
+clamp inside its own decoder, before the wrapper is ever reached, and MiniMax H3 does exactly that:
+`comfy/ldm/minimax/vae.py:398-401` ends every decode in `.clamp_(0.0, 1.0)`, which is why `sd.py:972` can
+set `process_output` to the identity at all - the pixels arrive already in range. Confirmed by following all
+three entry points: `decode()` either finalises a single frame itself or hands off to `decode_temporal()`,
+which finalises each chunk, and `decode_tiled()` just calls `decode()`. Nothing reaches a caller unclamped.
+
+So on H3 this node cannot give you a range above white, because there is no point in the chain where that
+range still exists. What it does give there is the rest of the argument on this page: float32 with no 8-bit
+quantisation and no compressor between the model and the file, and colour management on the way out. The
+distinction is worth knowing before you go looking for highlights that were never handed over.
 
 What "gone" means: the clamp writes over the tensor in place. There is no second copy, no header flag, no
 way to reconstruct the value that was there. Writing a 32-bit float EXR afterwards preserves a number that
@@ -588,8 +601,9 @@ bounds exist to prevent, and it is silent everywhere else.
 declined to do, which would otherwise appear only in the server log. Verified by running each path:
 
 ```
-  note: this VAE's process_output is a pass-through (the identity); nothing was clamping its output, so
-        'clamp' had no effect
+  note: this VAE's process_output is a pass-through (the identity), so this node found no clamp to remove
+        and 'clamp' had no effect - note that some decoders clamp internally before this point, so
+        unclamped output is not guaranteed
   note: this VAE's process_output is not a shape this node recognises, so it was left untouched and 'clamp'
         had no effect - the decode is exactly the stock one
   note: float32 declined: not listed in this VAE's working_dtypes ([torch.bfloat16]), so the decode stayed
@@ -854,11 +868,13 @@ was written on, `VAELoader`'s list contains both `ltx-2.5-video-vae-bf16.safeten
 no, the canvas will not stop you.
 
 What the node says about it: six of the eleven identity assignments in `sd.py` are audio VAEs (689, 851, 881,
-926, 952, 1003), so the probe lands on the pass-through row of the table above, and the report note reads
-"this VAE's process_output is a pass-through (the identity); nothing was clamping its output, so 'clamp' had
-no effect". The wording is deliberate: it does not say "emits 0..1", because telling somebody decoding audio
-that their data is in 0..1 would be false. What is true of all eleven is that
-the transform is a pass-through.
+926, 952, 1003), so the probe lands on the pass-through row of the table above, and the report note says the
+transform is a pass-through, that this node found no clamp to remove, and that some decoders clamp
+internally before this point. The wording is deliberate on both counts. It does not say "emits 0..1",
+because telling somebody decoding audio that their data is in 0..1 would be false. And it no longer says
+"nothing was clamping its output", because that is a claim about the decoder which a pass-through wrapper
+cannot support: MiniMax H3 clamps inside itself and then installs the identity, so the old wording was
+exactly backwards on that model. What is true of all eleven is only that the transform is a pass-through.
 
 What the node does **not** do is stop you or fix up the result. An audio decode does not produce an
 `[B, H, W, C]` image, and the node's shape helper only folds a 5-dimensional video tensor into ComfyUI's
@@ -917,7 +933,9 @@ based on which entry point the node called, not on what ComfyUI did internally a
   6.5 GB held. Do not assume a tile size fits your card because it fits somebody's.
 - **"clamp on is bit-identical to stock" was not re-measured.** It is the claim recorded in the file's
   docstring for a VAE using the default transform. It is also known to be false for the eleven identity
-  VAEs, where neither path clamps.
+  VAEs, where this node clamps on neither path. Whether the *decoder* clamped before either path was
+  reached is a separate question, answered per model: MiniMax H3 does, at
+  `comfy/ldm/minimax/vae.py:398-401`.
 - **The cause of the tiled-against-untiled divergence is unknown.** The size, growth and non-alignment to
   tile boundaries are measured. Why the error roughly doubles across 25 frames is not explained, and the
   obvious explanations were not confirmed. It is not temporal tiling, since the whole clip is one temporal

@@ -403,6 +403,15 @@ check("an identity VAE is reported as a pass-through, not as unrecognised",
 # untrue version in place, so the phrase is asserted absent as well as the new one present.
 check("and it no longer claims 0..1 for a transform that is merely a pass-through",
       "emits 0..1" not in rep, [l for l in rep.splitlines() if "note:" in l][:1])
+# Nor may it claim the DECODER did not clamp, which is a different statement from "the wrapper did not"
+# and one a pass-through cannot support (corrected 2026-08-14). MiniMax H3 clamps inside itself at
+# comfy/ldm/minimax/vae.py:398-401 and then installs the identity, so on that model the old wording told
+# the artist the opposite of the truth and sent them hunting for highlights nothing could return. The
+# replacement has to carry the caveat, not merely drop the false half, or the note reads as reassurance.
+check("and it does not claim the decoder left the values alone, which it cannot know",
+      "nothing was clamping" not in rep, [l for l in rep.splitlines() if "note:" in l][:1])
+check("and it warns that a decoder may have clamped before this node saw the tensor",
+      "clamp internally" in rep, [l for l in rep.splitlines() if "note:" in l][:1])
 
 vae = TiledVAE()
 vae.process_output = lambda image: image.mul_(3.0).sub_(7.0)   # nothing this node knows

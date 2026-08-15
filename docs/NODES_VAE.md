@@ -194,9 +194,38 @@ The report is slot 1, after the image, so adding it did not move an existing wir
 | Slot | Name | Type | Wire out |
 | --- | --- | --- | --- |
 | 0 | `latent` | `LATENT` | A sampler's `latent_image` input, an LTXV guide node, or `OCIO VAE Decode`'s `samples` for a round trip. |
+| 1 | `input report` | `STRING` | A `PreviewAny`, a note node, or nothing. Carries the out-of-range count and the crop, so the findings reach the canvas rather than only the server log. |
 
-The encode has no second output. Its findings go to the server log only, which is a real gap and is listed
-in section 7.
+### Where OCIO VAE Encode belongs, and the graphs where it cannot go
+
+The decode belongs in every graph this pack touches, because every generation ends in one. The encode is
+narrower, and it is worth saying plainly where it earns its place, because the answer is not "wherever the
+decode is".
+
+**It goes wherever a stock `VAEEncode` currently sits.** That is the whole rule. Concretely: video to
+video, image to image over a plate you shot, a latent upscale of your own material, inpainting, and any
+graph where footage rather than noise is what enters the sampler. There the chain runs
+`OCIO Read -> OCIO LogConvert -> OCIO VAE Encode -> sampler -> OCIO VAE Decode -> OCIO LogConvert ->
+OCIO Write` and never leaves the family.
+
+**It cannot replace a model's own image-to-video node, and that is about their shape, not ours.** LTX-2.5's
+`LTXVImgToVideoInplace` (`comfy_extras/nodes_lt.py:132`) calls `vae.encode`, but it also writes the result
+into an existing latent (`samples[:, :, :t.shape[2]] = t`) and builds the `noise_mask` that tells the
+sampler which frames to leave unnoised. Take that node out and image-to-video stops working; no stock node
+assembles that mask on its own. The same is true of any wrapper that folds an encode into a larger job.
+
+**In those graphs it still has a use, as a measurement beside the encode rather than in place of it.**
+Wire the same pixels the model's node receives into `pixels`, the same VAE into `vae`, and `input report`
+into a `PreviewAny`. Nothing downstream changes and the sampler still runs on the model's own latent, but
+you now get an answer to a question nobody else in the graph asks: did the values handed to the VAE leave
+the domain it was trained on. Two notes on doing it: the report has to be wired somewhere or the node
+never executes, since ComfyUI only evaluates a node whose output something needs; and the cost is one
+extra `vae.encode` per frame, which is negligible for a single still and is not for a long clip.
+
+That question is not academic when this pack is in the graph. `comfy/sd.py:501` maps input with
+`image * 2.0 - 1.0` and **no clamp**, so a pixel at 4.0 arrives at the VAE as 7.0, while the model was
+trained on `[-1, 1]`. Feeding ACEScct rather than display sRGB is exactly the situation where that can
+happen without anyone noticing, and the stock node says nothing at all.
 
 ---
 
@@ -967,11 +996,13 @@ based on which entry point the node called, not on what ComfyUI did internally a
    `comfy/sd.py` include float32 - it is there for third-party VAE classes, and the tests reach it with a
    stand-in.
 
-3. **The encode has no report output.** Everything it finds, the out-of-range count and the silent crop,
-   goes to the server log only. The node's own docstring says it "counts it and says so", and it does, in a
-   place an artist working in the canvas will not look. The decode solved this exact problem with a second
-   `STRING` output. Adding one to the encode would be additive and would not move an existing wire, since
-   the encode currently has one output.
+3. ~~**The encode has no report output.**~~ **Fixed, and this page said otherwise for longer than the
+   defect lasted.** The encode has carried a second `STRING` output, `input report`, since
+   `RETURN_NAMES = ("latent", "input report")`; two places on this page went on describing the state
+   before that, one of them telling readers the findings reach "the server log only". Corrected
+   2026-08-14. The lesson is the one this pack keeps relearning: a page that documents a gap has to be
+   re-read when the gap is closed, or it becomes the most convincing kind of wrong, a specific claim
+   about your own software.
 
 4. **The 24-frame temporal artefact is documented without its condition.** The `temporal_size` tooltip and
    the README both say the soft frame lands every 24 pixel frames at `temporal_size` 32. That is true at

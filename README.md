@@ -322,8 +322,12 @@ wired, no timecode written. What the file already answered for itself (chromatic
 counter, timecode) is always re-authored rather than copied, in whatever spelling it arrived under, so one
 file can never end up carrying two disagreeing timecodes.
 
-The node **previews the first written frame** in its output colorspace (a wrong colorspace pick looks visibly
-wrong) and reports **"wrote N frame(s)"**. The **▶ Render** button queues the graph.
+The node **previews what it wrote**, in its output colorspace, so a wrong colorspace pick looks visibly wrong
+rather than quietly wrong: a still shows that frame, a movie plays a browser-servable copy, and a sequence
+flips through **the written files themselves**, each rendered server-side through OCIO rather than re-encoded
+to 8-bit. One preview, never two. The sequence strip carries a refresh square for when the files on disk
+change under a preview already drawn. It reports **"wrote N frame(s)"**, and the **▶ Render** button queues
+the graph. Details in [docs/NODES_IO.md](docs/NODES_IO.md).
 
 Naming: still image -> `<name>.<ext>`; sequence -> `<name>.0086.<ext>, <name>.0087.<ext>, ...`; video ->
 `<name>.mov` (ProRes / DNxHR) or `<name>.mp4` (h264 / hevc).

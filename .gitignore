@@ -14,14 +14,21 @@ data/
 scratchpad/
 .agents/
 
-# Renders made while testing the example graphs. The .json workflows in example_workflows/ DO ship; what
-# comes out of running them does not - they are large, anyone who runs the graph regenerates them, and a
-# stray `git add -A` would otherwise sweep them into a public repository.
+# example_workflows/ is a WORKING directory. Only one file in it is published today, nyc_skyline.png, and
+# the graphs are still being built and tested against the nodes - they ship when their author says so, not
+# because a blanket `git add` swept them up. Everything below keeps the renders, references and sidecars that
+# accumulate while testing out of the repository.
 #
-# NOT *.png: example_workflows/nyc_skyline.png is a tracked input the example graphs load, and a blanket rule
-# there would read as "we do not ship pictures from this folder", which is false.
+# NOT *.png: nyc_skyline.png is the accuracy suite's source image (tools/accuracy reads it, ATTRIBUTION.md
+# credits it) and it does ship, so a blanket picture rule here would be wrong. Renders that are NOT inputs
+# get named one at a time instead.
 example_workflows/output/
-example_workflows/*.mp4
-example_workflows/*.mov
-example_workflows/*.exr
+example_workflows/**/*.mp4
+example_workflows/**/*.mov
+example_workflows/**/*.exr
 probe.mp4
+# A reference render brought in from Nuke to compare against, plus the sidecar our own writer drops beside a
+# sequence. Named as a folder rather than by extension: a *.json rule here would also catch the graphs being
+# worked on, and those are the author's to publish or not.
+example_workflows/exr from nuke/
+example_workflows/neon_cyborg_portrait.png

@@ -189,6 +189,50 @@ function crossingOf(enc, fromCs, outCs) {
 // Frontend only, and that is load-bearing. INPUT_TYPES is static and cannot see the current container, so a
 // backend list is impossible anyway; more importantly a backend filter would make ComfyUI reject the whole
 // prompt with value_not_in_list, killing saved workflows outright rather than warning about them.
+// ---- the written-sequence flipbook -----------------------------------------------------------------------
+//
+// A DOM widget holding one <img>, driven by a frame clock, each frame fetched from /ocio/thumb - which
+// renders it server-side through OCIO from the file that was just written. The Read node has done this since
+// July; this is the same idea on the other end of the graph.
+//
+// Deliberately simpler than Read's player in two ways. It prefetches nothing: a write has already finished,
+// so the frames are on a local disk and warm, where Read is often scrubbing a 4K plate it has never touched.
+// And it has no scrub bar, because there is nothing to choose - a write shows what it wrote, start to end.
+function writeThumbUrl(seq, frameNo) {
+    return "/ocio/thumb?" + new URLSearchParams({
+        src: seq.src, frame: String(frameNo),
+        in_cs: seq.cs,                 // what the FILE holds
+        out_cs: CS_SRGB,               // what a browser can show
+        raw: "0", full: "0",
+    }).toString();
+}
+
+function startWriteFlipbook(node) {
+    const seq = node._ocioSeq;
+    if (!seq || !(seq.last > seq.first)) return;      // a single frame is a still, not a clip
+    let w = (node.widgets || []).find(x => x.name === "__ocio_flip");
+    if (!w) {
+        const el = document.createElement("div");
+        el.style.cssText = "width:100%;display:flex;align-items:center;justify-content:center;min-height:80px";
+        const img = document.createElement("img");
+        img.style.cssText = "max-width:100%;max-height:220px;image-rendering:auto";
+        el.appendChild(img);
+        w = node.addDOMWidget("__ocio_flip", "div", el, { serialize: false });
+        w._img = img;
+    }
+    if (node._ocioFlipTimer) clearInterval(node._ocioFlipTimer);
+    let i = seq.first;
+    const show = () => {
+        w._img.src = writeThumbUrl(seq, i);
+        i = (i >= seq.last) ? seq.first : i + 1;
+    };
+    show();
+    // A frame clock rather than requestAnimationFrame: each frame is a server round trip, so pacing by wall
+    // time is both closer to the real rate and kinder to the machine than redrawing as fast as it can.
+    node._ocioFlipTimer = setInterval(show, Math.max(40, 1000 / seq.fps));
+    node.setDirtyCanvas(true, true);
+}
+
 async function applyCsNarrowing(node) {
     const w = W(node, "output_colorspace");
     if (!w || !w.options) return;
@@ -2903,6 +2947,30 @@ app.registerExtension({
                 const mt = message && message.meta;
                 this._ocioAudio = au ? (Array.isArray(au) ? au[0] : au) : null;
                 this._ocioMeta = mt ? (Array.isArray(mt) ? mt[0] : mt) : null;
+                // A WRITTEN SEQUENCE BECOMES A FLIPBOOK OF THE REAL FRAMES. The H.264 proxy beside this still
+                // ships and still plays; what it cannot do is show what was actually written. It is 8-bit, and
+                // this pack's whole argument is that it does not throw information away - so showing an artist
+                // a compressed copy of their 16-bit master is the one preview it should not settle for.
+                //
+                // Same machinery OCIO Read already uses: /ocio/thumb renders ONE frame server-side through
+                // OCIO and the browser flips through them. thumb_frame takes the written folder and a frame
+                // NUMBER directly, verified on a real write, so nothing new is needed on the server.
+                const sq = message && message.seq_src;
+                if (sq) {
+                    this._ocioSeq = {
+                        src: Array.isArray(sq) ? sq[0] : sq,
+                        first: parseInt((message.seq_first || [1])[0], 10),
+                        last: parseInt((message.seq_last || [1])[0], 10),
+                        fps: parseFloat((message.seq_fps || [24])[0]) || 24,
+                        // The file holds output_colorspace; the browser needs sRGB. Read at execute time
+                        // rather than at draw time, so a later widget edit cannot make the strip disagree
+                        // with the frames it is showing.
+                        cs: W(this, "output_colorspace")?.value || "",
+                    };
+                    startWriteFlipbook(this);
+                } else {
+                    this._ocioSeq = null;
+                }
                 if (c) {
                     this._ocioWrote = Array.isArray(c) ? c[0] : c; this.setDirtyCanvas(true, true);
                     // Vue frontends do not draw the canvas "wrote N" corner text; a toast carries the count there

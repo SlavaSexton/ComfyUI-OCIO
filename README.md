@@ -31,20 +31,24 @@ point - the number comes from the material, and nothing on the way out decides i
 is what a colour outside the working gamut looks like from inside it. Clamp the black and that colour is gone,
 along with the headroom a grade needs. Nothing here clamps it.
 
-**Nothing is ever forced through 8 bits.** The master goes out as 32-bit float EXR, or 12-bit ProRes 4444, or
-DPX in log, or a Rec.2100 PQ / HLG deliverable. Scene-linear, log, display-referred: the colorspace is
+**Nothing is ever forced through 8 bits.** The master goes out as 32-bit float EXR, or ProRes 4444 at 10-bit
+4:4:4, or DPX in log, or a Rec.2100 PQ / HLG deliverable. Scene-linear, log, display-referred: the colorspace is
 declared, converted through OpenColorIO, and written as it is.
 
 One LTX-2.5 generation, one latent, one frame, written three ways and counted:
 
 | | distinct brightness levels | picture a viewer could tell apart from the float master |
 | --- | --- | --- |
-| this pack, ProRes 4444 | **3520** | **0.0001%** |
+| the float master the model produced | 2304 | reference |
+| this pack, ProRes 4444 4:4:4 | 3520 | 0.0001% |
 | stock workflow at 10-bit | 882 | 0.0596% |
-| stock workflow as it ships | 220 | 5.8098% |
+| stock workflow as it ships | **220** | **5.8098%** |
 
-The float master itself carried 2304. This pack lands above it because 12-bit ProRes quantises a wider range
-more finely than the source's own container did - and either way, none of it was thrown away first.
+The number to sit with is the last row against the first: **the model made 2304 levels and the delivered file
+kept 220.** Three things separate those two rows, and bit depth is only one of them - the stock path also
+subsamples to 4:2:0 and compresses with H.264, where this one stays 4:4:4. That this pack counts above the
+master is a quantisation artefact of measuring a wider range, not extra picture; the point of the row is that
+nothing was discarded on the way.
 
 ---
 
@@ -804,14 +808,14 @@ The model is the same in both. What differs is what survives the trip out of it.
 
 **The model gives more than the stock path can carry.** That path puts the picture through 8 bits and clips it
 at `0..1`; here the decode runs in float32 with no clamp, and the result lands in a 32-bit float EXR and a
-12-bit ProRes 4444 without passing through 8 bits at all. Nothing in these frames was recovered afterwards -
+ProRes 4444 (10-bit 4:4:4) without passing through 8 bits at all. Nothing in these frames was recovered afterwards -
 it simply was never thrown away.
 
 ### The graph that does it
 
 <div align="center">
 
-<img src="docs/assets/ltx25_pipeline_v13.svg" width="880" alt="The pipeline as a diagram. OCIO Read loads the plate as sRGB - Display. OCIO ColorSpace takes it to Rec.1886 Rec.709 - Display, the space the model works in. LTX-2.5 generates, and its audio VAE produces a synchronised track that bypasses colour. OCIO VAE Decode returns float32 with no clamp. Two OCIO Write nodes hang off that decode: the master, a 32-bit float EXR sequence taken to ACEScg through the ACES 1.3 output transform, and the review movie, 12-bit ProRes 4444 carrying the audio.">
+<img src="docs/assets/ltx25_pipeline_v13.svg" width="880" alt="The pipeline as a diagram. OCIO Read loads the plate as sRGB - Display. OCIO ColorSpace takes it to Rec.1886 Rec.709 - Display, the space the model works in. LTX-2.5 generates, and its audio VAE produces a synchronised track that bypasses colour. OCIO VAE Decode returns float32 with no clamp. Two OCIO Write nodes hang off that decode: the master, a 32-bit float EXR sequence taken to ACEScg through the ACES 1.3 output transform, and the review movie, ProRes 4444 (10-bit 4:4:4) carrying the audio.">
 
 *The whole route in one picture. Both writes hang off the same decode: one is the master the comp opens, the
 other is what you send out.*
@@ -831,7 +835,7 @@ decode. From there one write makes the ProRes review, the other the ACEScg maste
 
 **What this buys you is resolution inside `0..1`, not a wider range - and that is the point.** ACEScct codes
 land in `0..1` for anything a camera shoots, so the question is not whether the values fit, it is how
-many distinct values survive the trip. Measured on one frame of a real 12-bit ProRes 4444 camera master (a
+many distinct values survive the trip. Measured on one frame of a real ProRes 4444 (10-bit 4:4:4) camera master (a
 graded interior, linear `0.1116` to `0.4282`):
 
 | | distinct ACEScct code values in that frame |

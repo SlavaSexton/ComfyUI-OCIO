@@ -441,7 +441,18 @@ writes - EXR, DPX, TIFF, PNG - is one a browser either cannot decode or cannot a
 to come back as a single still. It now flips through the written files, each rendered server-side through
 OCIO by the same `/ocio/thumb` route `OCIO Read`'s viewer uses. That matters for a pack whose argument is
 that it does not throw information away: an 8-bit re-encode is a poor way to show frames just written at 16
-or 32 bits. The H.264 proxy stays alongside as the fallback.
+or 32 bits.
+
+The H.264 proxy is the **fallback**, not a companion: it ships only when the frame range cannot be described,
+so exactly one preview appears on the node. Both at once meant two pictures of the same write disagreeing
+about colour, with nothing on the node to say which was the master.
+
+The `↻` in the strip's top-left re-reads the frames from disk, bypassing the browser's cache. Use it when
+something else has written into that folder since - another graph, a retake, a re-render - and you want to be
+sure you are looking at what is there now. The colorspace the strip renders through is the one that was on
+the node when the write ran, so a later widget edit cannot make the picture disagree with the files. If a
+frame cannot be read back, the strip is replaced by the folder path rather than freezing on the last good
+frame.
 
 No audio on the sequence path even when a track is wired, because a frame sequence carries none, and a
 preview that played sound the files do not have would misrepresent what was produced.

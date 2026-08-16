@@ -4038,19 +4038,16 @@ class OCIOWrite:
             # player. The video branch already solved this for its own case, and the same helper works here: a
             # small H.264 copy in the temp dir, played on the node. The master on disk is untouched.
             #
-            # No audio on this path even when a track is wired: a frame sequence carries none, and a preview that
-            # plays sound the written files do not have would misrepresent what was produced.
-            ui["images"] = self._video_preview(written, fps, saved)
-            ui["animated"] = (True,)
-            # AND THE FILES THEMSELVES, so the front end can flip through the real frames instead of an H.264
-            # proxy. OCIO Read already does this: /ocio/thumb renders ONE frame server-side through OCIO and
-            # the browser runs a Nuke-style flipbook over a blob cache, which is why a colorspace change there
-            # is exact rather than approximate. The proxy above stays as the fallback - it needs no round trip
-            # and works before any of this is wired - but a pack about colour should be able to show the
-            # frames it actually wrote, at their real depth, not a 8-bit copy of them.
+            # THE FRAMES THEMSELVES, so the front end flips through what was written instead of an H.264 copy of
+            # it. OCIO Read already does this: /ocio/thumb renders ONE frame server-side through OCIO and the
+            # browser runs a Nuke-style flipbook over it, which is why a colorspace change there is exact rather
+            # than approximate. A pack about colour should show the frames it actually wrote, at their real
+            # depth. thumb_frame reads them with _read_still, the same reader OCIO Read uses, so every still
+            # format this branch can write is one the flipbook can serve back.
             #
             # The path is the written sequence's own directory pattern, and the range is the frame numbers on
             # disk, so the viewer and the master cannot disagree about which frames exist.
+            flip = False
             try:
                 first_written = paths[0] if paths else None
                 if first_written:
@@ -4058,8 +4055,19 @@ class OCIOWrite:
                     ui["seq_first"] = [int(start_number)]
                     ui["seq_last"] = [int(start_number) + int(written.shape[0]) - 1]
                     ui["seq_fps"] = [float(fps) if fps and fps > 0 else 24.0]
+                    flip = True
             except Exception as e:                       # a preview must never take the write down with it
                 logging.warning("OCIO Write: could not describe the sequence for the flipbook: %s", e)
+            if not flip:
+                # Only when the flipbook could NOT be described. Shipping both put TWO previews on one node
+                # (2026-08-15) - the real frames above a darker 8-bit copy of them, disagreeing about colour,
+                # with nothing to say which was the master. The proxy stays as the fallback because it needs no
+                # round trip, but it is a fallback, not a companion.
+                #
+                # No audio on this path even when a track is wired: a frame sequence carries none, and a preview
+                # that plays sound the written files do not have would misrepresent what was produced.
+                ui["images"] = self._video_preview(written, fps, saved)
+                ui["animated"] = (True,)
         else:
             ui["images"] = self._preview(preview)
         return {"ui": ui, "result": (saved,)}

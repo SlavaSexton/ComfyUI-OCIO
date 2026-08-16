@@ -32,6 +32,12 @@ function setWSilent(node, name, value) {
     w.value = value;
     node.setDirtyCanvas(true, true);
 }
+// Overlay chrome for every persistent Refresh square in this file (OCIO Player's viewport, OCIO Write's
+// flipbook). MODULE level on purpose: these were local to the Player's setup function, and the flipbook's
+// button - defined hundreds of lines above it - read them at runtime and would have thrown ReferenceError.
+// node --check passes either way, because a name is only resolved when the code runs.
+const OV_BASE = "rgba(40,40,64,0.85)", OV_STALE = "rgba(150,95,20,0.92)";
+
 function extOf(name) { return (String(name || "").toLowerCase().split(".").pop() || ""); }
 function isExr(name) { const e = extOf(name); return e === "exr" || e === "hdr"; }
 function shorten(cs) { return String(cs || "").replace(" - Display", "").replace(" - Texture", ""); }
@@ -198,13 +204,18 @@ function crossingOf(enc, fromCs, outCs) {
 // Deliberately simpler than Read's player in two ways. It prefetches nothing: a write has already finished,
 // so the frames are on a local disk and warm, where Read is often scrubbing a 4K plate it has never touched.
 // And it has no scrub bar, because there is nothing to choose - a write shows what it wrote, start to end.
-function writeThumbUrl(seq, frameNo) {
-    return "/ocio/thumb?" + new URLSearchParams({
+function writeThumbUrl(seq, frameNo, bust) {
+    const q = {
         src: seq.src, frame: String(frameNo),
         in_cs: seq.cs,                 // what the FILE holds
         out_cs: CS_SRGB,               // what a browser can show
         raw: "0", full: "0",
-    }).toString();
+    };
+    // Refresh has to reach DISK, and every frame URL here is byte-identical from one pass to the next, so the
+    // browser would serve the whole strip from its own cache and the button would do nothing visible. The
+    // counter changes the URL without changing what is asked for.
+    if (bust) q._ = String(bust);
+    return "/ocio/thumb?" + new URLSearchParams(q).toString();
 }
 
 function startWriteFlipbook(node) {
@@ -213,17 +224,41 @@ function startWriteFlipbook(node) {
     let w = (node.widgets || []).find(x => x.name === "__ocio_flip");
     if (!w) {
         const el = document.createElement("div");
-        el.style.cssText = "width:100%;display:flex;align-items:center;justify-content:center;min-height:80px";
+        el.style.cssText = "position:relative;width:100%;display:flex;align-items:center;justify-content:center;min-height:80px";
         const img = document.createElement("img");
         img.style.cssText = "max-width:100%;max-height:220px;image-rendering:auto";
         el.appendChild(img);
+        // Same persistent top-left square as OCIO Player's viewport, and for the same reason: the frames on
+        // disk can change under a preview that is already drawn (a re-render into the same folder, a retake
+        // from another graph), and the only honest way back is to re-read them.
+        const rf = document.createElement("button");
+        rf.textContent = "↻";
+        rf.title = "Re-read the written frames from disk";
+        rf.style.cssText = "position:absolute;top:6px;left:6px;z-index:5;width:26px;height:26px;padding:0;border:0;border-radius:4px;background:" + OV_BASE + ";color:#cde;cursor:pointer;font:16px/1 sans-serif;box-shadow:0 1px 4px rgba(0,0,0,0.5);";
+        rf.onmouseenter = () => rf.style.background = "rgba(57,57,90,0.95)";
+        rf.onmouseleave = () => rf.style.background = OV_BASE;
+        rf.onclick = () => { node._ocioFlipBust = Date.now(); startWriteFlipbook(node); };
+        el.appendChild(rf);
+        // A note that replaces the strip when a frame will not load, rather than leaving the last good frame up
+        // and the timer running - a preview that silently freezes on a stale frame is worse than no preview.
+        const err = document.createElement("div");
+        err.style.cssText = "display:none;padding:10px;color:#e6a;font:12px sans-serif;text-align:center";
+        el.appendChild(err);
         w = node.addDOMWidget("__ocio_flip", "div", el, { serialize: false });
-        w._img = img;
+        w._img = img; w._err = err;
     }
     if (node._ocioFlipTimer) clearInterval(node._ocioFlipTimer);
+    w._err.style.display = "none"; w._img.style.display = "";
+    w._img.onerror = () => {
+        if (node._ocioFlipTimer) clearInterval(node._ocioFlipTimer);
+        node._ocioFlipTimer = null;
+        w._img.style.display = "none";
+        w._err.textContent = "cannot read the written frames back for preview - they are on disk at " + seq.src;
+        w._err.style.display = "";
+    };
     let i = seq.first;
     const show = () => {
-        w._img.src = writeThumbUrl(seq, i);
+        w._img.src = writeThumbUrl(seq, i, node._ocioFlipBust);
         i = (i >= seq.last) ? seq.first : i + 1;
     };
     show();
@@ -2327,7 +2362,6 @@ function ensurePlayer(node) {
     // so the viewport can be re-pulled anywhere - not just in video mode. Normally slate;
     // turns amber (._stale) when a node was inserted / rewired upstream so the cached frames are stale, until the next
     // render clears it. onClick: video upstream -> re-read the file; else Queue (OCIOPlayer is an OUTPUT_NODE viewer).
-    const OV_BASE = "rgba(40,40,64,0.85)", OV_STALE = "rgba(150,95,20,0.92)";
     const refreshOverlay = document.createElement("button");
     refreshOverlay.textContent = "↻";
     refreshOverlay.title = "Refresh this viewport";

@@ -13,3 +13,15 @@ data/
 # local working dirs - never publish (logs and artifacts can carry paths and names from other work)
 scratchpad/
 .agents/
+
+# Renders made while testing the example graphs. The .json workflows in example_workflows/ DO ship; what
+# comes out of running them does not - they are large, anyone who runs the graph regenerates them, and a
+# stray `git add -A` would otherwise sweep them into a public repository.
+#
+# NOT *.png: example_workflows/nyc_skyline.png is a tracked input the example graphs load, and a blanket rule
+# there would read as "we do not ship pictures from this folder", which is false.
+example_workflows/output/
+example_workflows/*.mp4
+example_workflows/*.mov
+example_workflows/*.exr
+probe.mp4

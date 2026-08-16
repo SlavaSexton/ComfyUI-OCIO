@@ -79,8 +79,23 @@ even when it fits: 912 s against 60 s over 121 frames at float32. Saved graphs a
 their own value.
 
 A `sequence` write showed one still frame, because every format that branch writes is one a browser cannot
-animate. It now shows a playing clip, and hands the front end the written frames' path and range so a future
-version can flip through the real files rather than an H.264 proxy.
+animate. It now plays back **the written frames themselves**: the node gets their path and range, and the
+front end flips through them the way OCIO Read already does, one server-rendered frame at a time through
+`/ocio/thumb`. `thumb_frame` reads them with `_read_still`, the same reader OCIO Read uses, so every format
+this branch can write is one the flipbook can serve back.
+
+There is a persistent `↻` in the strip's top-left corner, the same square OCIO Player carries, for when the
+frames on disk change under a preview that is already drawn - a re-render into the same folder, a retake from
+another graph. It re-reads them from disk rather than from the browser's cache. If a frame will not load, the
+strip is replaced by the folder path instead of freezing on the last good frame.
+
+**One preview, not two.** The first cut of this shipped the flipbook *and* the H.264 proxy, so a written
+sequence came back with two previews on one node - the real frames, and a darker 8-bit copy of them
+disagreeing about colour, with nothing to say which was the master. An artist reading colour off the wrong one
+is the whole failure this pack exists to prevent. The proxy is now the fallback it was meant to be: it ships
+only when the flipbook cannot be described. A movie still gets the proxy and no flipbook, because a container
+file has no frame range to scrub; a single frame still gets its own PNG thumb and nothing that pretends to
+move. `tools/test_write_preview_single.py` reads the counts off a real write of each of the three.
 
 ## A tool that checks the installed copy against the repository
 

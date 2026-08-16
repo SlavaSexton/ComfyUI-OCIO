@@ -1,5 +1,98 @@
 # Changelog
 
+## Files stop making claims about themselves that are not true
+
+Three defects with one shape, found in one pass: the writer describing a file as something it is not. None of
+them changed a pixel, and all three would have been read as fact by whatever opened the file next.
+
+**A movie was told it was sRGB whatever it held.** `_video_color_tags` had five branches and a fall-through,
+and 39 of this config's 55 colorspaces fell through. So an ACEScg ProRes left with
+`primaries=bt709 transfer=iec61966-2-1 matrix=bt709` - the file declaring itself sRGB while holding linear
+AP1, and a player that trusts the tag applying the sRGB EOTF to linear data.
+
+It is not fixable by adding branches, because the codes do not exist. ITU-T H.273 (V4, 07/2024) Table 3
+defines TransferCharacteristics 0-18 with 19-255 reserved, and its only logarithmic entries are 9 (100:1) and
+10 - neither is any camera curve. Table 2 defines ColourPrimaries 0-12 and 22, with no AP0, AP1 or camera
+wide gamut. ARRI LogC, S-Log3, V-Log, Log3G10, Apple Log, ACEScc, ACEScct and ADX are untaggable by
+construction.
+
+So log and scene-linear are now written with **no colour tags at all**: 36 spaces silent, 19 described. The
+principle was already in this file, written for the `raw_data` branch - an untagged file leaves a player
+guessing, which is honest; a confidently mistagged one makes it guess wrong and believe it is right - and had
+been applied to one branch out of six. Decided by asking the config for each colorspace's `encoding`, not by
+matching names, which is what had made `Linear Rec.709 (sRGB)` pick up `trc=bt709` from the substring
+"rec.709".
+
+**A DPX said `Linear` no matter what it was.** ffmpeg's dpx encoder stamps one answer regardless of content:
+measured, an ADX10 write and a Rec.709 write both came back with transfer descriptor 2. Here the remedy is
+the opposite of the one above, because SMPTE ST 268 **has** the codes - 1 printing density, 3 logarithmic, 6
+ITU-R 709 - so the honest answer is to write the right one. Verified by reading the bytes back with this
+pack's own DPX reader: ADX10 to 1, ARRI LogC3 to 3, Rec.1886 Rec.709 to 6, ACEScg to 2.
+
+**And a frame too large for HEVC said nothing at all.** HEVC levels top out at 35 651 584 luma samples
+(H.265 Table A.8), and x265 does not implement the 6.3 and 7.x levels added in 2023 - past the ceiling it
+stamps **Level 8.5**, the "decoder, work it out yourself" value, which hardware is not obliged to play.
+Measured here: 8192x4320 gives Level-6, 16384x8192 gives Level-8.5. A warning rather than a refusal, since
+the file decodes in software and a large-format plate may be exactly what was meant, but not something to
+discover at playback.
+
+Two tests were pinning the old behaviour and are corrected rather than deleted: one asserted ACEScg should be
+tagged sRGB ("falls to the default" - right about the code, wrong about the intent), and the MXF block wrote
+ACEScg while testing whether the *container* carries tags, which would now come back untagged for a reason
+having nothing to do with MXF.
+
+## OCIO Write can reach the ACES Output Transform, and DPX starts on ADX10
+
+Crossing between scene-referred and display-referred colour has two correct answers, and this node offered
+one with no control that could produce the other.
+
+`ACEScg -> Rec.1886 Rec.709` maps scene-linear 0.18 to 0.489436 and 4.0 to **1.781807**. A Rec.709 container
+encodes to 1.0, so 1.78 and 3.17 both land on white and every highlight above diffuse white flattens onto the
+same value. Through the ACES Output Transform they become 0.383116 and 0.905089, and nothing reaches 1.0
+until scene-linear around 128. Reading the other way, mid-grey 0.5 from Rec.709 to ACEScg gives 0.189468
+against 0.324827, which is the difference between our EXR and one exported from Nuke.
+
+The current behaviour is not a bug: OCIO crosses the boundary through the config's `default_view_transform`
+(`Un-tone-mapped` here), and the result is bit-identical to Nuke's own `Utility - Rec.709 - Display`. It is
+one of two legitimate operations, and the other was unreachable.
+
+The new `view` widget picks between them. **Optional, appended, and defaulting to a do-nothing sentinel**, so
+no saved workflow moves: ComfyUI fills a missing widget with the node's current default, a new *required*
+input is a hard validation error for API callers, and a widget inserted mid-list shifts every value in every
+saved graph. All three were caught by `tools/test_write_metadata.py` on the way in. Choices are read from the
+loaded config, so an ACES 1.3 user sees their own view names. Whether the fork exists is asked of OCIO via
+`getReferenceSpaceType()`, so a view is inert on camera logs, scene-to-scene and display-to-display pairs -
+exercised across all 414 crossing pairs and all 9 displays.
+
+`docs/NODES_IO.md` carries a section on it rather than a table row: which pairs it touches, the numbers for
+both answers in both directions, and when `(none)` is the right choice.
+
+**DPX now starts on ADX10** instead of falling through to a display space. DPX is the film-scan container; it
+exists to carry printing density, and ADX10 is the ACES encoding of exactly that. Changed on both sides
+together, since the front end and `_auto_output_cs` must agree or the node shows one colorspace while the
+backend writes another.
+
+## OCIO VAE Decode tiles by default, and a sequence write plays
+
+`tiled` now defaults to ON. Whole-frame is the setting that runs out of memory on a real clip and is slower
+even when it fits: 912 s against 60 s over 121 frames at float32. Saved graphs are unaffected, they carry
+their own value.
+
+A `sequence` write showed one still frame, because every format that branch writes is one a browser cannot
+animate. It now shows a playing clip, and hands the front end the written frames' path and range so a future
+version can flip through the real files rather than an H.264 proxy.
+
+## A tool that checks the installed copy against the repository
+
+`tools/check_deploy_sync.py` compares the repository with the copy ComfyUI actually loads and exits non-zero
+when they differ, reporting per file: identical, differs, missing, or extra. It exists because live runs were
+being made against a stale installed copy while the repository's own gate was green, and nothing could tell
+the difference. Verified by mutation on the real pair - a differing file, a missing file, an extra file and a
+dirty tree are each detected, and a CRLF-only change correctly is not.
+
+One environment fact learned the hard way and worth repeating: **the gate must be run with ComfyUI stopped.**
+A running server holds resources and fails three or four random tests per run.
+
 ## The `LTX 2.5 HDR (ACEScct)` write profile is removed, and that will break saved workflows
 
 **Read this first if you used it.** A COMBO value is matched by string, and ComfyUI rejects an unknown one with

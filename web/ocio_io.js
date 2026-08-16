@@ -1245,17 +1245,19 @@ function findUpstreamType(node, typeName, seen) {
 // ---- profile widget: HDR source preset -> from/output colorspace + still_format/bit_depth (silent) ---------
 // These must stay byte-identical to the backend mapping in io_nodes.py (OCIOWrite.write), and the from/out
 // strings must be values the from_colorspace combo actually offers - ComfyUI rejects an unknown combo value
-// with HTTP 400 and no fallback. tools/test_write_output.py asserts the mirror.
+// with HTTP 400 and no fallback. tools/test_ltx_hdr_profiles.py asserts the mirror - it reads this table and
+// compares it against the backend mapping parsed out of io_nodes.py by AST. (This line used to name
+// tools/test_write_output.py, which contains no profile assertion at all and never has.)
 //
-// LTX 2.3 and LTX 2.5 ARE NOT INTERCHANGEABLE, and the difference is the transfer they arrive in:
-//   2.3 - HDR IC-LoRA on the ARRI LogC3 (EI 800) curve. Lightricks' own ComfyUI node for it,
-//         LTXVHDRDecodePostprocess, already undoes the curve, so what reaches Write is LINEAR.
-//   2.5 - HDR via their --hdr ACESCCT flag. Nothing in ComfyUI undoes that curve, so what reaches Write is
-//         ACEScct LOG CODES, already in AP1 primaries, and only the transfer needs undoing.
-// Using the 2.3 preset on 2.5 material treats log as linear and leaves the frame flat and grey.
+// "LTX 2.3 HDR" IS A 2.3-ONLY PRESET, and the reason is the transfer the frames arrive in. 2.3's HDR is an
+// IC-LoRA on the ARRI LogC3 (EI 800) curve, and Lightricks' own ComfyUI node for it,
+// LTXVHDRDecodePostprocess, already undoes the curve, so what reaches Write is LINEAR.
+// THERE IS NO 2.5 ROW, and its absence is the decision. 2.5's HDR is ACEScct, reached through the --hdr flag
+// in their reference CLI; ComfyUI's core has no ACEScct path at all, so a graph here does not produce those
+// codes on its own. Using the 2.3 preset on genuine 2.5 ACEScct material treats log as linear and leaves the
+// frame flat and grey. Undo that curve explicitly instead: OCIO LogConvert, "Log to Linear", curve "ACEScct".
 const PROFILE_CS = {
     "LTX 2.3 HDR":               { from: "Linear Rec.709 (sRGB)", out: "ACEScg", fmt: "exr", bit: "16f" },
-    "LTX 2.5 HDR (ACEScct)":     { from: "ACEScct",               out: "ACEScg", fmt: "exr", bit: "16f" },
     "LumiPic LogC3 (Flux/Qwen)": { from: "Linear Rec.709 (sRGB)", out: "ACEScg", fmt: "exr", bit: "16f" },
     "LumiPic V10 LogC4":         { from: "Linear Rec.709 (sRGB)", out: "ACEScg", fmt: "exr", bit: "16f" },
     // No fmt/bit: this is the one display-referred preset, so it must NOT force EXR 16f the way the HDR ones
@@ -1298,11 +1300,13 @@ function applyProfile(node, profileName) {
 function findUpstreamSource(node) {
     const ltx = findUpstream(node, (n) => (n.type || "").includes("LTXVHDRDecodePostprocess"));
     if (ltx) return "LTX 2.3 HDR";                      // reliable: a dedicated LTX HDR decode node
-    // There is deliberately NO detector for "LTX 2.5 HDR (ACEScct)". 2.5's HDR has no ComfyUI node to look
-    // for - Lightricks ship it only in their reference CLI (--hdr), their ComfyUI pack has an HDR workflow for
-    // 2.3 and none for 2.5, and greps for acescct across that pack return zero (checked 2026-08-12). Guessing
-    // it from a 2.5 checkpoint name would be wrong as often as right, because a 2.5 graph is usually SDR.
-    // Leave it to the artist to pick, rather than silently choosing a transfer for them.
+    // Nothing detects LTX 2.5 here, and there is no longer a preset for it to select. The preset was removed
+    // because its premise did not hold on this runtime: 2.5's HDR is ACEScct via the --hdr flag in
+    // Lightricks' reference CLI, their ComfyUI pack has an HDR workflow for 2.3 and none for 2.5 (checked
+    // 2026-08-12), and ComfyUI's core has no ACEScct path at all (greps across comfy/ and comfy_extras/
+    // return zero, rechecked 2026-08-15). Do not add a detector back: a 2.5 checkpoint name says nothing
+    // about the transfer, since a 2.5 graph is usually SDR. 2.5 HDR material is undone explicitly with
+    // OCIO LogConvert ("Log to Linear", curve "ACEScct").
     const lora = findUpstream(node, (n) => (n.type || "").includes("LoraLoader"));
     if (lora) {
         const fn = (W(lora, "lora_name")?.value || "").toLowerCase();

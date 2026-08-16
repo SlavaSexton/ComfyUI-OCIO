@@ -3338,17 +3338,26 @@ class OCIOWrite:
             # container this same pack re-reads as scene-linear. Not silently corrected - forcing a format is
             # exactly what this preset must not do, and quietly rewriting the artist's container would be worse
             # than saying so. The tooltip says which containers it is for.
-            "profile": (["none", "auto", "LTX 2.3 HDR", "LTX 2.5 HDR (ACEScct)",
+            # "LTX 2.5 HDR (ACEScct)" was REMOVED, and removing a combo value is a breaking change said out
+            # loud rather than hidden: a saved graph holding it is rejected with HTTP 400 before any of this
+            # code runs. It went because its premise did not hold on this runtime. It mapped ACEScct -> ACEScg
+            # on the assumption that an LTX-2.5 decode in ComfyUI hands out ACEScct log codes, but that
+            # encoding is reached through the --hdr flag in Lightricks' own reference CLI, and ComfyUI's core
+            # has no ACEScct path at all (greps for acescct across comfy/ and comfy_extras/ return zero,
+            # rechecked 2026-08-15). Nothing behind it was ever measured on a generation through this pack,
+            # unlike every profile that remains. 2.5 HDR material is handled explicitly instead: LogConvert,
+            # "Log to Linear", curve "ACEScct", after the decode - which is what the docs already diagram.
+            "profile": (["none", "auto", "LTX 2.3 HDR",
                         "LumiPic LogC3 (Flux/Qwen)", "LumiPic V10 LogC4", "Seedance 4K 10-bit",
                         "SDR Rec.709 delivery"],
                         {"default": "none",
                          # SHORTENED 2026-08-13, from 1181 characters. Measured in the live canvas: this was the
                          # longest tooltip in the pack by a wide margin, and a hover at the moment of a decision
                          # is not where anyone reads eleven hundred characters. What stays is what CHANGES THE
-                         # CHOICE: the two LTX presets are not interchangeable, and SDR must not be left on EXR.
-                         # The mechanism behind both - the LogC3 IC-LoRA, the --hdr ACEScct flag, why auto cannot
-                         # detect 2.5 - is in README.md, and the code comments in write() carry the sources.
-                         "tooltip": "Sets from/output colorspace; the HDR presets also force EXR 16f. LTX 2.3 and 2.5 are NOT interchangeable (2.3 wants linear Rec.709, 2.5 wants ACEScct log) and the wrong one comes out flat. SDR Rec.709 delivery: read docs/NODES_IO.md first."}),
+                         # CHOICE: LTX 2.3 is a 2.3-only preset, and SDR must not be left on EXR. The mechanism
+                         # behind both - the LogC3 IC-LoRA, and why 2.5's ACEScct path gets no preset - is in
+                         # README.md, and the code comments in write() carry the sources.
+                         "tooltip": "Sets from/output colorspace; the HDR presets also force EXR 16f. LTX 2.3 is for 2.3 only: it expects linear, because Lightricks' own node already undid LogC3. There is no 2.5 preset - undo 2.5's ACEScct curve with OCIO LogConvert instead. SDR Rec.709 delivery: read docs/NODES_IO.md first."}),
             "from_colorspace": _cs_combo(WORKING),
             "output_colorspace": _cs_combo("ACEScg"),
             "container": (["still image", "sequence", "video"], {"default": "sequence"}),
@@ -3513,20 +3522,13 @@ class OCIOWrite:
             # LINEAR frames. So this preset sits downstream of their node and correctly expects linear.
             # LTX-2.5's HDR is a DIFFERENT mechanism - ACEScct, via the --hdr flag in their reference CLI - and
             # this preset is wrong for it: applied to ACEScct log codes it would treat log as linear and leave
-            # the image flat and grey. Use "LTX 2.5 HDR (ACEScct)" there. Confirmed 2026-08-12 against their
-            # own repositories: their ComfyUI pack has an HDR workflow for 2.3 and none for 2.5, and greps for
-            # acescct/acescg across that pack return zero.
+            # the image flat and grey. There is deliberately no 2.5 preset to send anyone to: that flag lives in
+            # their CLI, and ComfyUI's core carries no ACEScct path at all (greps for acescct across comfy/ and
+            # comfy_extras/ return zero, rechecked 2026-08-15). Confirmed 2026-08-12 against their own
+            # repositories: their ComfyUI pack has an HDR workflow for 2.3 and none for 2.5, and greps for
+            # acescct/acescg across that pack return zero. For 2.5 material, undo the curve explicitly with
+            # OCIO LogConvert ("Log to Linear", curve "ACEScct") after the decode.
             from_colorspace = "Linear Rec.709 (sRGB)"
-            output_colorspace = "ACEScg"
-        elif profile == "LTX 2.5 HDR (ACEScct)" and not raw_data:
-            # 2.5's HDR path hands the VAE's output straight out as ACEScct LOG CODES in AP1 primaries: their
-            # reference rotates source primaries to ACEScg BEFORE compressing (ltx-core hdr.py:126-138), so the
-            # codes carry no gamut change and only the transfer has to be undone. ACEScct -> ACEScg in OCIO is
-            # exactly that undo and nothing else, which is why no curve is applied by hand here - the config's
-            # own transform does it, on the path the community has already vetted.
-            # Their reference writes half-float EXR (media_io/exr.py:169,190), which is what the EXR 16f
-            # forcing below produces, so our output matches theirs in container as well as in maths.
-            from_colorspace = "ACEScct"
             output_colorspace = "ACEScg"
         elif profile == "SDR Rec.709 delivery" and not raw_data:
             # The ordinary delivery, and the only preset here that is not an HDR one: a display-referred sRGB
@@ -3539,7 +3541,7 @@ class OCIOWrite:
             output_colorspace = "Rec.1886 Rec.709 - Display"
         # "Seedance 4K 10-bit" and "none"/"auto": no backend mapping - auto is resolved front-end, Seedance is
         # a pending placeholder (do not invent a colorspace mapping for it).
-        if profile in ("LTX 2.3 HDR", "LTX 2.5 HDR (ACEScct)", "LumiPic LogC3 (Flux/Qwen)",
+        if profile in ("LTX 2.3 HDR", "LumiPic LogC3 (Flux/Qwen)",
                        "LumiPic V10 LogC4") and not raw_data \
                 and container != "video":
             still_format, bit_depth = "exr", "16f"                       # HDR presets always land as EXR 16f
@@ -3805,6 +3807,17 @@ class OCIOWrite:
             # still PNG renders broken inside its <video> for a video node ("Invalid URL"). So write a small, always-
             # servable H.264 preview into the temp dir and show it as an animated (playing) preview instead.
             ui["images"] = self._video_preview(sub, fps, saved, apcm)      # apcm, not the raw AUDIO: it is already cut to this write's range, so the preview cannot disagree with the master about where the clip starts
+            ui["animated"] = (True,)
+        elif container == "sequence" and int(getattr(written, "shape", [0])[0] or 0) > 1:
+            # A SEQUENCE IS A CLIP, AND WAS SHOWN AS ONE STILL FRAME. Every format this branch writes - EXR, DPX,
+            # TIFF, PNG - is one the browser either cannot decode at all or cannot animate, so a frame range came
+            # back as a single picture and there was no way to see the motion without opening the folder in a
+            # player. The video branch already solved this for its own case, and the same helper works here: a
+            # small H.264 copy in the temp dir, played on the node. The master on disk is untouched.
+            #
+            # No audio on this path even when a track is wired: a frame sequence carries none, and a preview that
+            # plays sound the written files do not have would misrepresent what was produced.
+            ui["images"] = self._video_preview(written, fps, saved)
             ui["animated"] = (True,)
         else:
             ui["images"] = self._preview(preview)

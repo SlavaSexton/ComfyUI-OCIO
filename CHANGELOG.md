@@ -1,5 +1,45 @@
 # Changelog
 
+## The `LTX 2.5 HDR (ACEScct)` write profile is removed, and that will break saved workflows
+
+**Read this first if you used it.** A COMBO value is matched by string, and ComfyUI rejects an unknown one with
+HTTP 400 and no fallback. So a workflow saved with `profile = LTX 2.5 HDR (ACEScct)` selected on `OCIO Write`
+will now fail validation *before any code in this pack runs*. There is no migration, no silent fallback, and no
+warning in the node: the graph simply will not queue. The fix in an affected graph is to set `profile` back to
+`none` and wire the conversion explicitly, as below. This is a breaking change and it is being called one.
+
+**Why it goes.** The preset mapped `ACEScct` to `ACEScg` on the premise that an LTX-2.5 decode inside ComfyUI
+hands out ACEScct log codes. It does not. That encoding is reached through the
+`--hdr {SRGB_LINEAR,ACESCG,ACESCCT}` flag in Lightricks' *reference CLI*, which is a different program.
+Lightricks' own ComfyUI pack ships no 2.5 HDR workflow, and ComfyUI's core has no ACEScct path at all: greps
+for `acescct` across `comfy/` and `comfy_extras/` return zero, run with a control grep alongside so the result
+is a statement about the code rather than about the probe. A 2.5 graph in ComfyUI is ordinarily SDR, so for
+almost everyone the preset was a widget that quietly declared their frames to be log when they were not, and
+the failure it produced is the one this pack keeps warning about: log read as linear, flat and grey.
+
+The second reason is process, and it is the one worth recording. Nothing backing this preset was ever measured
+on a real generation through this pack. What backed it was documentation, and accurate documentation at that -
+of a pipeline this pack was not running. Reading a vendor's spec correctly is not the same as confirming the
+path your own code is on, and a preset is a claim about the second. Every other profile here rests on a
+measurement; this one rested on a reading.
+
+**What to do instead**, which the docs already diagrammed as the clearer route: after `OCIO VAE Decode`, put an
+`OCIO LogConvert` with `operation = Log to Linear` and `curve = ACEScct`, then write. Set `still_format = exr`
+and `bit_depth = 16f` on `OCIO Write` yourself to match the half-float EXR the reference produces, since the
+removed preset was what used to force those two. Mirror it on the input side with `Linear to Log`, `ACEScct`
+before `OCIO VAE Encode`. The maths is identical; nothing about the colour changes, only where you can see it.
+
+`LTX 2.3 HDR` is untouched and still correct for 2.3 - its IC-LoRA is the ARRI LogC3 curve, and Lightricks'
+`LTXVHDRDecodePostprocess` already undoes it, so linear is what arrives. The two LumiPic presets and
+`SDR Rec.709 delivery` are untouched as well.
+
+`tools/test_ltx_hdr_profiles.py` now asserts the removed value is absent from all four surfaces it occupied:
+the combo, the backend branch in `write()`, the front-end `PROFILE_CS` table, and the EXR-16f forcing list.
+Verified by mutation rather than by reading: putting the value back into all three files turned six assertions
+red, and restoring turned them green. The same rewrite closed a hole found on the way past - the two LumiPic
+rows in the front-end table were guarded by nothing, so mutating one to garbage had been leaving the file
+green. That mutation is now red too.
+
 ## "Nothing was clamping its output" was a claim the node could not make
 
 When `OCIO VAE Decode` meets a VAE whose `process_output` is the identity, it reported that nothing had been

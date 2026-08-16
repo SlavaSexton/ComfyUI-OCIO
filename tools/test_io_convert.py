@@ -52,6 +52,29 @@ def main():
     assert torch.isfinite(out2).all() and float((out2 - img).abs().max()) > 1e-4, "display-target convert failed"
     print("[PASS] ACEScg -> Gamma 2.2 Rec.709 - Display applied")
 
+    # 3b) THE SCENE -> DISPLAY VALUE, PINNED. Until 2026-08-15 the only assertion on this direction was the line
+    # above, and it checks two things that survive almost any change: the output is finite, and it differs from
+    # the input by more than 1e-4. Swap this crossing for a completely different transform and both still hold,
+    # so the whole scene -> display fork could move without one test going red.
+    #
+    # Measured: this crossing does NOT tone map. It goes through the config's default_view_transform, which the
+    # ACES 2.0 studio config sets to `Un-tone-mapped`, so mid-grey lands on 0.489436 and super-white carries
+    # past 1.0 instead of rolling off. Route the pair through an ACES Output Transform instead and 0.18 lands
+    # near 0.383 - which now fails here loudly rather than silently re-rendering everyone's deliveries.
+    mid = torch.full((1, 2, 2, 3), 0.18)
+    got = float(io_nodes._convert(mid, "ACEScg", "Rec.1886 Rec.709 - Display")[0, 0, 0, 0])
+    assert abs(got - 0.489436) < 1e-4, (
+        f"ACEScg 0.18 -> Rec.1886 Rec.709 gave {got:.6f}, expected 0.489436. Either the config's "
+        f"default_view_transform changed, or this pair now runs through a view transform.")
+    print(f"[PASS] scene->display pinned: ACEScg 0.18 -> Rec.1886 Rec.709 = {got:.6f}")
+
+    hi = torch.full((1, 2, 2, 3), 4.0)
+    over = float(io_nodes._convert(hi, "ACEScg", "Rec.1886 Rec.709 - Display")[0, 0, 0, 0])
+    assert over > 1.5, (
+        f"scene-linear 4.0 came back as {over:.4f}; a plain conversion carries it past 1.0. A value at or under "
+        f"1.0 means a tone-mapping transform was applied here, which changes every existing render.")
+    print(f"[PASS] and super-white is carried, not rolled off: 4.0 -> {over:.4f}")
+
     # 4) round-trip returns close to the original (sanity that it is a real, invertible transform)
     back = io_nodes._convert(out, "ACEScg", "sRGB - Display")
     rt = float((back - img).abs().max())

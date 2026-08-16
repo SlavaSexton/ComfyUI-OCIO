@@ -325,7 +325,7 @@ the way `metadata` is.
 
 | Input | Type | Accepts | Default | Notes |
 |---|---|---|---|---|
-| `profile` | COMBO | `none`, `auto`, `LTX 2.3 HDR`, `LTX 2.5 HDR (ACEScct)`, `LumiPic LogC3 (Flux/Qwen)`, `LumiPic V10 LogC4`, `Seedance 4K 10-bit`, `SDR Rec.709 delivery` | `none` | A source preset that silently sets `from_colorspace`/`output_colorspace` (and, for the HDR presets, forces `still_format = exr`, `bit_depth = 16f`). See the dedicated section below; several of these values do nothing at all on the server. |
+| `profile` | COMBO | `none`, `auto`, `LTX 2.3 HDR`, `LumiPic LogC3 (Flux/Qwen)`, `LumiPic V10 LogC4`, `Seedance 4K 10-bit`, `SDR Rec.709 delivery` | `none` | A source preset that silently sets `from_colorspace`/`output_colorspace` (and, for the HDR presets, forces `still_format = exr`, `bit_depth = 16f`). See the dedicated section below; several of these values do nothing at all on the server. |
 | `from_colorspace` | COMBO (55 colorspaces) | See the shared list above. | `sRGB - Display` | What your `IMAGE` batch is actually in right now (ComfyUI's own working space by default). Should match whatever colorspace the upstream chain, usually an `OCIO Read`'s `output_colorspace`, left the pixels in. |
 | `output_colorspace` | COMBO (55 colorspaces) | See the shared list above. | `ACEScg` | What the *file* should be encoded in. Defaults to `ACEScg` because the default `still_format` is `exr`, and an EXR is expected to be scene-linear render data. |
 | `container` | COMBO | `still image`, `sequence`, `video` | `sequence` | Controls which of `still_format`/`video_codec` is used and which frame-range widgets are visible (see the table below). |
@@ -444,23 +444,28 @@ invent a count that does not exist there.
 | `none` | untouched | untouched | no | nowhere; this is the inert default |
 | `auto` | untouched | untouched | no | **front end only** (see Traps) |
 | `LTX 2.3 HDR` | `Linear Rec.709 (sRGB)` | `ACEScg` | EXR 16f | server, in `write()` |
-| `LTX 2.5 HDR (ACEScct)` | `ACEScct` | `ACEScg` | EXR 16f | server, in `write()` |
 | `LumiPic LogC3 (Flux/Qwen)` | `Linear Rec.709 (sRGB)` | `ACEScg` | EXR 16f | server; also decodes the ARRI LogC3 curve on the pixels themselves before the colorspace convert |
 | `LumiPic V10 LogC4` | `Linear Rec.709 (sRGB)` | `ACEScg` | EXR 16f | server; decodes the ARRI LogC4 curve on the pixels first |
 | `Seedance 4K 10-bit` | untouched | untouched | no | nowhere; a named placeholder, not implemented on either side |
 | `SDR Rec.709 delivery` | `sRGB - Display` | `Rec.1886 Rec.709 - Display` | no (deliberately; this preset's whole point is a display-referred deliverable, so it must not push you onto a scene-linear EXR) | server, in `write()` |
 
-`LTX 2.3 HDR` and `LTX 2.5 HDR (ACEScct)` look interchangeable and are not. LTX 2.3's HDR path is an
+`LTX 2.3 HDR` is a 2.3-only preset, and the version number is load-bearing. LTX 2.3's HDR path is an
 IC-LoRA on the ARRI LogC3 curve, and Lightricks' own `LTXVHDRDecodePostprocess` node already undoes that
-curve before you ever reach `OCIO Write`, so the 2.3 preset correctly expects linear values. LTX 2.5's
-HDR path is a different mechanism (their `--hdr` flag encodes ACEScct log codes directly), has no
-matching ComfyUI decode node at all, and the 2.5 preset expects those log codes as-is. Using the 2.3
-preset on 2.5 output, or vice versa, treats a log signal as linear or a linear signal as log and the
-image comes out flat and grey or crushed. `auto` can only detect the 2.3 case (by finding
-`LTXVHDRDecodePostprocess` upstream); it never guesses 2.5, on purpose, because there's nothing reliable
-to detect it from.
+curve before you ever reach `OCIO Write`, so the 2.3 preset correctly expects linear values.
 
-The two `LumiPic` presets do something the LTX presets don't: they run a curve decode on the pixel
+**There is no LTX 2.5 preset, and there used to be one.** LTX 2.5's HDR is a different mechanism: their
+`--hdr` flag encodes ACEScct log codes directly, and it lives in their reference CLI. Nothing in ComfyUI
+reaches it - their ComfyUI pack has no 2.5 HDR workflow, and ComfyUI's own core has no ACEScct path at
+all - so a 2.5 graph here does not hand `OCIO Write` those codes to begin with. `LTX 2.5 HDR (ACEScct)`
+was removed for that reason; CHANGELOG.md has the full account, including what it breaks. If you do have
+genuine ACEScct material, undo the curve explicitly with `OCIO LogConvert` (`operation = Log to Linear`,
+`curve = ACEScct`) before the write. Point the 2.3 preset at it instead and log gets treated as linear:
+the image comes out flat and grey.
+
+`auto` can only detect the 2.3 case, by finding `LTXVHDRDecodePostprocess` upstream. It has never had a
+guess for 2.5, and now has no preset to guess toward either.
+
+The two `LumiPic` presets do something the `LTX 2.3 HDR` preset doesn't: they run a curve decode on the pixel
 values themselves (`_logc3_to_lin`/`_logc4_to_lin`, published ARRI constants applied directly, not an
 OCIO colorspace lookup) before setting the colorspaces. This is deliberately not the same as picking
 `ARRI LogC3 (EI800)` from the colorspace combo directly: that combo entry assumes ARRI Wide Gamut

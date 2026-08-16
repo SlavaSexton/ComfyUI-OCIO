@@ -106,12 +106,29 @@ def main():
         st["max_abs_vs_raw_ocio"] = C.max_abs(out, ref)         # parity: our wrapper vs fresh processor
         results["convert_pairs"][f"{a} -> {b}"] = st
 
-    # one display pair, labelled: sRGB - Display encode WILL soft-limit super-white (display range) - NOT a
-    # scene-linear defect; recorded so the reader sees the contrast with the scene-linear rows.
+    # THE ONE SCENE -> DISPLAY PAIR, AND THIS ENTRY USED TO STATE THE OPPOSITE OF ITS OWN DATA.
+    #
+    # It said the encode "WILL soft-limit super-white" and called that expected. The numbers it recorded in the
+    # same breath said otherwise: clamped_pos_to_1 = 0, silent_clamp_count = 0, out_max_finite = 3.2944 with 387
+    # super-white samples out against 381 in. Nothing was soft-limited, because a plain ColorSpaceTransform does
+    # not tone map. Crossing the scene/display boundary goes through the config's `default_view_transform`,
+    # which this config sets to `Un-tone-mapped`, so the values carry past 1.0 and are clipped later by whatever
+    # container the writer produces.
+    #
+    # That wrong note is why this fork went unexamined: the one artefact that would have surfaced it instead
+    # told the reader the case had been considered and was fine. Corrected 2026-08-15.
+    #
+    # It was also the ONLY pair in this file carrying no `max_abs_vs_raw_ocio`, i.e. the only one never checked
+    # against an independently built processor. Added here too - an unchecked row is where a wrong claim lives.
     out = _from_bhwc(IO._convert(_to_bhwc(hdr), "ACEScg", "sRGB - Display"))
+    ref = C.ocio_reference("ACEScg", "sRGB - Display", hdr.reshape(-1, 3))
     st = _range_stats(hdr, out)
-    st["note"] = "display transform: soft-limiting super-white is expected (display range), NOT a scene-linear defect"
-    results["convert_pairs"]["ACEScg -> sRGB - Display (display, expected)"] = st
+    st["max_abs_vs_raw_ocio"] = C.max_abs(out, ref)
+    st["note"] = ("scene to display through a plain colorspace conversion: NO tone mapping is applied, so "
+                  "super-white survives as values above 1.0 and is clipped by the container, not here. The "
+                  "operation that rolls it off is an ACES Output Transform (a display plus a view), which is "
+                  "a different transform and is not what this row measures.")
+    results["convert_pairs"]["ACEScg -> sRGB - Display (scene to display, no tone map)"] = st
 
     # ---------------------------------------------------------------- 2. every _CURVES curve, both directions
     node = N.OCIOLogConvert()

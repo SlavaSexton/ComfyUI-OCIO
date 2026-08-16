@@ -325,7 +325,7 @@ the way `metadata` is.
 
 | Input | Type | Accepts | Default | Notes |
 |---|---|---|---|---|
-| `profile` | COMBO | `none`, `auto`, `LTX 2.3 HDR`, `LTX 2.5 HDR (ACEScct)`, `LumiPic LogC3 (Flux/Qwen)`, `LumiPic V10 LogC4`, `Seedance 4K 10-bit`, `SDR Rec.709 delivery` | `none` | A source preset that silently sets `from_colorspace`/`output_colorspace` (and, for the HDR presets, forces `still_format = exr`, `bit_depth = 16f`). See the dedicated section below; several of these values do nothing at all on the server. |
+| `profile` | COMBO | `none`, `auto`, `LTX 2.3 HDR`, `LumiPic LogC3 (Flux/Qwen)`, `LumiPic V10 LogC4`, `Seedance 4K 10-bit`, `SDR Rec.709 delivery` | `none` | A source preset that silently sets `from_colorspace`/`output_colorspace` (and, for the HDR presets, forces `still_format = exr`, `bit_depth = 16f`). See the dedicated section below; several of these values do nothing at all on the server. |
 | `from_colorspace` | COMBO (55 colorspaces) | See the shared list above. | `sRGB - Display` | What your `IMAGE` batch is actually in right now (ComfyUI's own working space by default). Should match whatever colorspace the upstream chain, usually an `OCIO Read`'s `output_colorspace`, left the pixels in. |
 | `output_colorspace` | COMBO (55 colorspaces) | See the shared list above. | `ACEScg` | What the *file* should be encoded in. Defaults to `ACEScg` because the default `still_format` is `exr`, and an EXR is expected to be scene-linear render data. |
 | `container` | COMBO | `still image`, `sequence`, `video` | `sequence` | Controls which of `still_format`/`video_codec` is used and which frame-range widgets are visible (see the table below). |
@@ -365,6 +365,64 @@ only form that conforms correctly downstream. Nothing wired, no timecode written
 | `audio` | AUDIO | A ComfyUI `AUDIO` dict (`{"waveform": [B,C,T] tensor, "sample_rate": int}`). | none | `LoadAudio`, `LTXVAudioVAEDecode` (named explicitly in the tooltip), or any AUDIO-producing node. A `video` container muxes it in (24-bit PCM for `.mov`/MXF OP1a, AAC for `.mp4`), trimmed to exactly the frame range being written. A `sequence` gets a sidecar `.wav` instead, because EXR/TIFF/PNG hold no audio track, and so does an MXF OPAtom write, which by design holds exactly one essence per file. |
 | `metadata` | STRING | JSON from `OCIO Read`'s "metadata" output. | none | **`forceInput: true`**: unlike every other widget on this node, this field never renders as a text box, only as a wire-only socket. Wire `OCIO Read`'s slot-5 output here to carry the plate's camera/lens/editorial identity **and its start timecode** into the written file - this wire is the only route a timecode has, since the node has no field for one. Attributes describing a specific pixel state (C2PA manifests, ST 2086/2094 HDR mastering data, an ACES AMF, an MHL hash list) are dropped rather than copied, because a colorspace conversion makes them false; container attributes (`dataWindow`, `channels`, `compression`) are never copied either, since the writer recomputes those from the real pixels. The fields this node re-authors for itself (chromaticities, frame rate, frame counter, timecode) are stripped from the incoming set in **any spelling** and written fresh, so a plate that calls its code `timecode` where we call it `timeCode` cannot leave two conflicting timecodes in one header. Confirmed on a real write: a test attribute named to match the "mastering" filter was silently removed from both the EXR header and the sidecar JSON, while unrecognized custom attributes and the seven identity fields (reel, scene, shot, take, camera, lens, timecode) passed through intact. Confirmed on a real camera master (DaVinci Resolve MXF, ProRes 4444 XQ): all twelve of its attributes reached the EXR header, with a single, correctly typed timecode advancing per frame. |
 | `write_audio` | BOOLEAN | true / false | `true` | Off: no audio at all is written, not even as a sidecar `.wav`, regardless of what's wired or what a native `Video` input carries. On (default): a wired `audio` input wins over a native `Video`'s own track. This is the only way to *decline* a `Video` input's own audio, since there's no wire to disconnect for it. |
+| `view` | COMBO (the config's views, plus a do-nothing entry) | `(none) colorimetric, no tone map` first, then every view the loaded config offers | `(none)` | **Only does anything when one of your two colorspaces is display-referred and the other is scene-referred.** On every other pair it is ignored outright. Read the section below before using it. |
+
+### `view`: the one control that changes what the picture looks like
+
+Every other widget on this node decides where the file goes, what wraps it, or how many bits it has. This one
+decides what the image *is*, so it gets its own section.
+
+**When it applies.** Only on a pair that crosses between scene-referred and display-referred. The node asks
+OCIO which side each colorspace sits on, so this is not a list of names anyone maintains:
+
+| pair | crosses? | does `view` do anything? |
+| --- | --- | --- |
+| `ACEScg` -> `Rec.1886 Rec.709 - Display` | yes, scene to display | **yes** |
+| `Rec.1886 Rec.709 - Display` -> `ACEScg` | yes, display to scene | **yes** |
+| `ARRI LogC3 (EI800)` -> `ACEScg` | no, both scene-referred | no, ignored |
+| `ACEScg` -> `ACEScct` | no, both scene-referred | no, ignored |
+| `sRGB - Display` -> `Rec.1886 Rec.709 - Display` | no, both display-referred | no, ignored |
+
+So every camera-log conversion, everything between ACES spaces, and every display-to-display re-encode is
+untouched by this widget. If your work is one of those, you never need to think about it.
+
+**What the two answers are, in numbers.** Writing a movie from an `ACEScg` render:
+
+| scene-linear in | `(none)` | `ACES 2.0 - SDR 100 nits (Rec.709)` |
+| --- | --- | --- |
+| 0.18 (mid grey) | 0.489436 | 0.383116 |
+| 1.0 | 1.000006 | 0.722 |
+| 4.0 | **1.781807** | 0.905089 |
+| 16.0 | **3.174806** | 0.976046 |
+
+The bold numbers are the problem. A Rec.709 container encodes up to 1.0, so 1.78 and 3.17 are both written as
+white and every highlight above diffuse white lands on the same value. With a view they roll off instead, and
+nothing reaches 1.0 until scene-linear around 128. **For a review movie out of a scene-linear render, pick a
+view.**
+
+Reading the other way, a Rec.709 picture taken back to `ACEScg` for a master: mid-grey 0.5 becomes 0.189468
+with `(none)` and 0.324827 with a view, and the ceiling goes from 1.0 to about 128. The second is what Nuke
+produces when its Read node is set to a display colorspace in an ACES project, and it is what a compositor
+expects to receive.
+
+**Why `(none)` is still the default, and when it is right.** It is what this pack has always done, and it is a
+real named operation, not a mistake: OCIO calls the transform behind it `Un-tone-mapped`, and the result is
+bit-identical to Nuke's own `Utility - Rec.709 - Display`. Keep it for a technical re-encode where the values
+must not move, for material that is already scene-referred but tagged as display, and any time you have
+already applied an output transform yourself with `OCIO Display` - applying it twice is worse than not
+applying it at all.
+
+**What the entries mean.** `Un-tone-mapped` and `Video (colorimetric)` produce exactly the same numbers as
+`(none)`; they appear because the list is read from the config rather than curated. `Raw` leaves values alone.
+The `ACES 2.0 - SDR 100 nits (Rec.709)` entry is the ordinary cinema render for a normal monitor; the `P3 D65`
+and `HDR ... nits` entries target other displays and are wrong for a Rec.709 deliverable. A view belongs to a
+display, so choosing one that does not exist on the display your pair resolves to is refused with a message
+naming what that display does offer, rather than silently ignored.
+
+**On another config the names differ, and that is intended.** The list comes from whichever OCIO config is
+loaded. On ACES 2.0 the SDR view is `ACES 2.0 - SDR 100 nits (Rec.709)`; on an ACES 1.3 config it is
+`ACES 1.0 - SDR Video`, and the numbers differ too - the 1.x output transform tops out near 16.29 where 2.0
+reaches 128. Neither is wrong; they are different versions of the standard.
 
 ### Every output
 
@@ -444,23 +502,28 @@ invent a count that does not exist there.
 | `none` | untouched | untouched | no | nowhere; this is the inert default |
 | `auto` | untouched | untouched | no | **front end only** (see Traps) |
 | `LTX 2.3 HDR` | `Linear Rec.709 (sRGB)` | `ACEScg` | EXR 16f | server, in `write()` |
-| `LTX 2.5 HDR (ACEScct)` | `ACEScct` | `ACEScg` | EXR 16f | server, in `write()` |
 | `LumiPic LogC3 (Flux/Qwen)` | `Linear Rec.709 (sRGB)` | `ACEScg` | EXR 16f | server; also decodes the ARRI LogC3 curve on the pixels themselves before the colorspace convert |
 | `LumiPic V10 LogC4` | `Linear Rec.709 (sRGB)` | `ACEScg` | EXR 16f | server; decodes the ARRI LogC4 curve on the pixels first |
 | `Seedance 4K 10-bit` | untouched | untouched | no | nowhere; a named placeholder, not implemented on either side |
 | `SDR Rec.709 delivery` | `sRGB - Display` | `Rec.1886 Rec.709 - Display` | no (deliberately; this preset's whole point is a display-referred deliverable, so it must not push you onto a scene-linear EXR) | server, in `write()` |
 
-`LTX 2.3 HDR` and `LTX 2.5 HDR (ACEScct)` look interchangeable and are not. LTX 2.3's HDR path is an
+`LTX 2.3 HDR` is a 2.3-only preset, and the version number is load-bearing. LTX 2.3's HDR path is an
 IC-LoRA on the ARRI LogC3 curve, and Lightricks' own `LTXVHDRDecodePostprocess` node already undoes that
-curve before you ever reach `OCIO Write`, so the 2.3 preset correctly expects linear values. LTX 2.5's
-HDR path is a different mechanism (their `--hdr` flag encodes ACEScct log codes directly), has no
-matching ComfyUI decode node at all, and the 2.5 preset expects those log codes as-is. Using the 2.3
-preset on 2.5 output, or vice versa, treats a log signal as linear or a linear signal as log and the
-image comes out flat and grey or crushed. `auto` can only detect the 2.3 case (by finding
-`LTXVHDRDecodePostprocess` upstream); it never guesses 2.5, on purpose, because there's nothing reliable
-to detect it from.
+curve before you ever reach `OCIO Write`, so the 2.3 preset correctly expects linear values.
 
-The two `LumiPic` presets do something the LTX presets don't: they run a curve decode on the pixel
+**There is no LTX 2.5 preset, and there used to be one.** LTX 2.5's HDR is a different mechanism: their
+`--hdr` flag encodes ACEScct log codes directly, and it lives in their reference CLI. Nothing in ComfyUI
+reaches it - their ComfyUI pack has no 2.5 HDR workflow, and ComfyUI's own core has no ACEScct path at
+all - so a 2.5 graph here does not hand `OCIO Write` those codes to begin with. `LTX 2.5 HDR (ACEScct)`
+was removed for that reason; CHANGELOG.md has the full account, including what it breaks. If you do have
+genuine ACEScct material, undo the curve explicitly with `OCIO LogConvert` (`operation = Log to Linear`,
+`curve = ACEScct`) before the write. Point the 2.3 preset at it instead and log gets treated as linear:
+the image comes out flat and grey.
+
+`auto` can only detect the 2.3 case, by finding `LTXVHDRDecodePostprocess` upstream. It has never had a
+guess for 2.5, and now has no preset to guess toward either.
+
+The two `LumiPic` presets do something the `LTX 2.3 HDR` preset doesn't: they run a curve decode on the pixel
 values themselves (`_logc3_to_lin`/`_logc4_to_lin`, published ARRI constants applied directly, not an
 OCIO colorspace lookup) before setting the colorspaces. This is deliberately not the same as picking
 `ARRI LogC3 (EI800)` from the colorspace combo directly: that combo entry assumes ARRI Wide Gamut

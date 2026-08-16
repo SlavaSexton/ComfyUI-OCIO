@@ -80,9 +80,200 @@ const CS_ACESCG = "ACEScg";
 // disagree, the node shows one colourspace and the backend writes another. Fixed 2026-08-12.
 const CS_REC709_DISPLAY = "Rec.1886 Rec.709 - Display";
 function autoInCs(filename) { return isExr(filename) ? CS_ACESCG : CS_SRGB; }
+// DPX gets ADX10, and that is not a preference. DPX is the film-scan container: it exists to carry printing
+// density, and ADX10 is the ACES encoding of exactly that (SMPTE ST 2065-3). Falling through to sRGB - Display,
+// which is what it did before, declares a scanned negative to be a finished picture on a monitor - the same
+// class of error as reading log as linear, and it mis-stated every plate written this way.
+//
+// ADX16 exists for 16-bit DPX, but the depth default is chosen separately (BIT_DEF), so this stays on the
+// 10-bit encoding, which is what a 10-bit scan and a Cineon-lineage file are. Change the depth by hand and the
+// colorspace is yours to match; this only fills a sane starting point, and any manual edit wins over it.
+const CS_ADX10 = "ADX10";
 function autoOutCs(container, stillFormat) {
     if (container === "video") return CS_REC709_DISPLAY;
-    return stillFormat === "exr" ? CS_ACESCG : CS_SRGB;
+    if (stillFormat === "exr") return CS_ACESCG;
+    if (stillFormat === "dpx") return CS_ADX10;
+    return CS_SRGB;
+}
+
+// ---- the `view` widget, filled in automatically -----------------------------------------------------------
+//
+// NOBODY SHOULD HAVE TO KNOW THAT ACEScg -> Rec.709 NEEDS A VIEW PICKED BY HAND. The widget decides whether a
+// scene/display crossing is rendered (the ACES Output Transform) or merely re-encoded (colorimetric), and the
+// difference is not subtle: scene-linear 4.0 leaves as 1.78 and is clipped flat by the container, against
+// 0.905 rolled off. But the fork only exists on pairs that actually cross, and knowing which pairs those are
+// means knowing which of 55 colorspaces is scene-referred and which is display-referred.
+//
+// So the node works it out. /ocio/encodings serves OCIO's own `encoding` per colorspace and the config's
+// default view per display; on a colorspace change this fills the widget with the display's default view when
+// the pair crosses, and clears it back to the do-nothing value when it does not.
+//
+// TWO RULES IT MUST OBEY, both learned here the hard way:
+//   1. A HUMAN EDIT ALWAYS WINS. Once the artist touches `view` it is theirs; this never overwrites it again.
+//      Same contract as auto_range and the same one issue #3 was about.
+//   2. IT MUST NOT FIRE ON LOAD. onNodeCreated runs its timer AFTER configure() restores saved values, so a
+//      naive "fill it in" would rewrite a saved graph's view on open - silently re-rendering somebody's
+//      finished work. Only a real change of colorspace triggers it.
+// MUST match _VIEW_NONE in io_nodes.py exactly. It is the widget's default and the value that means "leave
+// this alone", so a typo here would make the auto-fill try to set a choice that does not exist, and the
+// includes() guard below would silently do nothing forever.
+const VIEW_NONE = "(none) colorimetric, no tone map";
+
+// ---- which colorspaces make sense for which output ------------------------------------------------------
+//
+// WHY NARROW AT ALL. Writing ACEScg into a 10-bit ProRes is legal here and useless in practice. Measured on a
+// nine-stop ramp through the real writer: 43.55% of samples clipped, the brightest surviving scene-linear
+// value 1.000 out of 92.2 - six and a half of nine stops gone - and in the shadows the worst step between
+// adjacent codes is 33.33% of luminance, against 2.63% for a display space, where about 1% is the threshold
+// of visibility. The same ramp through ARRI LogC4 clips nothing and keeps all nine stops.
+//
+// Which is why the rule is NOT "video means Rec.709": camera log in a ProRes is how masters are delivered,
+// and forbidding it would break the most ordinary professional job there is. The line falls between log and
+// scene-linear, not between display and everything else.
+//
+// ffv1 is deliberately exempt. It is 16-bit RGB and bit-exact - decoded output equals input, max abs diff 0 -
+// and at 16 bits even scene-linear steps by 0.54%, under the visibility threshold. Lumping it in with ProRes
+// would forbid the one video codec where the objection does not apply.
+//
+// `null` means no narrowing at all.
+const ENC_ALLOW = {
+    prores:   ["sdr-video", "hdr-video", "edr-video", "log"],   // >=10-bit integer video: display + camera log
+    dnxhr8:   ["sdr-video"],                                    // 8-bit: log steps 23-46% in the shadows
+    delivery: ["sdr-video", "hdr-video"],                       // h264 / hevc, feeding consumer decoders
+    hevc12:   ["sdr-video", "hdr-video", "log"],                // 12-bit 4:4:4: log steps fall to 0.8-2.9%
+    dpx:      ["log", "sdr-video"],                             // the Cineon lineage, ADX included
+    still16:  ["sdr-video", "log"],
+    still8:   ["sdr-video"],
+    anything: null,                                             // float and lossless destroy nothing
+};
+const CODEC_ALLOW = {
+    prores_4444: "prores", prores_422hq: "prores", prores_422: "prores", prores_4444xq: "prores",
+    prores_4444_mxf: "prores", prores_4444xq_mxf: "prores",
+    dnxhr_hqx: "prores", dnxhr_444: "prores", dnxhr_hqx_mxf: "prores", dnxhr_444_mxf: "prores",
+    dnxhr_hq: "dnxhr8", dnxhr_hq_mxf: "dnxhr8", dnxhr_hq_mxf_opatom: "dnxhr8",
+    h264: "delivery", hevc: "delivery", hevc_444_12: "hevc12", ffv1: "anything",
+};
+const STILL_ALLOW = { exr: "anything", tiff: "anything", dpx: "dpx", png: "still16", jpeg: "still8" };
+let _ocioEnc = null;                                  // { encodings: {name: encoding}, views: {display: {...}} }
+async function ocioEncodings() {
+    if (_ocioEnc) return _ocioEnc;
+    try {
+        const r = await fetch("/ocio/encodings");
+        const j = await r.json();
+        _ocioEnc = { encodings: j.encodings || {}, views: j.views || {} };
+    } catch (e) {
+        _ocioEnc = { encodings: {}, views: {} };      // no data -> no auto-fill, which is the old behaviour
+    }
+    return _ocioEnc;
+}
+
+// (display, scene) when this pair crosses the scene/display boundary, else null. Mirrors _crosses_scene_display
+// in io_nodes.py - the backend decides the same question the same way, and the two must not drift.
+function crossingOf(enc, fromCs, outCs) {
+    if (!fromCs || !outCs || fromCs === outCs) return null;
+    const a = enc.encodings[fromCs], b = enc.encodings[outCs];
+    if (!a || !b) return null;
+    const aDisp = a.endsWith("-video"), bDisp = b.endsWith("-video");
+    if (aDisp === bDisp) return null;
+    return aDisp ? { display: fromCs, scene: outCs } : { display: outCs, scene: fromCs };
+}
+
+// Narrow `output_colorspace` to what the chosen output can actually carry.
+//
+// THE ONE THING IT MUST NEVER DO IS COERCE. The bit_depth narrowing a few lines up resets an out-of-range
+// value to the format default, which is right there: depth is cosmetic and the file is written either way.
+// A colorspace is not. Silently swapping a restored one would change the rendered image of a saved workflow
+// without anybody asking, which is the exact failure this pack refuses everywhere else. So a value that is
+// no longer on the list is KEPT, still selected, and named in the label - the artist decides.
+//
+// Frontend only, and that is load-bearing. INPUT_TYPES is static and cannot see the current container, so a
+// backend list is impossible anyway; more importantly a backend filter would make ComfyUI reject the whole
+// prompt with value_not_in_list, killing saved workflows outright rather than warning about them.
+// ---- the written-sequence flipbook -----------------------------------------------------------------------
+//
+// A DOM widget holding one <img>, driven by a frame clock, each frame fetched from /ocio/thumb - which
+// renders it server-side through OCIO from the file that was just written. The Read node has done this since
+// July; this is the same idea on the other end of the graph.
+//
+// Deliberately simpler than Read's player in two ways. It prefetches nothing: a write has already finished,
+// so the frames are on a local disk and warm, where Read is often scrubbing a 4K plate it has never touched.
+// And it has no scrub bar, because there is nothing to choose - a write shows what it wrote, start to end.
+function writeThumbUrl(seq, frameNo) {
+    return "/ocio/thumb?" + new URLSearchParams({
+        src: seq.src, frame: String(frameNo),
+        in_cs: seq.cs,                 // what the FILE holds
+        out_cs: CS_SRGB,               // what a browser can show
+        raw: "0", full: "0",
+    }).toString();
+}
+
+function startWriteFlipbook(node) {
+    const seq = node._ocioSeq;
+    if (!seq || !(seq.last > seq.first)) return;      // a single frame is a still, not a clip
+    let w = (node.widgets || []).find(x => x.name === "__ocio_flip");
+    if (!w) {
+        const el = document.createElement("div");
+        el.style.cssText = "width:100%;display:flex;align-items:center;justify-content:center;min-height:80px";
+        const img = document.createElement("img");
+        img.style.cssText = "max-width:100%;max-height:220px;image-rendering:auto";
+        el.appendChild(img);
+        w = node.addDOMWidget("__ocio_flip", "div", el, { serialize: false });
+        w._img = img;
+    }
+    if (node._ocioFlipTimer) clearInterval(node._ocioFlipTimer);
+    let i = seq.first;
+    const show = () => {
+        w._img.src = writeThumbUrl(seq, i);
+        i = (i >= seq.last) ? seq.first : i + 1;
+    };
+    show();
+    // A frame clock rather than requestAnimationFrame: each frame is a server round trip, so pacing by wall
+    // time is both closer to the real rate and kinder to the machine than redrawing as fast as it can.
+    node._ocioFlipTimer = setInterval(show, Math.max(40, 1000 / seq.fps));
+    node.setDirtyCanvas(true, true);
+}
+
+async function applyCsNarrowing(node) {
+    const w = W(node, "output_colorspace");
+    if (!w || !w.options) return;
+    const enc = await ocioEncodings();
+    if (!Object.keys(enc.encodings).length) return;          // no data -> offer everything, as before
+    if (!w._ocioAllCs) w._ocioAllCs = (w.options.values || []).slice();   // the full list, kept once
+    const container = W(node, "container")?.value;
+    const key = container === "video" ? CODEC_ALLOW[W(node, "video_codec")?.value]
+                                      : STILL_ALLOW[W(node, "still_format")?.value];
+    const allow = key ? ENC_ALLOW[key] : null;
+    if (!allow) {                                            // "anything", or an output we have no rule for
+        w.options.values = w._ocioAllCs.slice();
+        if (w.label) w.label = "output_colorspace";
+        return;
+    }
+    const ok = w._ocioAllCs.filter(cs => allow.includes(enc.encodings[cs] || ""));
+    if (!ok.length) { w.options.values = w._ocioAllCs.slice(); return; }  // never leave an empty picker
+    if (!ok.includes(w.value)) ok.unshift(w.value);          // keep the current pick reachable, never replace it
+    w.options.values = ok;
+    // A kept-but-inadvisable value is said out loud rather than fixed behind the artist's back.
+    const bad = !allow.includes(enc.encodings[w.value] || "");
+    w.label = bad ? "output_colorspace (not advised for this output)" : "output_colorspace";
+    node.setDirtyCanvas(true, true);
+}
+
+async function applyAutoView(node) {
+    const vw = W(node, "view");
+    if (!vw) return;
+    if ((node._ocioEdited || new Set()).has("view")) return;      // rule 1: the artist owns it now
+    const enc = await ocioEncodings();
+    const cross = crossingOf(enc, W(node, "from_colorspace")?.value, W(node, "output_colorspace")?.value);
+    let want = VIEW_NONE;
+    if (cross) {
+        const d = enc.views[cross.display];
+        if (d && d.default) want = d.default;
+        else return;                                              // a display we have no views for: leave it
+    }
+    if (vw.value !== want && (vw.options?.values || []).includes(want)) {
+        setWSilent(node, "view", want);
+        node.setDirtyCanvas(true, true);
+    }
 }
 
 // bit-depth options + default per still format
@@ -100,6 +291,15 @@ const STILL_EXT = { exr: "exr", tiff: "tif", png: "png", jpeg: "jpg", dpx: "dpx"
 // preview .mov while the backend wrote .mxf: 'dnxhr_hq_mxf'.startsWith('dnxhr') is true. A prefix test is a
 // second copy of a rule that already lives in this table, and the two drift the moment a codec is added.
 // tools/test_codec_ext_parity.py reads both sides and fails if they ever disagree again.
+// THE ProRes 4444 ROWS SAY 12-bit AND THAT IS CORRECT, though the reason is worth writing down because it is
+// not the obvious one. ffmpeg's prores_ks advertises only 10-bit pixel formats, and this pack asks it for
+// yuv444p10le - so it is tempting to conclude the files are 10-bit. They are not: ProRes 4444 stores in a
+// 12-bit grid, and a decoder reads the written file back as yuv444p12le, which is what
+// tools/test_codec_ext_parity.py measures on a real encode rather than restating from a help page. That test
+// caught this table being "corrected" to 10-bit on 2026-08-15 and was right to.
+//
+// Related, since it comes up: there is no separate codec to install that would change any of this. Nuke on
+// Windows carries avcodec-58.dll, the same ffmpeg, because Apple ended QuickTime for Windows in 2016.
 const CODEC_INFO = {
     prores_4444: { bits: "12-bit", ext: ".mov" }, prores_422hq: { bits: "10-bit", ext: ".mov" },
     prores_422: { bits: "10-bit", ext: ".mov" }, dnxhr_hq: { bits: "8-bit", ext: ".mov" },
@@ -1245,17 +1445,19 @@ function findUpstreamType(node, typeName, seen) {
 // ---- profile widget: HDR source preset -> from/output colorspace + still_format/bit_depth (silent) ---------
 // These must stay byte-identical to the backend mapping in io_nodes.py (OCIOWrite.write), and the from/out
 // strings must be values the from_colorspace combo actually offers - ComfyUI rejects an unknown combo value
-// with HTTP 400 and no fallback. tools/test_write_output.py asserts the mirror.
+// with HTTP 400 and no fallback. tools/test_ltx_hdr_profiles.py asserts the mirror - it reads this table and
+// compares it against the backend mapping parsed out of io_nodes.py by AST. (This line used to name
+// tools/test_write_output.py, which contains no profile assertion at all and never has.)
 //
-// LTX 2.3 and LTX 2.5 ARE NOT INTERCHANGEABLE, and the difference is the transfer they arrive in:
-//   2.3 - HDR IC-LoRA on the ARRI LogC3 (EI 800) curve. Lightricks' own ComfyUI node for it,
-//         LTXVHDRDecodePostprocess, already undoes the curve, so what reaches Write is LINEAR.
-//   2.5 - HDR via their --hdr ACESCCT flag. Nothing in ComfyUI undoes that curve, so what reaches Write is
-//         ACEScct LOG CODES, already in AP1 primaries, and only the transfer needs undoing.
-// Using the 2.3 preset on 2.5 material treats log as linear and leaves the frame flat and grey.
+// "LTX 2.3 HDR" IS A 2.3-ONLY PRESET, and the reason is the transfer the frames arrive in. 2.3's HDR is an
+// IC-LoRA on the ARRI LogC3 (EI 800) curve, and Lightricks' own ComfyUI node for it,
+// LTXVHDRDecodePostprocess, already undoes the curve, so what reaches Write is LINEAR.
+// THERE IS NO 2.5 ROW, and its absence is the decision. 2.5's HDR is ACEScct, reached through the --hdr flag
+// in their reference CLI; ComfyUI's core has no ACEScct path at all, so a graph here does not produce those
+// codes on its own. Using the 2.3 preset on genuine 2.5 ACEScct material treats log as linear and leaves the
+// frame flat and grey. Undo that curve explicitly instead: OCIO LogConvert, "Log to Linear", curve "ACEScct".
 const PROFILE_CS = {
     "LTX 2.3 HDR":               { from: "Linear Rec.709 (sRGB)", out: "ACEScg", fmt: "exr", bit: "16f" },
-    "LTX 2.5 HDR (ACEScct)":     { from: "ACEScct",               out: "ACEScg", fmt: "exr", bit: "16f" },
     "LumiPic LogC3 (Flux/Qwen)": { from: "Linear Rec.709 (sRGB)", out: "ACEScg", fmt: "exr", bit: "16f" },
     "LumiPic V10 LogC4":         { from: "Linear Rec.709 (sRGB)", out: "ACEScg", fmt: "exr", bit: "16f" },
     // No fmt/bit: this is the one display-referred preset, so it must NOT force EXR 16f the way the HDR ones
@@ -1298,11 +1500,13 @@ function applyProfile(node, profileName) {
 function findUpstreamSource(node) {
     const ltx = findUpstream(node, (n) => (n.type || "").includes("LTXVHDRDecodePostprocess"));
     if (ltx) return "LTX 2.3 HDR";                      // reliable: a dedicated LTX HDR decode node
-    // There is deliberately NO detector for "LTX 2.5 HDR (ACEScct)". 2.5's HDR has no ComfyUI node to look
-    // for - Lightricks ship it only in their reference CLI (--hdr), their ComfyUI pack has an HDR workflow for
-    // 2.3 and none for 2.5, and greps for acescct across that pack return zero (checked 2026-08-12). Guessing
-    // it from a 2.5 checkpoint name would be wrong as often as right, because a 2.5 graph is usually SDR.
-    // Leave it to the artist to pick, rather than silently choosing a transfer for them.
+    // Nothing detects LTX 2.5 here, and there is no longer a preset for it to select. The preset was removed
+    // because its premise did not hold on this runtime: 2.5's HDR is ACEScct via the --hdr flag in
+    // Lightricks' reference CLI, their ComfyUI pack has an HDR workflow for 2.3 and none for 2.5 (checked
+    // 2026-08-12), and ComfyUI's core has no ACEScct path at all (greps across comfy/ and comfy_extras/
+    // return zero, rechecked 2026-08-15). Do not add a detector back: a 2.5 checkpoint name says nothing
+    // about the transfer, since a 2.5 graph is usually SDR. 2.5 HDR material is undone explicitly with
+    // OCIO LogConvert ("Log to Linear", curve "ACEScct").
     const lora = findUpstream(node, (n) => (n.type || "").includes("LoraLoader"));
     if (lora) {
         const fn = (W(lora, "lora_name")?.value || "").toLowerCase();
@@ -2618,15 +2822,29 @@ app.registerExtension({
                 // change, which is a deliberate act. Same split as OCIO Read, issue #3.
                 onChange(this, "container", () => {
                     applyContainer();
+                    applyCsNarrowing(node);
                     setW(node, "output_colorspace", autoOutCs(W(node, "container")?.value, W(node, "still_format")?.value));
                 });
                 onChange(this, "still_format", () => {
                     applyFormat();
+                    applyCsNarrowing(node);
                     applyCompressionVis();
                     setW(node, "output_colorspace", autoOutCs(W(node, "container")?.value, W(node, "still_format")?.value));
                     pokeWidgets(node);
                 });
-                onChange(this, "video_codec", () => { applyCodecLabel(); pokeWidgets(node); node.setDirtyCanvas(true, true); });
+                onChange(this, "video_codec", () => { applyCsNarrowing(node); applyCodecLabel(); pokeWidgets(node); node.setDirtyCanvas(true, true); });
+                // THE `view` WIDGET FILLS ITSELF IN. Whether a scene/display crossing should be rendered or
+                // merely re-encoded is a question only these two widgets can answer, so it is answered here,
+                // on a real change of either. applyAutoView refuses to act once the artist has touched `view`
+                // by hand, and is never called from onNodeCreated - which fires after a saved graph's values
+                // are restored, and would otherwise rewrite somebody's finished setup on open.
+                for (const w of ["from_colorspace", "output_colorspace"]) {
+                    onChange(this, w, () => { applyAutoView(node); applyCsNarrowing(node); });
+                }
+                // and a hand-set view is the artist's from then on, same contract as auto_range
+                onChange(this, "view", () => {
+                    (node._ocioEdited || (node._ocioEdited = new Set())).add("view");
+                });
                 // auto frame range / fps from the upstream OCIO Read
                 onChange(this, "auto_range", (v) => { if (v) syncWriteFromUpstream(node); });
                 // fps belongs here too: auto_range pulls it from the Read like the others, and its tooltip has
@@ -2729,6 +2947,30 @@ app.registerExtension({
                 const mt = message && message.meta;
                 this._ocioAudio = au ? (Array.isArray(au) ? au[0] : au) : null;
                 this._ocioMeta = mt ? (Array.isArray(mt) ? mt[0] : mt) : null;
+                // A WRITTEN SEQUENCE BECOMES A FLIPBOOK OF THE REAL FRAMES. The H.264 proxy beside this still
+                // ships and still plays; what it cannot do is show what was actually written. It is 8-bit, and
+                // this pack's whole argument is that it does not throw information away - so showing an artist
+                // a compressed copy of their 16-bit master is the one preview it should not settle for.
+                //
+                // Same machinery OCIO Read already uses: /ocio/thumb renders ONE frame server-side through
+                // OCIO and the browser flips through them. thumb_frame takes the written folder and a frame
+                // NUMBER directly, verified on a real write, so nothing new is needed on the server.
+                const sq = message && message.seq_src;
+                if (sq) {
+                    this._ocioSeq = {
+                        src: Array.isArray(sq) ? sq[0] : sq,
+                        first: parseInt((message.seq_first || [1])[0], 10),
+                        last: parseInt((message.seq_last || [1])[0], 10),
+                        fps: parseFloat((message.seq_fps || [24])[0]) || 24,
+                        // The file holds output_colorspace; the browser needs sRGB. Read at execute time
+                        // rather than at draw time, so a later widget edit cannot make the strip disagree
+                        // with the frames it is showing.
+                        cs: W(this, "output_colorspace")?.value || "",
+                    };
+                    startWriteFlipbook(this);
+                } else {
+                    this._ocioSeq = null;
+                }
                 if (c) {
                     this._ocioWrote = Array.isArray(c) ? c[0] : c; this.setDirtyCanvas(true, true);
                     // Vue frontends do not draw the canvas "wrote N" corner text; a toast carries the count there

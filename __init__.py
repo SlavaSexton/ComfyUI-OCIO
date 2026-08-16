@@ -2,6 +2,7 @@
 
 @author Slava Sexton
 """
+import logging
 import os
 
 from .nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
@@ -86,6 +87,44 @@ try:
     async def _ocio_version(request):
         """Report the installed pack version, for the front-end's per-node version badge."""
         return web.json_response({"version": __version__})
+
+    @server.PromptServer.instance.routes.get("/ocio/encodings")
+    async def _ocio_encodings(request):
+        """Every colorspace with the class OCIO itself assigns it, so the front end can narrow a picker.
+
+        The classes come from the config's own `encoding` attribute - `sdr-video`, `hdr-video`, `edr-video`,
+        `log`, `scene-linear`, `data` - which exists for exactly this kind of grouping. The alternative, and
+        what this pack has been bitten by twice, is matching substrings in names: that is how
+        `Linear Rec.709 (sRGB)` came to be treated as a Rec.709 display space because its name contains
+        "rec.709".
+
+        Served rather than hardcoded because the names differ per config. A user on an ACES 1.3 config has a
+        different set, and a front end carrying a baked-in list would narrow their picker wrongly.
+        """
+        try:
+            from .nodes import _resolve_config_keyed
+            cfg, _ = _resolve_config_keyed("")
+            if cfg is None:
+                return web.json_response({"encodings": {}, "error": "no OCIO config"})
+            out = {}
+            for cs in cfg.getColorSpaces():
+                out[cs.getName()] = cs.getEncoding() or ""
+            # AND THE DEFAULT VIEW PER DISPLAY, so the front end can fill the `view` widget in by itself.
+            # Nobody should have to know that ACEScg to Rec.709 needs "ACES 2.0 - SDR 100 nits (Rec.709)"
+            # picked by hand - the config already names one view per display as its default, and that is the
+            # right answer for the overwhelmingly common case. Served rather than hardcoded for the same
+            # reason as the encodings: on an ACES 1.3 config the same display's default is called something
+            # else entirely.
+            views = {}
+            for d in cfg.getDisplays():
+                views[d] = {"default": cfg.getDefaultView(d), "all": list(cfg.getViews(d))}
+            return web.json_response({"encodings": out, "views": views})
+        except Exception as e:
+            # An empty answer is the safe one: the front end falls back to offering everything, which is what
+            # it did before this route existed. A picker that narrows on bad data is worse than one that does
+            # not narrow at all.
+            logging.warning("OCIO: /ocio/encodings failed, the picker will not narrow: %s", e)
+            return web.json_response({"encodings": {}, "error": str(e)})
 
     @server.PromptServer.instance.routes.post("/ocio/upload")
     async def _ocio_upload(request):

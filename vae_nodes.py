@@ -718,10 +718,12 @@ class OCIOVAEDecode:
             # workflow already posting this node with two widget values keeps working; as `required` they
             # would all have started failing.
             "optional": {
-                "tiled": ("BOOLEAN", {"default": False, "label_on": "tiled", "label_off": "whole frame",
-                          "tooltip": "Decode in tiles. Off by default so no saved graph changes. A long clip needs "
-                                     "it on: 121 frames untiled at float32 took 912 s against 60 s tiled. Tiling "
-                                     "also changes the picture, ~30x what precision does. docs/NODES_VAE.md 3.3."}),
+                "tiled": ("BOOLEAN", {"default": True, "label_on": "tiled", "label_off": "whole frame",
+                          "tooltip": "Decode in tiles. ON by default since v1.3.0: the untiled path is the one that "
+                                     "runs out of memory on a real clip, and it is slower even when it fits - 121 "
+                                     "frames at float32 took 912 s untiled against 60 s tiled. Tiling does change "
+                                     "the picture, by roughly 30x what precision does, so turn it off for a short "
+                                     "clip where the whole frame fits. docs/NODES_VAE.md 3.3."}),
                 "tile_size": ("INT", {"default": 384, "min": 64, "max": 4096, "step": 32,
                               "tooltip": "Spatial tile in PIXELS, divided by the VAE's compression ratio (32x on "
                                          "LTX, so 384 becomes 12). 384 measured clean at 60 s for 121 frames; 768 "
@@ -761,7 +763,7 @@ class OCIOVAEDecode:
                    "control over the decode, not as a rescue for dynamic range the model never produced. Tile "
                    "SPACE and not time: a temporal tile edge leaves a visibly soft frame, a spatial one does not.")
 
-    def decode(self, samples, vae, precision="float32", clamp=False, tiled=False, tile_size=384,
+    def decode(self, samples, vae, precision="float32", clamp=False, tiled=True, tile_size=384,
                overlap=64, temporal_size=4096, temporal_overlap=32):
         latent = samples["samples"]
         # Nested latents (audio-video models) carry the video track first, same as the stock node.

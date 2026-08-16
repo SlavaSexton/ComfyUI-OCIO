@@ -1,26 +1,31 @@
 # -*- coding: utf-8 -*-
-"""Both LTX HDR profiles: they exist, they mirror in the front-end, and 2.5's maths is the reference maths.
+"""The HDR write presets: which ones exist, which one must NOT come back, and that the front end mirrors them.
 
 Run:  python tools/test_ltx_hdr_profiles.py      (no pytest, no ComfyUI server, no GPU)
 
-WHY BOTH, AND WHY THEY MUST NOT BE MERGED. LTX-2.3 and LTX-2.5 both have an HDR mode and they arrive in
-DIFFERENT transfers, so one preset cannot serve both:
+WHAT SHIPS. "LTX 2.3 HDR" is a 2.3-only preset. 2.3's HDR is an IC-LoRA on the ARRI LogC3 (EI 800) curve, and
+Lightricks' own ComfyUI node for it - LTXVHDRDecodePostprocess, in Lightricks/ComfyUI-LTXVideo, hdr.py,
+category "Lightricks/HDR" - already undoes that curve, so what arrives at OCIO Write is LINEAR. Their example
+workflow for it is example_workflows/2.3/LTX-2.3_ICLoRA_HDR_Distilled.json. Alongside it: the two LumiPic
+presets, which decode an ARRI curve on the pixels themselves, and "SDR Rec.709 delivery", the one
+display-referred preset, which must not force a scene-linear container.
 
-  2.3  HDR IC-LoRA on the ARRI LogC3 (EI 800) curve. Lightricks' own ComfyUI node for it -
-       LTXVHDRDecodePostprocess, in Lightricks/ComfyUI-LTXVideo, hdr.py, category "Lightricks/HDR" - already
-       undoes the curve, so what arrives at OCIO Write is LINEAR. Their example workflow for it is
-       example_workflows/2.3/LTX-2.3_ICLoRA_HDR_Distilled.json.
-  2.5  HDR via the --hdr {SRGB_LINEAR,ACESCG,ACESCCT} flag in their reference CLI. Their reference rotates
-       source primaries to ACEScg BEFORE compressing (ltx-core hdr.py:126-138), so the VAE hands out ACEScct
-       LOG CODES that are already in AP1 primaries. Nothing in ComfyUI undoes that curve: their ComfyUI pack
-       has no HDR workflow under example_workflows/2.5 and no acescct/acescg anywhere in it (checked
-       2026-08-12), and stock comfy_extras/nodes_lt.py has no HDR code at all.
+WHAT WAS REMOVED, AND WHY THIS FILE NOW ASSERTS ITS ABSENCE. "LTX 2.5 HDR (ACEScct)" is gone. It mapped
+ACEScct -> ACEScg on the assumption that an LTX-2.5 decode in ComfyUI hands out ACEScct log codes. That
+encoding is reached through the --hdr {SRGB_LINEAR,ACESCG,ACESCCT} flag in Lightricks' reference CLI; their
+ComfyUI pack has no HDR workflow under example_workflows/2.5 and no acescct/acescg anywhere in it (checked
+2026-08-12), and ComfyUI's own core carries no ACEScct path either - greps for acescct across comfy/ and
+comfy_extras/ return zero (rechecked 2026-08-15, with a control grep to prove the probe was looking). Nothing
+behind it was ever measured on a generation through this pack, unlike every profile that remains. 2.5 HDR
+material is handled explicitly: OCIO LogConvert, operation "Log to Linear", curve "ACEScct", after the decode.
 
-Feed 2.5 material through the 2.3 preset and log is treated as linear: the frame comes out flat and grey.
-That is the failure this file exists to prevent.
+A removed combo value cannot come back by accident and must not creep back by hand, so its absence is
+asserted on all four surfaces it used to occupy: the combo, the backend mapping in write(), the front-end
+PROFILE_CS table, and the EXR-16f forcing list.
 
 THE 2.3 PRESET NAME IS FROZEN. A combo value is matched by string and ComfyUI answers an unknown one with
 HTTP 400 and no fallback, so renaming "LTX 2.3 HDR" would break every saved graph that uses it. Asserted.
+That same mechanism is what makes the 2.5 removal a real breaking change, which CHANGELOG.md states.
 """
 import importlib.util
 import os
@@ -65,12 +70,17 @@ REQ = io_nodes.OCIOWrite.INPUT_TYPES()["required"]
 PROFILES = list(REQ["profile"][0])
 CS_VALUES = set(REQ["from_colorspace"][0])
 
-P23, P25 = "LTX 2.3 HDR", "LTX 2.5 HDR (ACEScct)"
+P23 = "LTX 2.3 HDR"
+P25_REMOVED = "LTX 2.5 HDR (ACEScct)"
+PSDR = "SDR Rec.709 delivery"
+PLOG = ("LumiPic LogC3 (Flux/Qwen)", "LumiPic V10 LogC4")
 
-print("both profiles are offered, and the 2.3 name is frozen")
+print("the 2.3 preset is offered under its EXACT original name, and 2.5 is gone")
 check("the 2.3 profile still exists under its EXACT original name", P23 in PROFILES)
-check("the 2.5 profile exists", P25 in PROFILES, repr(P25))
-check("they are distinct entries, not one merged option", P23 != P25 and len(set(PROFILES)) == len(PROFILES))
+check("the removed 2.5 profile is NOT offered by the combo", P25_REMOVED not in PROFILES, repr(P25_REMOVED))
+check("no entry mentions 2.5 under any spelling, so it did not come back renamed",
+      not [p for p in PROFILES if "2.5" in p], f"offenders: {[p for p in PROFILES if '2.5' in p]}")
+check("the list has no duplicates", len(set(PROFILES)) == len(PROFILES))
 print(f"         full list: {PROFILES}")
 
 # ------------------------------------------------------------------ read the REAL backend mapping, by AST
@@ -117,27 +127,24 @@ def backend_mapping(path):
 
 
 BACKEND = backend_mapping(os.path.join(_ROOT, "io_nodes.py"))
-print(f"\nbackend mapping read from the source by AST: "
-      f"{ {k: v for k, v in BACKEND.items() if 'LTX' in k} }")
+print(f"\nbackend mapping read from the source by AST: {BACKEND}")
 check("the 2.3 mapping was found in write()", P23 in BACKEND)
-check("the 2.5 mapping was found in write()", P25 in BACKEND)
-check("the two profiles do NOT map to the same source colorspace",
-      BACKEND.get(P23, ("a",))[0] != BACKEND.get(P25, ("b",))[0],
-      f"2.3 from={BACKEND.get(P23, ('?',))[0]!r}, 2.5 from={BACKEND.get(P25, ('?',))[0]!r}")
-check("2.5 arrives as a LOG encoding, as its own reference produces",
-      BACKEND.get(P25, ("",))[0] == "ACEScct", f"got {BACKEND.get(P25, ('?',))[0]!r}")
+check("the removed 2.5 profile has NO live branch in write()", P25_REMOVED not in BACKEND)
 check("2.3 arrives as LINEAR, because their own node already undid LogC3",
       BACKEND.get(P23, ("",))[0] == "Linear Rec.709 (sRGB)", f"got {BACKEND.get(P23, ('?',))[0]!r}")
+# The 2.5 removal must not have taken the surviving mapping's meaning with it: nothing that ships may claim
+# to be fed ACEScct log codes, because no ComfyUI graph produces them without an explicit LogConvert.
+check("no shipped preset claims ACEScct as its source encoding",
+      not [k for k, v in BACKEND.items() if v[0] == "ACEScct"],
+      f"offenders: {[k for k, v in BACKEND.items() if v[0] == 'ACEScct']}")
 
 print("\nthe colorspaces each profile selects are values the combo actually offers (the HTTP 400 trap)")
-PSDR = "SDR Rec.709 delivery"
 # The SDR row was added to PROFILE_CS on 2026-08-13 with a source comment claiming THIS FILE guarded it. It did
-# not: the filter below read `k in (P23, P25)`, so mutating either side of the SDR mapping to garbage left the
-# run green - proven by mutation, with a sanity mutation of the LTX 2.5 mapping going red to calibrate the probe.
-# Every mapped profile is covered now, and the EXR-16f expectation became CONDITIONAL, because that profile
-# deliberately forces no format: it is display-referred, and forcing scene-linear EXR would contradict its point.
-EXPECT = {k: v for k, v in BACKEND.items() if k in (P23, P25, PSDR)}
-FORCES_EXR = (P23, P25)
+# not: the filter here read `k in (P23, P25)`, so mutating either side of the SDR mapping to garbage left the
+# run green - proven by mutation. EVERY backend-mapped profile is covered now, with no name filter at all, so
+# a profile added later cannot slip in unguarded the way the SDR one did.
+EXPECT = dict(BACKEND)
+FORCES_EXR = (P23,)
 check("the SDR delivery profile is offered", PSDR in PROFILES)
 check("and it is MAPPED in the backend, not merely listed", PSDR in BACKEND,
       f"backend maps: {sorted(BACKEND)}")
@@ -149,12 +156,14 @@ for prof, (src, dst) in sorted(EXPECT.items()):
     check(f"{prof}: from={src!r} is a real combo value", src in CS_VALUES)
     check(f"{prof}: out={dst!r} is a real combo value", dst in CS_VALUES)
 
-print("\nthe front-end mirrors the backend for BOTH profiles")
+print("\nthe front-end mirrors the backend, and carries no row for the removed profile")
 js = open(os.path.join(_ROOT, "web", "ocio_io.js"), encoding="utf-8").read()
 block = re.search(r"const PROFILE_CS\s*=\s*\{(.*?)\n\};", js, re.S)
 check("PROFILE_CS is present in the front-end", block is not None)
 if block:
     body = block.group(1)
+    check("the removed 2.5 profile has NO front-end row",
+          re.search(r'"' + re.escape(P25_REMOVED) + r'"\s*:', body) is None)
     for prof, (src, dst) in EXPECT.items():
         row = re.search(r'"' + re.escape(prof) + r'"\s*:\s*\{([^}]*)\}', body)
         check(f"{prof} has a front-end row", row is not None)
@@ -182,6 +191,22 @@ if block:
                 check(f"{prof} front-end forces NO format, matching a backend that forces none",
                       got_fmt is None and got_bit is None,
                       f"fmt={got_fmt.group(1) if got_fmt else None} bit={got_bit.group(1) if got_bit else None}")
+
+    # The two LumiPic presets never reach the AST mapping above, because their branch is `profile in
+    # _LOG_PROFILES` rather than `profile == "<name>"`, so nothing here used to read their front-end rows at
+    # all: mutating either one to garbage left the file green. They are HDR rows and must look like it.
+    print("\nthe LumiPic rows, which the AST mapping cannot see and nothing else was checking")
+    for prof in PLOG:
+        check(f"{prof} is offered by the combo", prof in PROFILES)
+        row = re.search(r'"' + re.escape(prof) + r'"\s*:\s*\{([^}]*)\}', body)
+        check(f"{prof} has a front-end row", row is not None)
+        if row:
+            r = row.group(1)
+            check(f"{prof} front-end row is the HDR shape: linear in, ACEScg out, EXR 16f",
+                  re.search(r'from:\s*"Linear Rec\.709 \(sRGB\)"', r) is not None
+                  and re.search(r'out:\s*"ACEScg"', r) is not None
+                  and re.search(r'fmt:\s*"exr"', r) is not None
+                  and re.search(r'bit:\s*"16f"', r) is not None, r.strip())
 
 print("\napplyProfile GUARDS its format writes, so a profile without fmt/bit cannot write `undefined`")
 # Asserting the SDR row simply has no fmt/bit is NOT enough, and leaving it there was the same blind spot twice
@@ -213,25 +238,30 @@ if m:
     check("the colorspace writes are NOT guarded, since every mapped profile carries both",
           re.search(r"setWSilent\(\s*node\s*,\s*[\"']from_colorspace", body) is not None)
 
-print("\nthe backend really maps each profile, and forces EXR 16f for both")
+print("\nthe backend really maps each profile, and the EXR-16f forcing list holds exactly the HDR presets")
 src_txt = open(os.path.join(_ROOT, "io_nodes.py"), encoding="utf-8").read()
 for prof, (src, dst) in EXPECT.items():
     # The mapping must be reachable from OCIOWrite.write, not merely mentioned in a comment. Requiring the
     # profile name to appear in an `elif profile ==` line is what distinguishes a live branch from prose.
     live = re.search(r'elif\s+profile\s*==\s*"' + re.escape(prof) + r'"', src_txt) is not None
     check(f"{prof} has a live branch in write(), not just a comment", live)
+check("the removed 2.5 profile has no `elif profile ==` line anywhere in io_nodes.py",
+      re.search(r'elif\s+profile\s*==\s*"' + re.escape(P25_REMOVED) + r'"', src_txt) is None)
 # Anchored on the ASSIGNMENT and searched backwards, deliberately not with a paren-matching regex. A regex
-# of the form `if profile in \((.*?)\)` cannot work here, because the profile name itself contains
-# parentheses: the non-greedy group closes on the ")" inside "LTX 2.5 HDR (ACEScct)" and the captured text
-# then excludes the very name being looked for. The first version of this check failed for exactly that
-# reason, on a list that was correct - the name I chose broke the probe that inspects it.
+# of the form `if profile in \((.*?)\)` cannot work here, because a profile name in that list contains
+# parentheses: the non-greedy group closes on the ")" inside "LumiPic LogC3 (Flux/Qwen)" and the captured
+# text then excludes the very name being looked for. The first version of this check failed for exactly that
+# reason, on a list that was correct - the names in the list break the probe that inspects it. The name that
+# first exposed it, "LTX 2.5 HDR (ACEScct)", has since been removed; LumiPic keeps the hazard alive, so the
+# anchor stays rather than being "simplified" back into a regex that would silently pass on a broken list.
 ANCHOR = 'still_format, bit_depth = "exr", "16f"'
 pos = src_txt.find(ANCHOR)
 window = src_txt[max(0, pos - 500):pos] if pos >= 0 else ""
 check("the EXR-16f forcing block exists", pos >= 0)
-check("both HDR profiles are in the EXR-16f forcing list",
-      P23 in window and P25 in window,
-      f"2.3 present: {P23 in window}, 2.5 present: {P25 in window}")
+check("the surviving HDR presets are all in the EXR-16f forcing list",
+      all(p in window for p in (P23,) + PLOG),
+      f"missing: {[p for p in (P23,) + PLOG if p not in window]}")
+check("the removed 2.5 profile is NOT in the EXR-16f forcing list", P25_REMOVED not in window)
 check("the forcing block is still gated on the profile, not applied unconditionally",
       "if profile in (" in window)
 # The SDR profile must be ABSENT from that list. It is display-referred, so forcing EXR 16f would hand the
@@ -240,12 +270,28 @@ check("the forcing block is still gated on the profile, not applied unconditiona
 check("the SDR delivery profile is NOT in the EXR-16f forcing list", PSDR not in window,
       "it forces a format it has no business forcing")
 
-print("\nTHE 2.5 MATHS IS THE REFERENCE MATHS: OCIO's ACEScct -> ACEScg must equal the published curve")
-# This is the check that makes the 2.5 preset trustworthy. The preset applies no curve of its own - it asks
-# the OCIO config to go ACEScct -> ACEScg, which should be the transfer decode and nothing else, because
-# ACEScct's native primaries ARE AP1. If that holds, the preset reproduces Lightricks' decode
-# (ltx-core hdr.py:75-79) using the colour path the community has already vetted, with no new maths.
+print("\nthe removed name is gone from the shipped surfaces, not merely from the code paths above")
+# A combo value survives in a saved workflow as a STRING, so the one thing that must never happen is the docs
+# telling somebody to pick a value the server will reject with HTTP 400. Prose that RECORDS the removal is
+# fine and expected; what is checked is that no shipped file still offers it as a live choice.
+for rel in ("io_nodes.py", os.path.join("web", "ocio_io.js")):
+    txt = open(os.path.join(_ROOT, rel), encoding="utf-8").read()
+    quoted = re.search(r'["\']' + re.escape(P25_REMOVED) + r'["\']\s*[:,\]]', txt)
+    check(f"{rel} contains no live {P25_REMOVED!r} entry", quoted is None,
+          f"found: {quoted.group(0) if quoted else None!r}")
+
+print("\nOCIO's ACEScct -> ACEScg IS the published decode, which is what makes the manual route trustworthy")
+# This section outlived the preset it was written for. With "LTX 2.5 HDR (ACEScct)" gone, ACEScct is still a
+# value the from_colorspace combo offers, and it is still the transfer an artist undoes by hand on real HDR
+# material - so the claim it guards is now about the MANUAL route rather than a preset. ACEScct's native
+# primaries ARE AP1, so ACEScct -> ACEScg should be the transfer decode and nothing else. tools/test_acescct.py
+# and tools/test_acescct_reference_parity.py cover this pack's own curve functions in nodes.py; nothing but
+# this check covers the OCIO CONFIG's colorspace pair, which is a different mechanism reached by a different
+# widget. Reference: Lightricks/LTX-2 ltx-core hdr.py:75-79, the published AMPAS S-2016-001 constants.
 A_LIN, B_LIN, Y_BRK, LOG_M, LOG_B = 10.5402377416545, 0.0729055341958355, 0.155251141552511, 17.52, 9.72
+
+check("ACEScct is still a from_colorspace the combo offers, so the manual route exists",
+      "ACEScct" in CS_VALUES)
 
 
 def ref_decompress(y):

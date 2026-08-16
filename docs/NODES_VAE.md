@@ -777,10 +777,11 @@ Decode side:
 ```
 
 Two notes on the curve. The combo value is exactly `ACEScct`, with that capitalisation; `vae_nodes.py`'s own
-docstring writes it lowercase, which would be rejected on the API path. And there is a shorter equivalent to
-the explicit `OCIO LogConvert` after the decode: set `OCIOWrite.profile` to `LTX 2.5 HDR (ACEScct)`, which
-asks the OCIO config for ACEScct to ACEScg and forces EXR 16f, matching the half-float EXR the reference
-writes. The explicit version is in the chain above because it is the one you can read at a glance.
+docstring writes it lowercase, which would be rejected on the API path. And the explicit `OCIO LogConvert`
+after the decode is now the only way to do this, so wire it: `operation = Log to Linear`, `curve = ACEScct`,
+between `OCIO VAE Decode` and `OCIO Write`, exactly as the chain above shows. An `OCIOWrite.profile` shortcut
+for it used to exist and was removed - see CHANGELOG.md for why, and for what it breaks in saved workflows.
+Set `bit_depth` to `16f` yourself if you want the half-float EXR the reference writes; the chain above does.
 
 Do not expect the unclamped decode to add stops here. Section 1 has the measurement: on real ACEScct
 material at +3.9 stops, unclamped and clamped were the same, because code 1.0 is already about linear 222.

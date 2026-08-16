@@ -127,8 +127,9 @@ KSampler -> OCIO VAE Decode -> OCIO Write
 ```
 
 **The LTX-2.5 HDR round trip.** Its VAE speaks ACEScct log codes, so the curve has to be undone before the
-picture means anything. Either put an `OCIO LogConvert` in the chain, or let `OCIO Write`'s
-`LTX 2.5 HDR (ACEScct)` profile do it.
+picture means anything. Put an `OCIO LogConvert` in the chain and do it explicitly. There is no `OCIO Write`
+profile for this: the one that existed was removed, because nothing in ComfyUI puts the model on its ACEScct
+path in the first place (see CHANGELOG.md).
 
 ```
 OCIO Read (ACEScg) -> OCIO LogConvert (Linear to Log, ACEScct) -> OCIO VAE Encode -> [the model]

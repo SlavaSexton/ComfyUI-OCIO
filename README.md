@@ -711,10 +711,17 @@ decode to float precision. As with any EXR here, set `OPENCV_IO_ENABLE_OPENEXR=1
 
 **These two are not interchangeable, and the wrong preset does not error - it just looks wrong.** LTX-2.3's HDR is
 an IC-LoRA trained on the ARRI LogC3 curve, and Lightricks' own ComfyUI node already undoes that curve, so what
-reaches this pack is **linear**. LTX-2.5's HDR is **ACEScct**, reached through the `--hdr` flag in their reference
-CLI: their pipeline rotates the source primaries to AP1 *before* compressing, so the VAE hands out ACEScct **log
-codes already in ACEScg primaries** and only the transfer has to be undone. Feed 2.5 material through the 2.3
-preset and log gets treated as linear: the frame comes out flat and grey.
+reaches this pack is **linear**, and the `LTX 2.3 HDR` preset is for exactly that. LTX-2.5's HDR is **ACEScct**,
+reached through the `--hdr` flag in their reference CLI: their pipeline rotates the source primaries to AP1
+*before* compressing, so the VAE hands out ACEScct **log codes already in ACEScg primaries** and only the transfer
+has to be undone. Feed 2.5 material through the 2.3 preset and log gets treated as linear: the frame comes out
+flat and grey.
+
+**There is no 2.5 preset to reach for, and that is deliberate.** The `--hdr` flag is in their CLI, not in
+ComfyUI: their ComfyUI pack ships no 2.5 HDR workflow, and ComfyUI's core has no ACEScct path at all, so a 2.5
+graph here does not produce those codes on its own. This pack briefly shipped an `LTX 2.5 HDR (ACEScct)` write
+preset that assumed otherwise. It was removed, and CHANGELOG.md says why and what that breaks. Undo the curve
+explicitly instead, which is what the diagram below has always shown.
 
 **This is their choice, not ours, and it is written down.** Lightricks' own
 [HDR documentation](https://github.com/Lightricks/LTX-2/blob/main/packages/ltx-pipelines/docs/hdr.md) defines
@@ -722,8 +729,8 @@ the flag as `--hdr {SRGB_LINEAR,ACESCG,ACESCCT}` and states what each value does
 `ACESCG` are both **compressed to ACEScct for the VAE**, while `ACESCCT` means the codes are already ACEScct and
 pass through with no load-time transfer. ACEScct is the space the VAE actually speaks; the other two are
 conveniences that get converted into it. The same page records that their decode runs in **float32** for HDR
-while SDR stays bf16, and that it writes half-float EXR frames plus a BT.2020/HLG master, which is why this
-pack's `LTX 2.5 HDR (ACEScct)` profile forces EXR 16f. ACEScct itself is a published standard, ACES log with a
+while SDR stays bf16, and that it writes half-float EXR frames plus a BT.2020/HLG master, which is why the
+recipe below writes EXR at `16f`. ACEScct itself is a published standard, ACES log with a
 toe, black at `0.0729`, defined in SMPTE S-2016-001 - so both ends of the chain are specified by someone other
 than us.
 
@@ -755,11 +762,11 @@ values brighter than linear ~223, which is where an ACEScct code passes 1.0, and
 conversion. `OCIO VAE Encode` reports those rather than hiding them, and its `out_of_range` widget can match
 their behaviour exactly if you want the input the model was trained on.
 
-**Two ways to undo the curve, and they are equivalent.** The diagram shows the explicit one, which is the clearer
-starting point: **OCIO LogConvert** with `operation = Log to Linear` and `curve = ACEScct` after the decode, and
-the mirror of it (`Linear to Log`, `ACEScct`) before the encode. The short one is **OCIO Write**'s
-`profile = LTX 2.5 HDR (ACEScct)`, which asks the OCIO config for ACEScct to ACEScg and forces EXR 16f, matching
-the half-float EXR their reference writes. Pick whichever you can read at a glance in your graph.
+**Undo the curve explicitly, which is what the diagram shows.** **OCIO LogConvert** with
+`operation = Log to Linear` and `curve = ACEScct` after the decode, and the mirror of it (`Linear to Log`,
+`ACEScct`) before the encode. Set `OCIO Write` to EXR `16f` yourself to match the half-float EXR their reference
+writes. There was a one-widget shortcut for the write half of this, `profile = LTX 2.5 HDR (ACEScct)`; it has
+been removed, because the assumption it rested on does not hold inside ComfyUI. CHANGELOG.md has the detail.
 
 **Decode with the clamp off, or the range you came for is gone.** That is what **OCIO VAE Decode** is for: the
 stock `VAEDecode` finishes with `.clamp_(0, 1)`. Turn `tiled` on for anything long, and read the node's

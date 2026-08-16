@@ -115,9 +115,21 @@ VIDEO_DISPLAY = "Rec.1886 Rec.709 - Display"
 
 
 def _auto_output_cs(container, still_format):
+    """The colorspace a freshly chosen container/format starts on. MUST stay in step with autoOutCs() in
+    web/ocio_io.js - if the two disagree the node shows one colorspace and the backend writes another.
+
+    DPX gets ADX10 because DPX is the film-scan container: it exists to carry printing density, and ADX10 is
+    the ACES encoding of exactly that (SMPTE ST 2065-3). Until 2026-08-15 it fell through to the display
+    default, which declares a scanned negative to be a finished picture on a monitor - the same class of error
+    as reading log as linear. ADX16 exists for 16-bit DPX, but the depth default is chosen separately, so this
+    stays on the 10-bit encoding and a hand-set depth is the artist's to match."""
     if container == "video":
         return VIDEO_DISPLAY
-    return "ACEScg" if still_format == "exr" else WORKING
+    if still_format == "exr":
+        return "ACEScg"
+    if still_format == "dpx":
+        return "ADX10"
+    return WORKING
 
 
 # --------------------------------------------------------------------------- loading
@@ -1018,6 +1030,52 @@ _DPX_TRANSFER = {
     5: "SMPTE 274M", 6: "ITU-R 709-4", 7: "ITU-R 601-5 B/G", 8: "ITU-R 601-5 M", 9: "NTSC composite",
     10: "PAL composite", 11: "Z linear", 12: "Z homogeneous",
 }
+def _stamp_dpx_transfer(path, colorspace):
+    """Correct the DPX transfer and colorimetric descriptors, which ffmpeg writes as `Linear` for everything.
+
+    Measured 2026-08-15: an ADX10 write and a Rec.709 write both came back with byte 801 = 2 (`Linear`) and
+    byte 802 = 2 (`Unspecified`). ffmpeg's dpx encoder does not take these from anywhere - it stamps one
+    answer regardless of content - so a printing-density scan and a broadcast picture ship claiming to be the
+    same thing, and the one thing neither of them is.
+
+    This is the same defect just fixed on the video side, in a different container: a file stating something
+    about itself that is not true. Unlike CICP, SMPTE ST 268 HAS the codes - 1 is printing density, 3 is
+    logarithmic, 6 is ITU-R 709 - so here the honest answer is to write the right one rather than to stay
+    silent. Only where nothing fits does it leave ffmpeg's value alone.
+
+    Two single bytes at fixed offsets in the generic image header, patched in place after the encode. The
+    layout is not in doubt: this pack's own reader already parses these exact offsets (`_DPX_TRANSFER` and
+    `_DPX_COLORIMETRIC` below, read at buf[801] and buf[802]), and every write here is verified by reading it
+    back with that reader."""
+    if not colorspace:
+        return
+    try:
+        _require_ocio()
+        cfg, _ = _resolve_config_keyed("")
+        cs_obj = cfg.getColorSpace(colorspace) if cfg is not None else None
+        enc = (cs_obj.getEncoding() or "") if cs_obj is not None else ""
+    except Exception:
+        enc = ""
+    low = colorspace.lower()
+    if low.startswith("adx"):
+        transfer = colorimetric = 1                     # printing density, what ADX encodes and DPX exists for
+    elif enc == "log":
+        transfer = colorimetric = 3                     # logarithmic; a camera log is not printing density
+    elif enc == "scene-linear":
+        transfer = colorimetric = 2                     # linear: ffmpeg's value happens to be right here
+    elif "709" in low or "1886" in low:
+        transfer = colorimetric = 6                     # ITU-R 709-4
+    else:
+        return                                          # nothing in ST 268 fits: leave what ffmpeg wrote
+    try:
+        with open(path, "r+b") as f:
+            f.seek(801)
+            f.write(bytes([transfer, colorimetric]))
+    except Exception as e:                               # a descriptor must never cost the artist the frame
+        logging.warning("OCIO Write: could not stamp the DPX transfer descriptor on %s: %s",
+                        os.path.basename(path), e)
+
+
 _DPX_COLORIMETRIC = {
     0: "User defined", 1: "Printing density", 2: "Unspecified", 3: "Unspecified", 4: "Unspecified video",
     5: "SMPTE 274M", 6: "ITU-R 709-4", 7: "ITU-R 601-5 B/G", 8: "ITU-R 601-5 M", 9: "NTSC composite",
@@ -2553,6 +2611,7 @@ def _save_still(path, rgb, fmt, bit_depth, alpha=None, colorspace=None, compress
             raise RuntimeError(
                 f"DPX write produced no file at {os.path.basename(path)}: "
                 f"{proc.stderr.decode('utf-8', 'ignore')[:200]}")
+        _stamp_dpx_transfer(path, colorspace)
         return
     if fmt in ("tif", "tiff"):
         if bit_depth == "32f":
@@ -2676,6 +2735,33 @@ def _video_color_tags(output_colorspace):
     # not name, which still lands on the documented sRGB default.
     if output_colorspace is None:
         return []
+    # AND THE SAME REASONING APPLIES TO EVERY SPACE CICP CANNOT DESCRIBE, which the paragraph above stated as a
+    # principle and then applied to exactly one branch. Measured 2026-08-15: 39 of this config's 55 colorspaces
+    # fell through to the sRGB default below, so an ACEScg ProRes left this machine tagged
+    # `primaries=bt709 transfer=iec61966-2-1 matrix=bt709` - the file declaring itself sRGB while holding linear
+    # AP1, and a player that trusts the tag applies the sRGB EOTF to linear data.
+    #
+    # It is not fixable by adding branches, because the codes do not exist. ITU-T H.273 (V4, 07/2024) Table 3
+    # defines TransferCharacteristics 0-18 with 19-255 reserved, and its only logarithmic entries are 9 (100:1)
+    # and 10 (100*sqrt(10):1) - there is no code for ARRI LogC3/LogC4, S-Log3, V-Log, Canon Log, Log3G10,
+    # D-Log, Apple Log, BMDFilm, DaVinci Intermediate, ACEScc, ACEScct or ADX. Table 2 defines ColourPrimaries
+    # 0-12 and 22, with no AP0, AP1, or any camera wide gamut.
+    #
+    # So: log and scene-linear say nothing at all, which is the honest answer. Note this is NOT because linear
+    # is untaggable - H.273 value 8 IS "Linear" - but because the primaries almost always are, and a file that
+    # names a transfer while lying about the gamut is no better off.
+    #
+    # Asked of the config through `encoding`, not matched against names. OCIO carries that attribute for
+    # exactly this kind of grouping, and the name-matching below is what made `Linear Rec.709 (sRGB)` pick up
+    # `trc=bt709` from the substring "rec.709" - scene-linear data tagged with a gamma curve.
+    try:
+        _require_ocio()
+        _cfg, _ = _resolve_config_keyed("")
+        _cs_obj = _cfg.getColorSpace(output_colorspace) if _cfg is not None else None
+        if _cs_obj is not None and (_cs_obj.getEncoding() or "") in ("log", "scene-linear"):
+            return []
+    except Exception:
+        pass                                     # a tagging decision must never take the write down
     cs = output_colorspace.lower()
     # HLG IS TESTED BEFORE PQ, and that order is the whole fix. The old predicate was `"2100" in cs or "pq" in cs`
     # -> PQ, and the config's HLG space is literally named "Rec.2100-HLG - Display", so it matched on "2100" and
@@ -2966,6 +3052,26 @@ def save_video(arr01, out_path, codec, fps, output_colorspace=None, audio_pcm=No
             f"{codec} is 8-bit by profile and cannot carry {output_colorspace}: ITU-R BT.2100 defines HLG and "
             f"PQ at 10 or 12 bits per sample. Use {_HDR_8BIT_PROFILES[codec]}, or pick an SDR output "
             f"colorspace such as 'Rec.1886 Rec.709 - Display'.")
+    # A FILE MUST NOT ASK FOR A DECODER THAT DOES NOT EXIST, EITHER. HEVC levels top out at 35 651 584 luma
+    # samples per frame across Levels 6, 6.1 and 6.2 (H.265 Table A.8). Above that, x265 does not reach for the
+    # 6.3 and 7.x levels the standard gained in 2023 - it does not implement them - and stamps the file
+    # **Level 8.5** instead, which is the "decoder, work it out yourself" value. Hardware decoders are not
+    # obliged to play that, and generally will not.
+    #
+    # Measured on this build rather than read off a table: 640x480 -> Level-3, 8192x4320 (35 389 440 samples,
+    # just under the ceiling) -> Level-6, 16384x8192 (134 217 728) -> Level-8.5. The spec number and the
+    # observed switch land on the same boundary.
+    #
+    # A warning, not a refusal: the file is valid, decodes in software, and a dome or large-format plate may be
+    # exactly what someone means to write. What they must not do is find out at playback that no hardware will
+    # take it.
+    if codec in ("hevc", "hevc_444_12") and (w * h) > 35651584:
+        logging.warning(
+            "OCIO Write: %dx%d is %d luma samples, past the %d ceiling of HEVC Levels 6.x. x265 does not "
+            "implement the 6.3 / 7.x levels added in 2023 and will stamp this file Level 8.5, which hardware "
+            "decoders are not required to play. It will decode in software. For hardware playback, write "
+            "ProRes or DNxHR, or keep the frame at or under 8192x4352.",
+            w, h, w * h, 35651584)
     enc = _video_encoder_args(codec, hdr=hdr)
     muxer = _MXF_MUXER.get(codec)
     cmd = [_FFMPEG, "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb48le",
@@ -3040,6 +3146,109 @@ def _convert(image, in_cs, out_cs):
         return image
     tf_key = ("colorspace", in_cs, out_cs)
     cpu = _cached_cpu_processor(cfg_key, tf_key, lambda: cfg.getProcessor(in_cs, out_cs))
+    return _apply_processor(image, cpu)
+
+
+# The value that means "do what this pack has always done". It is first in the list and the default, because
+# ComfyUI fills a widget missing from a saved workflow with the node's current default: a default that applied
+# a transform would silently re-render every graph ever saved, including for anyone already compensating with
+# an OCIO Display node, who would then get it applied twice.
+_VIEW_NONE = "(none) colorimetric, no tone map"
+
+
+def _view_choices():
+    """The do-nothing value, then every view the loaded config offers.
+
+    Read from the config rather than hardcoded: on ACES 2.0 the view is `ACES 2.0 - SDR 100 nits (Rec.709)`,
+    on someone's ACES 1.3 config it is `ACES 1.0 - SDR Video`, and a hardcoded list would be wrong for them.
+    Union across displays, since the widget cannot know which display a pair resolves to until both
+    colorspaces are picked."""
+    out = [_VIEW_NONE]
+    try:
+        _require_ocio()
+        cfg, _ = _resolve_config_keyed("")
+        if cfg is not None:
+            for d in cfg.getDisplays():
+                for v in cfg.getViews(d):
+                    if v not in out:
+                        out.append(v)
+    except Exception:
+        pass
+    return out
+
+
+def _crosses_scene_display(in_cs, out_cs):
+    """(display, scene, direction) when this pair crosses the scene/display boundary, else None.
+
+    `direction` is "forward" for scene -> display (a render being made viewable) and "inverse" for
+    display -> scene (a finished picture taken back to a working space).
+
+    Asked of OCIO, not of a name list: `getReferenceSpaceType()` reports REFERENCE_SPACE_SCENE or
+    REFERENCE_SPACE_DISPLAY per colorspace, so this keeps working on a user's own config where the names are
+    not ours to predict. None for scene<->scene, display<->display and anything unresolvable - those pairs
+    have no fork, and a rendering transform applied there would be simply wrong."""
+    if not in_cs or not out_cs or in_cs == out_cs:
+        return None
+    _require_ocio()
+    cfg, _ = _resolve_config_keyed("")
+    if cfg is None:
+        return None
+    try:
+        import PyOpenColorIO as OCIO
+        a, b = cfg.getColorSpace(in_cs), cfg.getColorSpace(out_cs)
+        if a is None or b is None:
+            return None
+        disp = OCIO.ReferenceSpaceType.REFERENCE_SPACE_DISPLAY
+        a_disp = a.getReferenceSpaceType() == disp
+        b_disp = b.getReferenceSpaceType() == disp
+    except Exception:
+        return None
+    if a_disp == b_disp:
+        return None
+    return (in_cs, out_cs, "inverse") if a_disp else (out_cs, in_cs, "forward")
+
+
+def _convert_via_view(image, in_cs, out_cs, view):
+    """Cross the scene/display boundary through a display + view instead of a plain colorspace conversion.
+
+    THE TWO ANSWERS. ACEScg to Rec.1886 Rec.709 through a plain ColorSpaceTransform maps scene-linear 0.18 to
+    0.489436 and 4.0 to 1.781807, because OCIO crosses the boundary using the config's
+    `default_view_transform`, which the ACES 2.0 studio config sets to `Un-tone-mapped`. That is a
+    colorimetric conversion, a named and legitimate operation - it is bit-identical to Nuke's
+    `Utility - Rec.709 - Display`. What it is not is a picture render: super-white keeps going past 1.0 and is
+    then clipped by whatever container is written, flattening every highlight onto the same white. Through the
+    ACES Output Transform the same values land on 0.383116 and 0.905089, and nothing reaches code 1.0 until
+    scene-linear around 128.
+
+    Neither is right for every job, which is why this is a choice and not a silent correction. A review
+    deliverable wants the rendered picture. A technical re-encode, a display-to-display change, or material
+    that is already scene-referred must NOT be put through a rendering transform.
+
+    Deliberately NOT inside `_convert`: that is shared by OCIO Read, OCIO Write, the viewport LUT, the
+    /ocio/thumb preview and six scripts under tools/accuracy. Changing behaviour there would move all of them
+    at once, including the measurements this pack's own claims rest on."""
+    cross = _crosses_scene_display(in_cs, out_cs)
+    if not view or view == _VIEW_NONE or cross is None:
+        return _convert(image, in_cs, out_cs)
+    display, scene, direction = cross
+    _require_ocio()
+    cfg, cfg_key = _resolve_config_keyed("")
+    if cfg is None:
+        return image
+    offered = list(cfg.getViews(display))
+    if view not in offered:
+        raise ValueError(
+            f"OCIO Write: view '{view}' does not exist on display '{display}'. This config offers {offered}. "
+            f"A view belongs to a display, and picking one from a different display is how this usually goes "
+            f"wrong.")
+
+    def build():
+        import PyOpenColorIO as OCIO
+        t = OCIO.DisplayViewTransform(src=scene, display=display, view=view)
+        d = OCIO.TRANSFORM_DIR_INVERSE if direction == "inverse" else OCIO.TRANSFORM_DIR_FORWARD
+        return cfg.getProcessor(t, d)
+
+    cpu = _cached_cpu_processor(cfg_key, ("displayview", scene, display, view, direction), build)
     return _apply_processor(image, cpu)
 
 
@@ -3338,17 +3547,26 @@ class OCIOWrite:
             # container this same pack re-reads as scene-linear. Not silently corrected - forcing a format is
             # exactly what this preset must not do, and quietly rewriting the artist's container would be worse
             # than saying so. The tooltip says which containers it is for.
-            "profile": (["none", "auto", "LTX 2.3 HDR", "LTX 2.5 HDR (ACEScct)",
+            # "LTX 2.5 HDR (ACEScct)" was REMOVED, and removing a combo value is a breaking change said out
+            # loud rather than hidden: a saved graph holding it is rejected with HTTP 400 before any of this
+            # code runs. It went because its premise did not hold on this runtime. It mapped ACEScct -> ACEScg
+            # on the assumption that an LTX-2.5 decode in ComfyUI hands out ACEScct log codes, but that
+            # encoding is reached through the --hdr flag in Lightricks' own reference CLI, and ComfyUI's core
+            # has no ACEScct path at all (greps for acescct across comfy/ and comfy_extras/ return zero,
+            # rechecked 2026-08-15). Nothing behind it was ever measured on a generation through this pack,
+            # unlike every profile that remains. 2.5 HDR material is handled explicitly instead: LogConvert,
+            # "Log to Linear", curve "ACEScct", after the decode - which is what the docs already diagram.
+            "profile": (["none", "auto", "LTX 2.3 HDR",
                         "LumiPic LogC3 (Flux/Qwen)", "LumiPic V10 LogC4", "Seedance 4K 10-bit",
                         "SDR Rec.709 delivery"],
                         {"default": "none",
                          # SHORTENED 2026-08-13, from 1181 characters. Measured in the live canvas: this was the
                          # longest tooltip in the pack by a wide margin, and a hover at the moment of a decision
                          # is not where anyone reads eleven hundred characters. What stays is what CHANGES THE
-                         # CHOICE: the two LTX presets are not interchangeable, and SDR must not be left on EXR.
-                         # The mechanism behind both - the LogC3 IC-LoRA, the --hdr ACEScct flag, why auto cannot
-                         # detect 2.5 - is in README.md, and the code comments in write() carry the sources.
-                         "tooltip": "Sets from/output colorspace; the HDR presets also force EXR 16f. LTX 2.3 and 2.5 are NOT interchangeable (2.3 wants linear Rec.709, 2.5 wants ACEScct log) and the wrong one comes out flat. SDR Rec.709 delivery: read docs/NODES_IO.md first."}),
+                         # CHOICE: LTX 2.3 is a 2.3-only preset, and SDR must not be left on EXR. The mechanism
+                         # behind both - the LogC3 IC-LoRA, and why 2.5's ACEScct path gets no preset - is in
+                         # README.md, and the code comments in write() carry the sources.
+                         "tooltip": "Sets from/output colorspace; the HDR presets also force EXR 16f. LTX 2.3 is for 2.3 only: it expects linear, because Lightricks' own node already undid LogC3. There is no 2.5 preset - undo 2.5's ACEScct curve with OCIO LogConvert instead. SDR Rec.709 delivery: read docs/NODES_IO.md first."}),
             "from_colorspace": _cs_combo(WORKING),
             "output_colorspace": _cs_combo("ACEScg"),
             "container": (["still image", "sequence", "video"], {"default": "sequence"}),
@@ -3422,6 +3640,19 @@ class OCIOWrite:
             "auto_colorspace": ("BOOLEAN", {"default": True,
                                  "tooltip": "Superseded and inert - it changes nothing, which is why it is hidden. Use profile = 'auto', which traces the upstream source and covers more cases. Kept only so earlier saved graphs keep their other values in place."}),
         }, "optional": {
+            # OPTIONAL, NOT REQUIRED, AND APPENDED RATHER THAN INSERTED. A new required input is a hard
+            # validation error for any API caller that omits it (execution.py:901-913), and a widget added in
+            # the middle shifts every value in every already-saved workflow, which reads them by position.
+            # Both were caught by test_write_metadata.py on the first attempt at adding this.
+            "view": (_view_choices(), {"default": _VIEW_NONE,
+                     "tooltip": "How to cross the scene/display boundary, on the pairs that cross it at all. "
+                                "Left on (none) the conversion is colorimetric: no tone mapping, so "
+                                "scene-linear 4.0 leaves as 1.78 and the container clips it flat. Pick a view "
+                                "and the ACES Output Transform is applied instead, rolling highlights off - "
+                                "4.0 becomes 0.905, and nothing reaches 1.0 until about 128. Use a view for a "
+                                "review deliverable; leave it off for a technical re-encode or for material "
+                                "already scene-referred. Ignored entirely when both colorspaces sit on the "
+                                "same side, so camera logs and ACEScg to ACEScct are untouched."}),
             "images": ("IMAGE", {"tooltip": "An image / sequence / video frame batch to write. Mutually exclusive with the ComfyUI Video input."}),
             "video": ("VIDEO", {"tooltip": "A ComfyUI native VIDEO (e.g. Load Video) to render out with ALL these Write settings (container, codec, colorspace, bit depth). Mutually exclusive with the image input; the movie's own frame rate is used for a video container."}),
             "alpha": ("MASK", {"tooltip": "Optional alpha channel -> RGBA (EXR / TIFF / PNG; ignored for JPEG). Wire OCIO Read's alpha output, or any MASK."}),
@@ -3472,7 +3703,8 @@ class OCIOWrite:
               bit_depth, auto_range, first_frame, last_frame, start_number, source_start, raw_data,
               output_folder, filename, colorspace_in_name=True, auto_colorspace=True, compression="zip",
               alpha=None, fps=24.0, render_nonce="", images=None, video=None, audio=None,
-              metadata="", write_audio=True):   # render_nonce: cache-buster (see INPUT_TYPES). images/video: mutually-exclusive inputs.
+              metadata="", write_audio=True,
+              view=_VIEW_NONE):   # render_nonce: cache-buster (see INPUT_TYPES). images/video: mutually-exclusive inputs.
         if video is not None:                                        # a native ComfyUI VIDEO -> render it out with ALL these Write settings (container, codec, colorspace, bit depth)
             images, _vfps, _vaudio = _video_unwrap(video)
             if _vfps and _vfps > 0:
@@ -3513,20 +3745,13 @@ class OCIOWrite:
             # LINEAR frames. So this preset sits downstream of their node and correctly expects linear.
             # LTX-2.5's HDR is a DIFFERENT mechanism - ACEScct, via the --hdr flag in their reference CLI - and
             # this preset is wrong for it: applied to ACEScct log codes it would treat log as linear and leave
-            # the image flat and grey. Use "LTX 2.5 HDR (ACEScct)" there. Confirmed 2026-08-12 against their
-            # own repositories: their ComfyUI pack has an HDR workflow for 2.3 and none for 2.5, and greps for
-            # acescct/acescg across that pack return zero.
+            # the image flat and grey. There is deliberately no 2.5 preset to send anyone to: that flag lives in
+            # their CLI, and ComfyUI's core carries no ACEScct path at all (greps for acescct across comfy/ and
+            # comfy_extras/ return zero, rechecked 2026-08-15). Confirmed 2026-08-12 against their own
+            # repositories: their ComfyUI pack has an HDR workflow for 2.3 and none for 2.5, and greps for
+            # acescct/acescg across that pack return zero. For 2.5 material, undo the curve explicitly with
+            # OCIO LogConvert ("Log to Linear", curve "ACEScct") after the decode.
             from_colorspace = "Linear Rec.709 (sRGB)"
-            output_colorspace = "ACEScg"
-        elif profile == "LTX 2.5 HDR (ACEScct)" and not raw_data:
-            # 2.5's HDR path hands the VAE's output straight out as ACEScct LOG CODES in AP1 primaries: their
-            # reference rotates source primaries to ACEScg BEFORE compressing (ltx-core hdr.py:126-138), so the
-            # codes carry no gamut change and only the transfer has to be undone. ACEScct -> ACEScg in OCIO is
-            # exactly that undo and nothing else, which is why no curve is applied by hand here - the config's
-            # own transform does it, on the path the community has already vetted.
-            # Their reference writes half-float EXR (media_io/exr.py:169,190), which is what the EXR 16f
-            # forcing below produces, so our output matches theirs in container as well as in maths.
-            from_colorspace = "ACEScct"
             output_colorspace = "ACEScg"
         elif profile == "SDR Rec.709 delivery" and not raw_data:
             # The ordinary delivery, and the only preset here that is not an HDR one: a display-referred sRGB
@@ -3539,11 +3764,11 @@ class OCIOWrite:
             output_colorspace = "Rec.1886 Rec.709 - Display"
         # "Seedance 4K 10-bit" and "none"/"auto": no backend mapping - auto is resolved front-end, Seedance is
         # a pending placeholder (do not invent a colorspace mapping for it).
-        if profile in ("LTX 2.3 HDR", "LTX 2.5 HDR (ACEScct)", "LumiPic LogC3 (Flux/Qwen)",
+        if profile in ("LTX 2.3 HDR", "LumiPic LogC3 (Flux/Qwen)",
                        "LumiPic V10 LogC4") and not raw_data \
                 and container != "video":
             still_format, bit_depth = "exr", "16f"                       # HDR presets always land as EXR 16f
-        img = images if raw_data else _convert(images, from_colorspace, output_colorspace)
+        img = images if raw_data else _convert_via_view(images, from_colorspace, output_colorspace, view)
         arr = img.detach().cpu().numpy().astype(np.float32)
         a_arr = None
         if alpha is not None:
@@ -3806,6 +4031,35 @@ class OCIOWrite:
             # servable H.264 preview into the temp dir and show it as an animated (playing) preview instead.
             ui["images"] = self._video_preview(sub, fps, saved, apcm)      # apcm, not the raw AUDIO: it is already cut to this write's range, so the preview cannot disagree with the master about where the clip starts
             ui["animated"] = (True,)
+        elif container == "sequence" and int(getattr(written, "shape", [0])[0] or 0) > 1:
+            # A SEQUENCE IS A CLIP, AND WAS SHOWN AS ONE STILL FRAME. Every format this branch writes - EXR, DPX,
+            # TIFF, PNG - is one the browser either cannot decode at all or cannot animate, so a frame range came
+            # back as a single picture and there was no way to see the motion without opening the folder in a
+            # player. The video branch already solved this for its own case, and the same helper works here: a
+            # small H.264 copy in the temp dir, played on the node. The master on disk is untouched.
+            #
+            # No audio on this path even when a track is wired: a frame sequence carries none, and a preview that
+            # plays sound the written files do not have would misrepresent what was produced.
+            ui["images"] = self._video_preview(written, fps, saved)
+            ui["animated"] = (True,)
+            # AND THE FILES THEMSELVES, so the front end can flip through the real frames instead of an H.264
+            # proxy. OCIO Read already does this: /ocio/thumb renders ONE frame server-side through OCIO and
+            # the browser runs a Nuke-style flipbook over a blob cache, which is why a colorspace change there
+            # is exact rather than approximate. The proxy above stays as the fallback - it needs no round trip
+            # and works before any of this is wired - but a pack about colour should be able to show the
+            # frames it actually wrote, at their real depth, not a 8-bit copy of them.
+            #
+            # The path is the written sequence's own directory pattern, and the range is the frame numbers on
+            # disk, so the viewer and the master cannot disagree about which frames exist.
+            try:
+                first_written = paths[0] if paths else None
+                if first_written:
+                    ui["seq_src"] = [os.path.dirname(first_written)]
+                    ui["seq_first"] = [int(start_number)]
+                    ui["seq_last"] = [int(start_number) + int(written.shape[0]) - 1]
+                    ui["seq_fps"] = [float(fps) if fps and fps > 0 else 24.0]
+            except Exception as e:                       # a preview must never take the write down with it
+                logging.warning("OCIO Write: could not describe the sequence for the flipbook: %s", e)
         else:
             ui["images"] = self._preview(preview)
         return {"ui": ui, "result": (saved,)}

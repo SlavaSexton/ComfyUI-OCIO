@@ -156,8 +156,19 @@ check("RETURN_NAMES and OUTPUT_TOOLTIPS have one entry per output",
 check("temporal tiling is OFF by default (a tile far longer than any clip)",
       it["optional"]["temporal_size"][1]["default"] >= 4096,
       str(it["optional"]["temporal_size"][1]["default"]))
-check("tiled defaults OFF, so no existing graph changes behaviour",
-      it["optional"]["tiled"][1]["default"] is False)
+# Changed to ON in v1.3.0, and the old assertion is kept in the history rather than deleted because the
+# reasoning it encoded was sound and simply lost an argument to practice. Off was chosen so that adding this
+# node to a saved graph could not change what that graph produced. What that missed is which default fails
+# WORSE: whole-frame is the path that runs out of memory on a real clip, and it is slower even when it fits
+# (912 s against 60 s over 121 frames at float32). A default that works and can be turned off beats a
+# default that is safe and stops the render.
+#
+# Saved graphs are unaffected either way: widgets_values carries the value chosen when the node was added,
+# so only newly created nodes pick this up. That is the part worth asserting, and it is asserted below.
+check("tiled defaults ON, because whole-frame is the setting that runs out of memory",
+      it["optional"]["tiled"][1]["default"] is True)
+check("   and the signature agrees, so the API path and the canvas cannot disagree",
+      sig["tiled"].default is True, f"signature says {sig['tiled'].default!r}")
 
 print("\nwhich entry point runs")
 vae = TiledVAE()

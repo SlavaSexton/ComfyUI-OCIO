@@ -437,11 +437,17 @@ node's player. So a browser-playable proxy goes to the temp dir instead. It carr
 the same frame cap, so lip sync can be checked without opening the master.
 
 **A `sequence` of more than one frame** plays as **its own frames**, not as a proxy. Every format that branch
-writes - EXR, DPX, TIFF, PNG - is one a browser either cannot decode or cannot animate, so a frame range used
-to come back as a single still. It now flips through the written files, each rendered server-side through
+writes - EXR, DPX, TIFF, PNG, JPEG - is one a browser either cannot decode or cannot animate, so a frame range
+used to come back as a single still. It now flips through the written files, each rendered server-side through
 OCIO by the same `/ocio/thumb` route `OCIO Read`'s viewer uses. That matters for a pack whose argument is
 that it does not throw information away: an 8-bit re-encode is a poor way to show frames just written at 16
 or 32 bits.
+
+All five formats were checked in the canvas, from a source whose three frames are deliberately different
+colours, so a strip that fell back to frame one could not pass. Each returned three distinct frames over the
+written range, and the colour came back within one code value of what the graph started from - including a
+DPX written in ADX10 and one in ARRI LogC3, which is only possible if the strip is decoding through the
+colorspace the file actually holds.
 
 The H.264 proxy is the **fallback**, not a companion: it ships only when the frame range cannot be described,
 so exactly one preview appears on the node. Both at once meant two pictures of the same write disagreeing

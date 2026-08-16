@@ -84,6 +84,13 @@ front end flips through them the way OCIO Read already does, one server-rendered
 `/ocio/thumb`. `thumb_frame` reads them with `_read_still`, the same reader OCIO Read uses, so every format
 this branch can write is one the flipbook can serve back.
 
+Measured on all five, in the canvas, from a source whose three frames are deliberately different colours - a
+strip that quietly fell back to frame one would otherwise look perfectly correct. EXR, TIFF, PNG, JPEG and DPX
+each returned three distinct frames over the written range, with no proxy beside them. The colour is right,
+not merely present: a DPX written in ADX10 and another in ARRI LogC3 both came back within one code value of
+the sRGB the graph started from, which they could not do if the strip were showing log data as though it were
+display-referred.
+
 There is a persistent `↻` in the strip's top-left corner, the same square OCIO Player carries, for when the
 frames on disk change under a preview that is already drawn - a re-render into the same folder, a retake from
 another graph. It re-reads them from disk rather than from the browser's cache. If a frame will not load, the

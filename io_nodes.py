@@ -604,6 +604,71 @@ def _video_decode_budget():
         return min(16 * 1024 ** 3, max(2 * 1024 ** 3, avail // 4))
     except Exception:
         return 4 * 1024 ** 3
+# --- YUV -> RGB in float, WITHOUT throwing the out-of-range away -------------------------------------------
+#
+# A video's picture is almost always YUV, and asking ffmpeg for an RGB pixel format makes ffmpeg do the matrix.
+# Every integer RGB format it can hand back - rgb24, rgb48le - is unsigned and bounded, so ffmpeg CLAMPS on the
+# way out. That is not a rounding loss: a legal limited-range YUV signal converts to RGB values outside 0..1
+# whenever the colour is saturated, because the matrix pushes a channel past the luma it was carried by.
+#
+# Measured on a ProRes 4444 Rec.709 master from this pack's own writer, frame 24, matrix applied by hand:
+# max RGB +1.498, with 2.78% of samples above 1.0 and 1.23% below 0.0, min -0.385. Through rgb48le every one of
+# those becomes exactly 1.0 or exactly 0.0 before any node in the graph sees the frame. The Player's exposure
+# slider then has nothing to reveal in the highlights, which is precisely how the defect was reported.
+#
+# So the matrix is done here instead, in float32, from planar YUV. It costs the same memory (yuv444p16le is 6
+# bytes per pixel, exactly like rgb48le, so the decode budget above is unchanged) and it keeps what the file
+# actually holds.
+_YUV_KRKB = {                                    # ITU matrix coefficients -> (Kr, Kb)
+    "bt709": (0.2126, 0.0722),
+    "bt2020nc": (0.2627, 0.0593), "bt2020_ncl": (0.2627, 0.0593),
+    "smpte170m": (0.299, 0.114), "bt470bg": (0.299, 0.114), "bt601": (0.299, 0.114),
+    "fcc": (0.30, 0.11), "smpte240m": (0.212, 0.087),
+}
+
+
+def _yuv_matrix(color_space, width):
+    """(Kr, Kb) for a stream's `color_space` tag. Unknown or absent falls back the way every decoder does: BT.709
+    for HD and larger, BT.601 below it. Named rather than guessed per file, so a wrong tag is the file's error
+    and not ours."""
+    kr_kb = _YUV_KRKB.get((color_space or "").strip().lower())
+    if kr_kb:
+        return kr_kb
+    return _YUV_KRKB["bt709"] if int(width or 0) >= 1280 else _YUV_KRKB["smpte170m"]
+
+
+def _yuv_planar_to_rgb(buf, n, h, w, depth, color_space, color_range):
+    """Planar YUV (3 full-size planes per frame, as ffmpeg's yuv444p / yuv444p16le) -> float32 RGB [N,H,W,3].
+
+    Values outside 0..1 are KEPT. That is the whole reason this exists rather than letting ffmpeg do it."""
+    a = np.asarray(buf, dtype=np.float32).reshape(n, 3, h, w)
+    peak = float((1 << depth) - 1)
+    full = (color_range or "").strip().lower() in ("pc", "full", "jpeg")
+    if full:
+        y = a[:, 0] / peak
+        cb = (a[:, 1] - (1 << (depth - 1))) / peak
+        cr = (a[:, 2] - (1 << (depth - 1))) / peak
+    else:
+        # ITU limited range at N bits: black 16<<(N-8), white 235<<(N-8), chroma centred at 128<<(N-8) with a
+        # total excursion of 224<<(N-8).
+        s = 1 << (depth - 8)
+        y = (a[:, 0] - 16 * s) / (219.0 * s)
+        cb = (a[:, 1] - 128 * s) / (224.0 * s)
+        cr = (a[:, 2] - 128 * s) / (224.0 * s)
+    kr, kb = _yuv_matrix(color_space, w)
+    kg = 1.0 - kr - kb
+    r = y + (2.0 * (1.0 - kr)) * cr
+    b = y + (2.0 * (1.0 - kb)) * cb
+    g = y - (2.0 * (1.0 - kb) * kb / kg) * cb - (2.0 * (1.0 - kr) * kr / kg) * cr
+    return np.stack([r, g, b], axis=-1).astype(np.float32)
+
+
+def _is_rgb_pix_fmt(pix):
+    """True when the stream is ALREADY RGB, so no matrix runs and nothing is clamped by asking for RGB."""
+    p = (pix or "").lower()
+    return p.startswith(("rgb", "bgr", "gbrp", "gbrap", "rgba", "bgra"))
+
+
 def _read_video(path, frame_start, frame_count):
     """Decode a video -> float32 RGB [N,H,W,3] (0..1) via ffmpeg piping 16-bit rgb48le, from frame_start. BOUNDED:
     never buffers more than _video_decode_budget() of raw pixels (a long 4K clip would otherwise OOM); an unbounded
@@ -611,7 +676,8 @@ def _read_video(path, frame_start, frame_count):
     decode the whole head into memory."""
     _require_ffmpeg()
     probe = subprocess.run([_FFPROBE, "-v", "error", "-select_streams", "v:0",
-                            "-show_entries", "stream=width,height,nb_frames,codec_name,pix_fmt,r_frame_rate,avg_frame_rate",
+                            "-show_entries", "stream=width,height,nb_frames,codec_name,pix_fmt,r_frame_rate,"
+                                             "avg_frame_rate,color_space,color_range",
                             "-of", "default=noprint_wrappers=1", path], capture_output=True, text=True)
     info = dict(line.split("=", 1) for line in probe.stdout.strip().splitlines() if "=" in line)
     w, h = int(info.get("width", 0) or 0), int(info.get("height", 0) or 0)
@@ -629,7 +695,15 @@ def _read_video(path, frame_start, frame_count):
     # endianness tag in pix_fmt and DO need rgb48le to keep precision. rgb24 for 8-bit halves the raw bytes.
     pix = (info.get("pix_fmt") or "")
     hi = ("le" in pix) or ("be" in pix)
-    px, dt, maxv = ("rgb48le", "<u2", 65535.0) if hi else ("rgb24", "u1", 255.0)
+    # PLANAR YUV OUT, and the matrix done here - see _yuv_planar_to_rgb for why. Same bytes per pixel as the
+    # rgb formats this used to ask for (yuv444p16le is 6, rgb48le is 6; yuv444p is 3, rgb24 is 3), so the decode
+    # budget computed above still describes the buffer. A source that is ALREADY RGB keeps the old path: no
+    # matrix runs on it, so asking for RGB clamps nothing.
+    rgb_src = _is_rgb_pix_fmt(pix)
+    if rgb_src:
+        px, dt, maxv, depth = ("rgb48le", "<u2", 65535.0, 16) if hi else ("rgb24", "u1", 255.0, 8)
+    else:
+        px, dt, maxv, depth = ("yuv444p16le", "<u2", 65535.0, 16) if hi else ("yuv444p", "u1", 255.0, 8)
     # 2026-07-04: decode to a TEMP FILE, not a subprocess pipe. On Windows, reading a multi-GB raw stream back through
     # subprocess.run(capture_output=True) is pathologically slow (measured ~61 s for 3.9 GB); ffmpeg -> temp file +
     # np.fromfile is 12-25x faster (4.8 s rgb48le / 2.4 s rgb24, same 450-frame 1920x800 clip). This - not the memory
@@ -660,7 +734,11 @@ def _read_video(path, frame_start, frame_count):
     n = buf.size // (w * h * 3)
     if n == 0:
         raise RuntimeError("ffmpeg returned no frames")
-    arr = buf[: n * w * h * 3].reshape(n, h, w, 3).astype(np.float32) / maxv
+    if rgb_src:
+        arr = buf[: n * w * h * 3].reshape(n, h, w, 3).astype(np.float32) / maxv
+    else:
+        arr = _yuv_planar_to_rgb(buf[: n * 3 * h * w], n, h, w, depth,
+                                 info.get("color_space"), info.get("color_range"))
     info["fps"] = fps
     info["capped"] = capped
     if capped:

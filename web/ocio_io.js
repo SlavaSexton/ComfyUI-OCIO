@@ -2847,9 +2847,11 @@ app.registerExtension({
                 }
                 showWidget(this, W(this, "render_nonce"), false);   // internal cache-buster - hidden with a true collapse (no blank row)
                 this.addWidget("button", "Output Folder", null, () => openFolderDialog(this), { serialize: false });
-                // ▶ Render is the LAST widget on this node, deliberately. There is no Viewer toggle because
-                // there is nothing to view: OCIO Write has no preview of its own (see the note at the top of
-                // this file). Anything added below Render pushes the button an artist reaches for most.
+                // ▶ Render is the LAST widget on this node, deliberately, and it is the one an artist reaches
+                // for most: anything added below it pushes the button down the node. There is no Viewer toggle
+                // beneath it because there is nothing to view - OCIO Write has no preview of its own (see the
+                // note at the top of this file).
+                this.addWidget("button", "▶ Render", null, () => ocioWriteRender(this), { serialize: false });
                 setTimeout(() => { applyContainer(); syncWriteFromUpstream(node); resolveAutoProfile(node); }, 0);
                 return r;
             };

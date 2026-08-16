@@ -1,0 +1,84 @@
+<svg viewBox="0 0 960 600" width="960" height="600" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc" font-family="Inter,Segoe UI,Helvetica,Arial,sans-serif">
+<title id="title">The LTX-2.5 pipeline through the ComfyUI-OCIO nodes</title>
+<desc id="desc">OCIO Read loads the plate as sRGB - Display. OCIO ColorSpace takes it to Rec.1886 Rec.709 - Display, the space the model works in. LTX-2.5 generates, and its audio VAE produces a synchronised track that bypasses colour entirely. OCIO VAE Decode returns float32 with no clamp. Two OCIO Write nodes hang off that one decode: the master, a 32-bit float EXR sequence taken to ACEScg through the ACES 1.3 output transform, and the review movie, 12-bit ProRes 4444 carrying the audio.</desc>
+<style>
+  .stage{font:600 11px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#6b7688;letter-spacing:.14em}
+  .ours{fill:#0d1424;stroke:#5BAEE3;stroke-width:1.5}
+  .model{fill:#141821;stroke:#5a6274;stroke-width:1.5;stroke-dasharray:5 3}
+  .name{font:600 14px Inter,Segoe UI,Helvetica,Arial,sans-serif;fill:#f3f1ea}
+  .sub{font:400 11.5px Inter,Segoe UI,Helvetica,Arial,sans-serif;fill:#9aa3b2}
+  .tag{font:600 10px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#5BAEE3}
+  .gold{font:600 10px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#FFD27D}
+  .w{stroke:#5BAEE3;stroke-width:1.6;fill:none}
+  .wm{stroke:#6b7688;stroke-width:1.6;fill:none}
+  .wa{stroke:#d98a2b;stroke-width:1.6;fill:none}
+  .au{font:600 10px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#d98a2b}
+  .note{font:400 11.5px Inter,Segoe UI,Helvetica,Arial,sans-serif;fill:#9aa3b2}
+  .noteb{font:600 11.5px Inter,Segoe UI,Helvetica,Arial,sans-serif;fill:#dfe2e8}
+</style>
+<defs>
+  <marker id="ab" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#5BAEE3"/></marker>
+  <marker id="am" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#6b7688"/></marker>
+  <marker id="aa" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#d98a2b"/></marker>
+  <radialGradient id="glow" cx="88%" cy="4%" r="58%">
+    <stop offset="0%" stop-color="#FFD27D" stop-opacity=".13"/><stop offset="100%" stop-color="#FFD27D" stop-opacity="0"/>
+  </radialGradient>
+  <radialGradient id="glow2" cx="5%" cy="97%" r="55%">
+    <stop offset="0%" stop-color="#5BAEE3" stop-opacity=".10"/><stop offset="100%" stop-color="#5BAEE3" stop-opacity="0"/>
+  </radialGradient>
+</defs>
+
+<rect width="960" height="600" fill="#050813"/>
+<rect width="960" height="600" fill="url(#glow)"/>
+<rect width="960" height="600" fill="url(#glow2)"/>
+<rect x="16" y="16" width="928" height="568" rx="14" fill="none" stroke="#FFD27D" stroke-opacity=".14"/>
+
+<text class="stage" x="44" y="62">INPUT</text>
+<rect class="ours" rx="10" x="44" y="76" width="236" height="82"/>
+<text class="name" x="61" y="103">OCIO Read</text>
+<text class="sub"  x="61" y="122">a still, or an *.exr sequence</text>
+<text class="tag"  x="61" y="142">sRGB - Display</text>
+
+<path class="w" d="M280,117 H336" marker-end="url(#ab)"/>
+
+<rect class="ours" rx="10" x="344" y="76" width="272" height="82"/>
+<text class="name" x="361" y="103">OCIO ColorSpace</text>
+<text class="sub"  x="361" y="122">sRGB - Display  to  Rec.1886 Rec.709</text>
+<text class="tag"  x="361" y="142">the space the model works in</text>
+
+<path class="w" d="M480,158 V200" marker-end="url(#ab)"/>
+
+<text class="stage" x="44" y="200">MODEL</text>
+<rect class="model" rx="10" x="252" y="208" width="456" height="80"/>
+<text class="name" x="273" y="235">LTX-2.5</text>
+<text class="sub"  x="273" y="254">22B transformer + video VAE, 128-channel latent</text>
+<text class="sub"  x="273" y="272">a separate audio VAE produces the synchronised track</text>
+
+<path class="wm" d="M480,288 V326" marker-end="url(#am)"/>
+<path class="wa" d="M708,248 H872 V424" marker-end="url(#aa)"/>
+<text class="au" x="716" y="240">AUDIO, bypasses colour</text>
+
+<text class="stage" x="44" y="326">OUTPUT</text>
+<rect class="ours" rx="10" x="344" y="334" width="272" height="80"/>
+<text class="name" x="361" y="361">OCIO VAE Decode</text>
+<text class="sub"  x="361" y="380">float32, no clamp, tiled 384 / 64</text>
+<text class="tag"  x="361" y="400">reports anything outside the range</text>
+
+<path class="w" d="M344,374 H252 V424" marker-end="url(#ab)"/>
+<path class="w" d="M616,374 H708 V424" marker-end="url(#ab)"/>
+
+<rect class="ours" rx="10" x="88" y="432" width="328" height="106"/>
+<text class="name" x="107" y="459">OCIO Write - master</text>
+<text class="sub"  x="107" y="478">sequence - EXR 32f - zip</text>
+<text class="sub"  x="107" y="496">Rec.1886 Rec.709  to  ACEScg</text>
+<text class="gold" x="107" y="516">view: ACES 1.3 - ACES 1.0 SDR Video</text>
+
+<rect class="ours" rx="10" x="544" y="432" width="328" height="106"/>
+<text class="name" x="563" y="459">OCIO Write - review</text>
+<text class="sub"  x="563" y="478">video - ProRes 4444 - 12-bit 4:4:4</text>
+<text class="sub"  x="563" y="496">Rec.1886 Rec.709, view: none</text>
+<text class="tag"  x="563" y="516">carries the audio track</text>
+
+<rect x="44" y="552" width="872" height="24" rx="8" fill="#0b1120" stroke="#1b2230"/>
+<text class="noteb" x="62" y="568">Blue boxes are this pack's nodes, the dashed box is the model, amber is audio going straight to the review write. Nothing here passes through 8 bits.</text>
+</svg>

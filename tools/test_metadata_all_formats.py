@@ -137,7 +137,7 @@ def _png_bitdepth(path):
 
 
 def write(**kw):
-    a = dict(profile="none", from_colorspace="sRGB - Display", output_colorspace="ACEScg",
+    a = dict(profile="none", input_colorspace="sRGB - Display", output_colorspace="ACEScg",
              container="sequence", still_format="exr", video_codec="prores_4444", bit_depth="16f",
              auto_range=False, first_frame=1, last_frame=0, start_number=1, source_start=1, raw_data=False,
              fps=24.0, metadata=json.dumps(PLATE), images=IMAGES)

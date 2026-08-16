@@ -280,7 +280,7 @@ timecode survive into the delivered file.
 
 Color-manage an IMAGE batch and **write it to disk** (Nuke: *Write*).
 
-- **from_colorspace** - the working space of the incoming image (default `sRGB - Display`).
+- **input_colorspace** - the working space of the incoming image (default `sRGB - Display`).
 - **output_colorspace** - the colorspace to encode into. The format picks the right default (EXR -> ACEScg,
   PNG / TIFF / JPEG -> sRGB). Written into the file metadata where the format allows it.
 - **container** - `still image` (one frame), `sequence` (numbered frames), or `video`.
@@ -693,7 +693,7 @@ gives a linear-HDR `IMAGE` on its `hdr_linear` output, a plain ComfyUI `IMAGE` t
 ... VAE Decode -> LTXVHDRDecodePostprocess -> (hdr_linear) -> OCIO Write
 ```
 
-Wire it and OCIO Write auto-detects the LTX node upstream and sets `from_colorspace = Linear Rec.709 (sRGB)` and
+Wire it and OCIO Write auto-detects the LTX node upstream and sets `input_colorspace = Linear Rec.709 (sRGB)` and
 `output_colorspace = ACEScg` for you (`auto_colorspace`, on by default).
 
 **Method B, our chain (skip LTX's decoder).** Do the whole decode on this pack: tap LTX's `VAE Decode` output (the
@@ -746,6 +746,53 @@ than us.
 <div align="center">
 
 <img src="docs/assets/ltx25_pipeline.svg" width="880" alt="The LTX-2.5 ACEScct pipeline in three columns. INPUT: OCIO Read of a folder of EXR frames in ACEScg scene-linear, into OCIO LogConvert set to Linear to Log with the ACEScct curve, giving ACEScct codes in 0 to 1, into OCIO VAE Encode, which runs at float32 and reports any value landing outside the range the VAE was trained on. MODEL: LTX-2.5, a 22B transformer with a 128-channel video VAE trained alongside it, and a separate audio VAE producing the synchronised track, which bypasses colour entirely. OUTPUT: OCIO VAE Decode in float32 with no clamp, giving ACEScct codes back, into OCIO LogConvert set to Log to Linear, giving scene-linear HDR, which feeds two writes: an EXR 16f or 32f master with compression set to zip for a lossless master, and a ProRes 4444 review movie carrying the audio track.">
+
+</div>
+
+### What the stock path costs, on one clip
+
+The same LTX-2.5 generation, written two ways: through ComfyUI's own LTX-2.5 template, and through this pack.
+The model is the same in both. What differs is what survives the trip out of it.
+
+<div align="center">
+
+<img src="docs/assets/comparison/first_last_frames.png" width="880" alt="The first and last frame of the clip as this pack renders them: a neon-lit cyborg portrait in rain, and a flooded city street seen from above.">
+
+*First and last frame of the clip, rendered through this pack. Below, what happens to the same frames on the stock path.*
+
+<img src="docs/assets/comparison/details_in_black.png" width="880" alt="The same frame with its shadows lifted by exposure, side by side. Left, the official ComfyUI LTX-2.5 template result: coloured noise and banding through the hair, the neck and the shaded armour panels. Right, the OCIO node pack result: the tone holds and the gradients stay smooth.">
+
+*Shadows lifted by exposure. Left, coloured noise and stepping through the hair, the neck and the shaded armour; right, the tone holds and the gradients stay smooth.*
+
+<img src="docs/assets/comparison/details_in_highlight_first_frame.png" width="880" alt="Highlights of the same frame, side by side. Left, the official template result: the neon breaks into coloured fringes. Right, the OCIO node pack result: the glow stays whole.">
+
+*Highlights of that frame. Left, the neon breaks into coloured fringes; right, the glow stays whole.*
+
+<img src="docs/assets/comparison/details_in_highlight_last_frame.png" width="880" alt="A light source and its reflection on water, side by side. Left, the official template result: the highlight smears into coloured artefacts and the reflection is lost. Right, the OCIO node pack result: the highlight stays a point and the reflection reads as separate ripples.">
+
+*A light source and its reflection on water. Left, the highlight smears into coloured artefacts and the reflection is lost; right, it stays a point and the ripples read separately.*
+
+</div>
+
+**The model gives more than the stock path can carry.** That path puts the picture through 8 bits and clips it
+at `0..1`; here the decode runs in float32 with no clamp, and the result lands in a 32-bit float EXR and a
+12-bit ProRes 4444 without passing through 8 bits at all. Nothing in these frames was recovered afterwards -
+it simply was never thrown away.
+
+### The graph that does it
+
+<div align="center">
+
+<img src="docs/assets/workflow_input.png" width="880" alt="The input half of the graph: two OCIO Read nodes with their previews, an OCIO ColorSpace node converting sRGB - Display to Rec.1886 Rec.709 - Display, and an OCIO Player. A note explains that sRGB inputs should be converted to Rec.709 before the model to keep detail near black.">
+
+*Input. The plate goes to `Rec.1886 Rec.709 - Display` before the model, either through `OCIO ColorSpace` as
+shown, or by setting the Read's own output colorspace. That is what keeps detail near black instead of
+producing flat black patches.*
+
+<img src="docs/assets/workflow_output.png" width="880" alt="The output half of the graph: OCIO VAE Decode set to float32 with clamp set to keep everything and tiling on, feeding two OCIO Write nodes. One writes a ProRes 4444 video in Rec.1886 Rec.709 with no view transform, the other an EXR 32f sequence taken to ACEScg through the ACES 1.3 output transform.">
+
+*Output. `OCIO VAE Decode` runs at float32 with `keep everything`, so values above 1.0 and below 0 survive the
+decode. From there one write makes the ProRes review, the other the ACEScg master through ACES 1.3.*
 
 </div>
 

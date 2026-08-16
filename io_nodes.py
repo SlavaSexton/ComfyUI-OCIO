@@ -6,7 +6,7 @@
 #             No separate "convert" toggle: input colorspace -> output colorspace, always. fps comes from the
 #             video metadata. Defaults follow the file type (EXR -> ACEScg, JPG/PNG/TIFF -> sRGB - Display).
 # OCIO Write: save an IMAGE batch as a still / sequence (EXR / TIFF / PNG) or a video (ProRes / DNxHR / h264 /
-#             hevc). from_colorspace (ComfyUI's working space) -> out colorspace (the file's space). The format
+#             hevc). input_colorspace (ComfyUI's working space) -> out colorspace (the file's space). The format
 #             drives the right colorspace default (EXR -> ACEScg, PNG/TIFF -> sRGB). Folder + name; the
 #             sequence numbering is added automatically. A node preview shows the written frame + its
 #             colorspace, so a wrong pick (sRGB vs ACEScg) is visible at a glance.
@@ -670,7 +670,8 @@ def _is_rgb_pix_fmt(pix):
 
 
 def _read_video(path, frame_start, frame_count):
-    """Decode a video -> float32 RGB [N,H,W,3] (0..1) via ffmpeg piping 16-bit rgb48le, from frame_start. BOUNDED:
+    """Decode a video -> float32 RGB [N,H,W,3] via ffmpeg piping planar YUV (RGB only when the source already
+    is), from frame_start. Values outside 0..1 SURVIVE - see _yuv_planar_to_rgb for why that is the point. BOUNDED:
     never buffers more than _video_decode_budget() of raw pixels (a long 4K clip would otherwise OOM); an unbounded
     or over-budget request is capped, info['capped']=True. Uses -ss input seeking so a deep frame_start does not
     decode the whole head into memory."""
@@ -749,26 +750,44 @@ def _read_video(path, frame_start, frame_count):
 
 def _read_video_frame(path):
     """Decode ONLY frame 1 of a video (for the thumb route - never pull the whole clip). Same probe + pipe
-    shape as _read_video, but '-frames:v 1' bounds the decode to a single frame. Returns float32 RGB [H,W,3]
-    (0..1)."""
+    shape as _read_video, but '-frames:v 1' bounds the decode to a single frame. Returns float32 RGB [H,W,3];
+    values outside 0..1 SURVIVE, exactly as they do on the player's path.
+
+    It asked ffmpeg for rgb48le until 2026-08-16, which made ffmpeg do the YUV matrix into an unsigned integer
+    format - so the same file gave the viewport one picture and the thumbnail another. Measured on a flat
+    limited-range frame (Y 16, Cb 240, Cr 128, BT.709): the file carries green at -0.0937, and rgb48le handed
+    back exactly 0.0. On a real ProRes 4444 from this pack's own writer the two paths differed on 0.30% of
+    samples. tools/test_thumb_no_clamp.py holds both decodes to the same numbers now."""
     _require_ffmpeg()
     probe = subprocess.run([_FFPROBE, "-v", "error", "-select_streams", "v:0",
-                            "-show_entries", "stream=width,height",
+                            "-show_entries", "stream=width,height,pix_fmt,color_space,color_range",
                             "-of", "default=noprint_wrappers=1", path], capture_output=True, text=True)
     info = dict(line.split("=", 1) for line in probe.stdout.strip().splitlines() if "=" in line)
     w, h = int(info.get("width", 0) or 0), int(info.get("height", 0) or 0)
     if not (w and h):
         raise RuntimeError(f"ffprobe could not read {path}: {probe.stderr[:200]}")
+    # Same fork as _read_video, and it has to STAY the same: an already-RGB stream has no matrix to do, so
+    # asking for planar YUV there would make ffmpeg convert RGB -> YUV -> RGB for nothing.
+    pix = (info.get("pix_fmt") or "")
+    hi = ("le" in pix) or ("be" in pix)
+    rgb_src = _is_rgb_pix_fmt(pix)
+    if rgb_src:
+        px, dt, maxv, depth = ("rgb48le", "<u2", 65535.0, 16) if hi else ("rgb24", "u1", 255.0, 8)
+    else:
+        px, dt, maxv, depth = ("yuv444p16le", "<u2", 65535.0, 16) if hi else ("yuv444p", "u1", 255.0, 8)
     cmd = [_FFMPEG, "-v", "error", "-i", path, "-frames:v", "1",
-           "-f", "rawvideo", "-pix_fmt", "rgb48le", "-"]
+           "-f", "rawvideo", "-pix_fmt", px, "-"]
     proc = subprocess.run(cmd, capture_output=True)
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg decode failed: {proc.stderr.decode('utf-8', 'ignore')[:300]}")
-    buf = np.frombuffer(proc.stdout, dtype="<u2")
+    buf = np.frombuffer(proc.stdout, dtype=dt)
     n = buf.size // (w * h * 3)
     if n == 0:
         raise RuntimeError("ffmpeg returned no frames")
-    return buf[: w * h * 3].reshape(h, w, 3).astype(np.float32) / 65535.0
+    if rgb_src:
+        return buf[: w * h * 3].reshape(h, w, 3).astype(np.float32) / maxv
+    return _yuv_planar_to_rgb(buf[: 3 * h * w], 1, h, w, depth,
+                              info.get("color_space"), info.get("color_range"))[0]
 
 
 # --- H.264 proxy for the on-node Player -----------------------------------------------------------------------
@@ -1762,7 +1781,7 @@ _META_FORBIDDEN = (
 # promise and let the plate's value survive" - was tried and is WRONG:
 #
 #   The attribute is defined as the luminance, in candelas per square metre, of the RGB value (1,1,1). This node's
-#   entire job is to change what the code values mean, from_colorspace -> output_colorspace. A gamut-only change
+#   entire job is to change what the code values mean, input_colorspace -> output_colorspace. A gamut-only change
 #   maps white to white and would keep the number true; a TRANSFER change does not, and this node ships a preset
 #   that does exactly that (ACEScct). So an inherited value becomes a confident, checkable, WRONG statement about
 #   the file for a conversion the node performs by design - the same class as a stale dataWindow or a plate's
@@ -2389,7 +2408,9 @@ def _fit_long_side(rgb, max_side):
 def thumb_frame(src, max_side=512, frame=None):
     """Resolve `src` exactly like OCIORead (absolute, or relative to the ComfyUI input dir; a folder or a
     numbered frame collapses to its sequence and picks frame 1; a video decodes ONLY its first frame via
-    ffmpeg). Returns float32 RGB [H,W,3] (0..1 for stills/video; EXR/HDR keep scene-linear range), already
+    ffmpeg). Returns float32 RGB [H,W,3] (0..1 for integer stills; EXR/HDR keep scene-linear range, and a
+    video keeps whatever the YUV matrix puts outside the range - the /ocio/thumb route clips only at the very
+    end, after the colorspace conversion, when it encodes the 8-bit PNG), already
     downscaled to fit `max_side` on the long side. Colorspace conversion is the caller's job (via _convert) -
     this only loads + resizes, so the /ocio/thumb route stays thin and cv2 does the expensive work once.
     `frame` (a FRAME NUMBER, not an index) drives the sequence flipbook player (2026-07-03): when given and the
@@ -2913,9 +2934,12 @@ def _video_color_tags(output_colorspace):
 # RESPONSIBLE FOR: carrying a synchronized audio track through OCIO Write, so our Write can stand in for core
 # SaveVideo in an audio-video graph (LTX-2.5 emits picture and sound from two VAEs). Added 2026-08-12.
 
-def _audio_pcm(audio, fps, n_frames, start_index=0):
+def _audio_pcm(audio, fps, n_frames, start_index=0, who="OCIO Write"):
     """ComfyUI AUDIO -> (interleaved float32 samples [T, C], sample_rate, channels), cut to EXACTLY the frames
     being written so sound cannot drift from picture. None when no audio is wired.
+
+    `who` only names the node in the error messages - OCIO Player shares this cutter, and a message telling a
+    Player user what OCIO Write thinks of their wiring sends them to the wrong node.
 
     AUDIO is {"waveform": tensor [B, C, T], "sample_rate": int} - confirmed against core
     comfy_extras/nodes_audio.py, where LoadAudio unsqueezes a [C, T] decode into [B, C, T]. The batch axis is a
@@ -2930,12 +2954,12 @@ def _audio_pcm(audio, fps, n_frames, start_index=0):
     if audio is None:
         return None
     if not isinstance(audio, dict) or "waveform" not in audio or "sample_rate" not in audio:
-        raise ValueError("OCIO Write: the 'audio' input is not a ComfyUI AUDIO (expected a dict with 'waveform' "
+        raise ValueError(f"{who}: the 'audio' input is not a ComfyUI AUDIO (expected a dict with 'waveform' "
                          f"and 'sample_rate', got {type(audio).__name__}). Wire an AUDIO output, e.g. LTXV Audio "
                          "VAE Decode or Load Audio.")
     sr = int(audio["sample_rate"] or 0)
     if sr <= 0:
-        raise ValueError(f"OCIO Write: audio sample_rate is {sr}; expected a positive rate.")
+        raise ValueError(f"{who}: audio sample_rate is {sr}; expected a positive rate.")
     wf = audio["waveform"]
     a = wf.detach().cpu().numpy() if hasattr(wf, "detach") else np.asarray(wf)
     a = np.asarray(a, np.float32)
@@ -2945,7 +2969,7 @@ def _audio_pcm(audio, fps, n_frames, start_index=0):
         a = a[None]
     ch = int(a.shape[0])
     if ch < 1 or a.shape[1] < 1:
-        raise ValueError(f"OCIO Write: audio waveform is empty (shape {tuple(a.shape)}).")
+        raise ValueError(f"{who}: audio waveform is empty (shape {tuple(a.shape)}).")
     r = float(fps) if fps and float(fps) > 0 else 24.0
     s0 = max(0, int(round(start_index / r * sr)))
     want = max(1, int(round(n_frames / r * sr)))
@@ -2955,21 +2979,33 @@ def _audio_pcm(audio, fps, n_frames, start_index=0):
     return np.ascontiguousarray(seg.T.astype(np.float32)), sr, ch      # [T, C] interleaved, ffmpeg f32le order
 
 
-def _save_wav24(path, samples, sr):
-    """Write a 24-bit PCM WAV. Used for the sidecar track beside an image sequence: EXR / TIFF / PNG hold no
-    audio, and dropping a wired track without a word is the silent-failure this input exists to remove.
+def _save_wav(path, samples, sr, bits=24):
+    """Write a PCM WAV, 24-bit by default. Used for the sidecar track beside an image sequence: EXR / TIFF /
+    PNG hold no audio, and dropping a wired track without a word is the silent-failure that input exists to
+    remove.
 
     24-bit PCM is the post-house delivery standard, and the stdlib wave module covers it, so a SEQUENCE write
-    still needs no ffmpeg (only the video container does)."""
+    still needs no ffmpeg (only the video container does).
+
+    `bits=16` is for the ONE case where a delivery standard is the wrong target: the file OCIO Player hands a
+    BROWSER to decode. Chrome takes 24-bit PCM through decodeAudioData and Firefox has failed on it for years
+    (Mozilla bug 864780), and what a level meter shows cannot tell the two apart - 16-bit still carries 96 dB
+    against a meter floor of 48. So the viewer's copy is the format every browser decodes, and the delivery
+    sidecar stays 24."""
     import wave
+    if bits not in (16, 24):
+        raise ValueError(f"_save_wav: {bits}-bit is not supported (16 or 24)")
     a = np.clip(np.asarray(samples, np.float32), -1.0, 1.0)
     ch = 1 if a.ndim == 1 else int(a.shape[1])
-    i32 = np.round(a.reshape(-1) * 8388607.0).astype("<i4")
-    # little-endian two's complement: bytes 0..2 ARE the 24-bit sample; byte 3 is only sign extension.
-    raw = i32.view(np.uint8).reshape(-1, 4)[:, :3].tobytes()
+    if bits == 16:
+        raw = np.round(a.reshape(-1) * 32767.0).astype("<i2").tobytes()
+    else:
+        i32 = np.round(a.reshape(-1) * 8388607.0).astype("<i4")
+        # little-endian two's complement: bytes 0..2 ARE the 24-bit sample; byte 3 is only sign extension.
+        raw = i32.view(np.uint8).reshape(-1, 4)[:, :3].tobytes()
     with wave.open(path, "wb") as w:
         w.setnchannels(ch)
-        w.setsampwidth(3)
+        w.setsampwidth(bits // 8)
         w.setframerate(int(sr))
         w.writeframes(raw)
     return path
@@ -3299,6 +3335,74 @@ def _split_view(view):
     return cfg, key, view
 
 
+def _alt_views_by_display():
+    """{display: [prefixed view, ...]} for the ACES 1.3 built-in, in the exact form the widget carries.
+
+    A VIEW BELONGS TO A DISPLAY, and the widget cannot express that: it is one flat combo, fixed when
+    INPUT_TYPES is evaluated, long before a colorspace pair names a display. So the per-display truth is
+    served to the front end instead (see /ocio/encodings), which narrows the list live once the pair resolves.
+    Measured on the configs this pack loads by default: of the 32 real entries the widget offers, 24 are
+    invalid for `Rec.1886 Rec.709 - Display` - the two `ACES 1.1 - SDR Video (... lim)` views among them,
+    because they live on `Rec.1886 Rec.2020 - Display`, a display the ACES 2.0 config does not even have.
+
+    Empty when this OCIO build carries no 1.3 config - the same condition under which _view_choices offers
+    no 1.3 entries at all, so the two never disagree about what exists."""
+    out = {}
+    alt = _alt_aces_config()
+    if alt is None:
+        return out
+    try:
+        for d in alt.getDisplays():
+            out[d] = [_ALT_ACES_LABEL + v for v in alt.getViews(d)]
+    except Exception:
+        return {}
+    return out
+
+
+def _alt_default_views():
+    """{display: prefixed default view} for the ACES 1.3 built-in.
+
+    THE VERSION THE WIDGET FILLS ITSELF IN WITH IS 1.3, not the loaded config's own. That is a deliberate
+    choice about who is on the other end of the file rather than about which standard is newer: a Nuke 13 or
+    14 comp is on ACES 1.2 / 1.3, and in an ACES project Nuke's Read applies the inverse Output Transform on
+    the way in while the viewer applies the forward one - so an EXR has to have been rendered by the version
+    that comp will view it with. Rendered with 2.0 and viewed through 1.3, the worst pixel of a real Rec.709
+    master is off by 35.5%.
+
+    Anyone delivering to a 2.0 pipeline picks the 2.0 entry from the list, which is one click and still
+    right there. The default is for the common case, not for every case."""
+    out = {}
+    alt = _alt_aces_config()
+    if alt is None:
+        return out
+    try:
+        for d in alt.getDisplays():
+            v = alt.getDefaultView(d)
+            if v:
+                out[d] = _ALT_ACES_LABEL + v
+    except Exception:
+        return {}
+    return out
+
+
+def _alt_colorspace_names():
+    """Every colorspace name the ACES 1.3 built-in knows, for the front end to check a pair against.
+
+    The two configs are NOT the same set. `D-Log D-Gamut` and `Linear D-Gamut` (DJI, added in the ACES 2.0
+    era) exist in the loaded config and not in the 1.3 one, and picking a `ACES 1.3: ` view with either of
+    them on the scene side reaches OCIO itself, which raises `Cannot find source color space named ...` from
+    inside the processor build - not this pack's own message, and not something a narrowed view list would
+    catch, because the view is perfectly valid for the display. Confirmed by building that transform
+    directly; all 46 scene-referred colorspaces were checked, and those two are the whole gap."""
+    alt = _alt_aces_config()
+    if alt is None:
+        return []
+    try:
+        return [cs.getName() for cs in alt.getColorSpaces()]
+    except Exception:
+        return []
+
+
 def _view_choices():
     """The do-nothing value, then every view the loaded config offers, then the ACES 1.3 views.
 
@@ -3310,7 +3414,11 @@ def _view_choices():
     The 1.3 entries are PREFIXED rather than merged. Two reasons, and the second is the important one: `Raw`
     and `Un-tone-mapped` exist in both configs and would collide, and more to the point an artist choosing a
     rendering transform has to be able to see WHICH ACES they are choosing. A list where the version is
-    implied is a list that produces mismatched EXRs."""
+    implied is a list that produces mismatched EXRs.
+
+    The 1.3 half is built from _alt_views_by_display so the flat list and the per-display map the front end
+    narrows with come from ONE read of the config. Two functions asking the same question separately is how
+    they drift."""
     out = [_VIEW_NONE]
     try:
         _require_ocio()
@@ -3323,13 +3431,10 @@ def _view_choices():
     except Exception:
         pass
     try:
-        alt = _alt_aces_config()
-        if alt is not None:
-            for d in alt.getDisplays():
-                for v in alt.getViews(d):
-                    lab = _ALT_ACES_LABEL + v
-                    if lab not in out:
-                        out.append(lab)
+        for views in _alt_views_by_display().values():
+            for lab in views:
+                if lab not in out:
+                    out.append(lab)
     except Exception:
         pass
     return out
@@ -3406,6 +3511,22 @@ def _convert_via_view(image, in_cs, out_cs, view):
             f"OCIO Write: view '{view_name}' does not exist on display '{display}'. That config offers "
             f"{offered}. A view belongs to a display, and picking one from a different display is how this "
             f"usually goes wrong.")
+    # THE SECOND WAY THIS PAIR CAN BE IMPOSSIBLE, and it is not about the view at all. The two ACES configs
+    # hold different colorspace SETS: `D-Log D-Gamut` and `Linear D-Gamut` are in the 2.0-era config and not
+    # in the 1.3 one. A 1.3 view is then perfectly valid for the display and the transform still cannot be
+    # built, because the source space does not exist in the config that renders it - OCIO says so itself,
+    # "Cannot find source color space named ...", from inside getProcessor and with no mention of the view
+    # that caused it. Said here instead, before the build, in terms of the choice the artist actually made.
+    try:
+        known = cfg.getColorSpace(scene) is not None
+    except Exception:
+        known = True                       # cannot tell -> let OCIO answer; a guess must not block a real job
+    if not known:
+        raise ValueError(
+            f"OCIO Write: colorspace '{scene}' does not exist in the config that carries view '{view_name}'. "
+            f"The ACES 1.3 built-in does not know every colorspace the loaded config offers. Either pick a "
+            f"view from the loaded config (no '{_ALT_ACES_LABEL}' prefix) or convert from a colorspace both "
+            f"configs have.")
 
     def build():
         import PyOpenColorIO as OCIO
@@ -3667,7 +3788,7 @@ class OCIOWrite:
     """Color-manage an IMAGE batch and write it (Nuke: Write).
 
     container: still image (one frame), sequence (numbered frames), or video.
-    'from_colorspace' is ComfyUI's working space (default sRGB - Display); 'output_colorspace' is the file's
+    'input_colorspace' is ComfyUI's working space (default sRGB - Display); 'output_colorspace' is the file's
     space, and the format picks the right default (EXR -> ACEScg, PNG/TIFF/JPEG -> sRGB). Give a folder + a
     name; the rest is added automatically:
         still image    -> <folder>/<name>.<ext>
@@ -3718,7 +3839,23 @@ class OCIOWrite:
                          # behind both - the LogC3 IC-LoRA, and why 2.5's ACEScct path gets no preset - is in
                          # README.md, and the code comments in write() carry the sources.
                          "tooltip": "Sets from/output colorspace; the HDR presets also force EXR 16f. LTX 2.3 is for 2.3 only: it expects linear, because Lightricks' own node already undid LogC3. There is no 2.5 preset - undo 2.5's ACEScct curve with OCIO LogConvert instead. SDR Rec.709 delivery: read docs/NODES_IO.md first."}),
-            "from_colorspace": _cs_combo(WORKING),
+            # RENAMED from `from_colorspace` (2026-08-16), to the name OCIO Read and OCIO Player already use.
+            # Three nodes asking the same question in two vocabularies is a paper cut on every graph.
+            #
+            # SAFE FOR SAVED GRAPHS, and the reason is the position rather than the name: a GUI workflow stores
+            # `widgets_values` as a positional array, so this key staying SECOND in `required` is what keeps an
+            # existing graph resolving to exactly what it did before. Checked against the real one on this
+            # machine: the name does not appear in it at all.
+            #
+            # AN API-FORMAT WORKFLOW SAVED BEFORE THE RENAME DOES NOT SURVIVE IT, and that is a real cost,
+            # named here rather than papered over. There the keys ARE the names, and a prompt missing a
+            # required one is refused with HTTP 400 `required_input_missing` before the node runs. Both ways
+            # out were measured and both are worse: VALIDATE_INPUTS does not lift that check (tried against
+            # the live server), and moving this input to `optional` to make it liftable would push every
+            # widget after it one slot along, which is precisely what corrupts the GUI workflows that DO
+            # survive today. So an old API workflow gets a clear refusal naming the missing key, and the fix
+            # is one word in the JSON.
+            "input_colorspace": _cs_combo(WORKING),
             "output_colorspace": _cs_combo("ACEScg"),
             "container": (["still image", "sequence", "video"], {"default": "sequence"}),
             "still_format": (["exr", "tiff", "png", "jpeg", "dpx"], {"default": "exr",
@@ -3865,12 +4002,20 @@ class OCIOWrite:
     def _resolve_folder(self, output_folder):
         return resolve_output_folder(output_folder)
 
-    def write(self, profile, from_colorspace, output_colorspace, container, still_format, video_codec,
+    def write(self, profile, input_colorspace, output_colorspace, container, still_format, video_codec,
               bit_depth, auto_range, first_frame, last_frame, start_number, source_start, raw_data,
               output_folder, filename, colorspace_in_name=True, auto_colorspace=True, compression="zip",
               alpha=None, fps=24.0, render_nonce="", images=None, video=None, audio=None,
               metadata="", write_audio=True, write_sidecar=True,
-              view=_VIEW_NONE):   # render_nonce: cache-buster (see INPUT_TYPES). images/video: mutually-exclusive inputs.
+              view=_VIEW_NONE, from_colorspace=None):   # render_nonce: cache-buster (see INPUT_TYPES). images/video: mutually-exclusive inputs.
+        # `from_colorspace` is the name this input had before 2026-08-16, and it is still accepted HERE, for
+        # the callers that reach this function directly: the pack's own tools/ scripts, docker/, and anything
+        # driving OCIOWrite from Python. It is NOT an input on the node - a graph missing `input_colorspace`
+        # never gets this far, because ComfyUI refuses the prompt first (measured: HTTP 400
+        # `required_input_missing`). It only wins when the new name is still holding its own default, which is
+        # the one state where preferring it cannot overwrite somebody's actual choice.
+        if from_colorspace and from_colorspace != input_colorspace and input_colorspace == WORKING:
+            input_colorspace = from_colorspace
         if video is not None:                                        # a native ComfyUI VIDEO -> render it out with ALL these Write settings (container, codec, colorspace, bit depth)
             images, _vfps, _vaudio = _video_unwrap(video)
             if _vfps and _vfps > 0:
@@ -3902,7 +4047,7 @@ class OCIOWrite:
             arr_lin = images.detach().cpu().numpy().astype(np.float32).copy()
             arr_lin[..., :3] = _LOG_PROFILES[profile](arr_lin[..., :3])   # log_to_lin, RGB only; alpha untouched
             images = torch.from_numpy(arr_lin).to(images.device, images.dtype)
-            from_colorspace = "Linear Rec.709 (sRGB)"
+            input_colorspace = "Linear Rec.709 (sRGB)"
             output_colorspace = "ACEScg"
         elif profile == "LTX 2.3 HDR" and not raw_data:
             # 2.3 ONLY, and this is not a naming detail. LTX-2.3's HDR is an IC-LoRA trained on the ARRI LogC3
@@ -3917,7 +4062,7 @@ class OCIOWrite:
             # repositories: their ComfyUI pack has an HDR workflow for 2.3 and none for 2.5, and greps for
             # acescct/acescg across that pack return zero. For 2.5 material, undo the curve explicitly with
             # OCIO LogConvert ("Log to Linear", curve "ACEScct") after the decode.
-            from_colorspace = "Linear Rec.709 (sRGB)"
+            input_colorspace = "Linear Rec.709 (sRGB)"
             output_colorspace = "ACEScg"
         elif profile == "SDR Rec.709 delivery" and not raw_data:
             # The ordinary delivery, and the only preset here that is not an HDR one: a display-referred sRGB
@@ -3926,7 +4071,7 @@ class OCIOWrite:
             # what "same picture, correct for a broadcast monitor" means. No format forcing: the HDR presets
             # push EXR 16f because their whole point is scene-linear latitude, and this one's point is the
             # opposite, so the container stays whatever was chosen (ProRes and h264 are the usual answers).
-            from_colorspace = "sRGB - Display"
+            input_colorspace = "sRGB - Display"
             output_colorspace = "Rec.1886 Rec.709 - Display"
         # "Seedance 4K 10-bit" and "none"/"auto": no backend mapping - auto is resolved front-end, Seedance is
         # a pending placeholder (do not invent a colorspace mapping for it).
@@ -3934,7 +4079,7 @@ class OCIOWrite:
                        "LumiPic V10 LogC4") and not raw_data \
                 and container != "video":
             still_format, bit_depth = "exr", "16f"                       # HDR presets always land as EXR 16f
-        img = images if raw_data else _convert_via_view(images, from_colorspace, output_colorspace, view)
+        img = images if raw_data else _convert_via_view(images, input_colorspace, output_colorspace, view)
         arr = img.detach().cpu().numpy().astype(np.float32)
         a_arr = None
         if alpha is not None:
@@ -4080,7 +4225,7 @@ class OCIOWrite:
                     # the track goes beside it rather than being dropped in silence - the same answer an image
                     # sequence gets, for the same reason.
                     wav = os.path.splitext(saved)[0] + ".wav"
-                    _save_wav24(wav, apcm[0], apcm[1])
+                    _save_wav(wav, apcm[0], apcm[1])
                     audio_note = f"+sidecar {os.path.basename(wav)} (OPAtom holds one essence per file)"
                 elif apcm is not None:
                     audio_note = f"+audio {apcm[2]}ch {apcm[1]}Hz"
@@ -4103,11 +4248,11 @@ class OCIOWrite:
                 if apcm is not None:
                     # EXR / TIFF / PNG carry no audio, so the track ships beside the frames as a reference WAV.
                     wav = os.path.splitext(paths[0])[0].rsplit(".", 1)[0] + ".wav"   # strip the frame number too
-                    _save_wav24(wav, apcm[0], apcm[1])
+                    _save_wav(wav, apcm[0], apcm[1])
                     audio_note = f"+sidecar {os.path.basename(wav)}"
             count, preview, written = sub.shape[0], sub[0], sub   # EVERY frame, not sub[0]: see _range_clip_note
 
-        ui = {"ocio": [("raw" if raw_data else f"{from_colorspace} -> {output_colorspace}")],
+        ui = {"ocio": [("raw" if raw_data else f"{input_colorspace} -> {output_colorspace}")],
               "count": [str(count)], "saved": [os.path.basename(saved)]}
         if audio_note:
             ui["audio"] = [audio_note]        # read by web/ocio_io.js (on-node text + toast); 'saved' has no reader
@@ -4210,6 +4355,7 @@ class OCIOWrite:
 
 # --------------------------------------------------------------------------- OCIO Player (in-graph float viewer)
 _PLAYER_FRAME_CAP = 240   # cap CACHED viewer frames per node (full-res half-float is heavy); the OUTPUT is uncapped
+_PLAYER_AUDIO = "audio.wav"   # the viewer's soundtrack, beside its frames in the same per-node cache dir
 
 
 def _player_cache(unique_id, images, alpha):
@@ -4279,6 +4425,11 @@ class OCIOPlayer:
                 "alpha": ("MASK", {"tooltip": "Optional alpha to view / carry through."}),
                 "base": ("STRING", {"default": "0",
                                     "tooltip": "Hidden. The source's first-frame number, set from the upstream OCIO Read: start_frame / end_frame are SOURCE numbers and this is subtracted to reach batch indices. 0 = already 0-based."}),
+                # LAST on purpose. widgets_values is positional across ALL widgets, and this pack has already
+                # been bitten by an input landing where an older graph had something else (see write_audio in
+                # OCIO Write). A socket carries no widget value, so appending one at the end cannot move
+                # anything that a saved workflow already holds.
+                "audio": ("AUDIO", {"tooltip": "Optional soundtrack for the frames on the left. Plays with them and feeds the L/R meters, cut to the frames the viewer cached so sound cannot drift from picture. Ignored when a movie is streamed through 'video' - that clip brings its own track."}),
             },
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
@@ -4294,7 +4445,7 @@ class OCIOPlayer:
     CATEGORY = "OCIO"
 
     def play(self, input_colorspace, output_colorspace, raw_data, start_frame, end_frame, fps,
-             images=None, alpha=None, base=0, video=None, unique_id="0"):
+             images=None, alpha=None, base=0, video=None, audio=None, unique_id="0"):
         # A connected VIDEO streams client-side (WebCodecs decode-on-demand) - do NOT materialize its frames
         # (a long 4K clip is hundreds of GB). Extract just the file path + a cheap probe for the front end; skip
         # the float cache. Takes priority over 'images' for what the viewer shows.
@@ -4350,10 +4501,54 @@ class OCIOPlayer:
             content_sig = f"{float(_f0.mean()):.6f}_{float(_f0.std()):.6f}"
         except Exception:
             content_sig = ""
-        return {"ui": {"player_dir": [cache_dir], "player_total": [str(total)], "player_cached": [str(cached)],
-                       "resolution": [f"{w}x{h}"], "fps": [str(float(fps))], "input_cs": [input_colorspace],
-                       "content_sig": [content_sig]},
-                "result": ()}
+        # WHETHER THERE IS ANYTHING ABOVE WHITE TO FIND, said out loud instead of left to the exposure slider.
+        #
+        # Pulling exposure down on material that holds nothing over 1.0 darkens the picture and reveals no
+        # detail, and there is no way to tell that from a way that is broken - which is the question this line
+        # answers. Measured on a real Rec.709 ProRes from this pack's own writer: 136 samples above white in
+        # 121 frames, 0.000125%, because a display-referred container's ceiling IS white and the writer clips
+        # there. Nothing was lost in the viewer; it was never in the file.
+        try:
+            _a = images.detach().cpu().numpy()
+            _mx, _mn = float(_a.max()), float(_a.min())
+            _over = float((_a > 1.0).mean()) * 100.0
+            range_note = (f"max {_mx:.3f}, min {_mn:.3f}, {_over:.3f}% above 1.0" if _over > 0.0
+                          else f"max {_mx:.3f}, min {_mn:.3f}, nothing above 1.0 (no highlights to recover)")
+        except Exception:
+            range_note = ""
+        # THE SOUNDTRACK, cut to the frames that were actually cached. `cached` and not `total`: the viewer
+        # caps its frames at _PLAYER_FRAME_CAP and its transport is built from what it holds, so a full-length
+        # track against a truncated picture would drift by exactly the frames that were dropped.
+        #
+        # 16-bit, unlike the delivery sidecar - see _save_wav. This copy exists to be decoded by a browser.
+        #
+        # A bad AUDIO does NOT stop the viewer. Everywhere else in this pack a malformed track raises, because
+        # there the consequence is a delivered file that is silently silent. Here the consequence is a picture
+        # you cannot look at because the sound was wrong, which is the worse trade for a VIEWER - so it is
+        # caught, named in the node's own report, and the frames still play.
+        audio_name, audio_sig, audio_note = "", "", ""
+        if audio is not None:
+            try:
+                pcm = _audio_pcm(audio, fps, cached, 0, who="OCIO Player")
+                if pcm is not None:
+                    samples, sr, ch = pcm
+                    _save_wav(os.path.join(cache_dir, _PLAYER_AUDIO), samples, sr, bits=16)
+                    audio_name = _PLAYER_AUDIO
+                    # Part of the front end's re-init signature: dir / count / resolution are all unchanged
+                    # when ONLY the track changes, and without a term of its own the viewer would keep the
+                    # sound it already had. Same reason content_sig exists for the pixels.
+                    audio_sig = f"{sr}_{ch}_{int(samples.shape[0])}"
+            except Exception as e:
+                # _audio_pcm already names the node; keep one prefix, not two.
+                audio_note = f"audio not playable: {str(e).split('OCIO Player: ', 1)[-1][:200]}"
+                logging.warning("OCIO Player: %s", audio_note)
+        ui = {"player_dir": [cache_dir], "player_total": [str(total)], "player_cached": [str(cached)],
+              "resolution": [f"{w}x{h}"], "fps": [str(float(fps))], "input_cs": [input_colorspace],
+              "content_sig": [content_sig], "player_audio": [audio_name], "audio_sig": [audio_sig],
+              "range_note": [range_note]}
+        if audio_note:
+            ui["audio_note"] = [audio_note]
+        return {"ui": ui, "result": ()}
 
 
 NODE_CLASS_MAPPINGS = {"OCIORead": OCIORead, "OCIOWrite": OCIOWrite, "OCIOPlayer": OCIOPlayer}

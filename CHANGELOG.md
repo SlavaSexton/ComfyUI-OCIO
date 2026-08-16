@@ -1,5 +1,147 @@
 # Changelog
 
+## What the stock path costs, shown on one clip
+
+Four side-by-side frames in `docs/assets/comparison/`, and a section in the README built around them: the same
+LTX-2.5 generation written through ComfyUI's own LTX-2.5 template and through this pack. The model is
+identical in both. What differs is what survives the trip out of it.
+
+With the shadows lifted, the stock result carries coloured noise and banding through the hair, the neck and
+the shaded armour. In the highlights, neon breaks into coloured fringes, and a light source on water smears
+into artefacts with its reflection gone. Through this pack the tone holds, the glow stays whole and the
+reflection reads as separate ripples.
+
+The claim the pictures support is a narrow one, and it is the honest one: **the model gives more than the
+stock path can carry.** That path puts the picture through 8 bits and clips it at `0..1`. Here the decode
+runs in float32 with no clamp and the result lands in a 32-bit float EXR and a 12-bit ProRes 4444, never
+passing through 8 bits. Nothing in those frames was recovered afterwards - it was never thrown away.
+
+## OCIO Player says whether there is anything above white before you go looking for it
+
+New `Range check` line in the Info panel: `max 1.017, min -0.008, 0.070% above 1.0`, or
+`nothing above 1.0 (no highlights to recover)`.
+
+It answers a question the viewer could not previously distinguish from a fault. Pull exposure down on a
+display-referred master and the picture darkens and reveals nothing, which looks exactly like a broken
+viewer. It is not: that container's ceiling IS white, and the writer clips there, so the highlights were
+gone before the file existed. Measured on a real Rec.709 ProRes from this pack's own writer, reading native
+YUV codes with no RGB stage anywhere so nothing could clamp the measurement: the brightest luma across 121
+frames is 60304 against a white point of 60160, and 136 samples out of 109 035 520 sit above white, which is
+0.000125%. There was nothing to recover.
+
+The same line on a scene-linear batch reports numbers in the thousands of percent, which is the point: it
+tells "this material has range" apart from "this viewer is broken" without a measurement.
+
+## The view fills itself in with ACES 1.3, and the sound toggle stops asking questions it has already answered
+
+**`view` now auto-fills with the ACES 1.3 transform** where that config has one for the resolved display,
+instead of the loaded config's own 2.0 default. Which version renders is a statement about who opens the
+file rather than about which standard is newer: a Nuke 13 or 14 comp is on ACES 1.2 / 1.3, and in an ACES
+project Nuke's Read applies the inverse Output Transform on the way in while the viewer applies the forward
+one, so a render has to have been made by the version that comp will view it through. Rendered with 2.0 and
+viewed through 1.3, the worst pixel of a real Rec.709 master is off by 35.5%, and nothing in the file says
+why. The 2.0 entries are one click away in the same list for anyone delivering into a 2.0 pipeline.
+
+It still falls back to the loaded config's default when the 1.3 config cannot do the job - when it has no
+view for that display, or does not know the scene colorspace at all (`D-Log D-Gamut`, `Linear D-Gamut`).
+
+**`write_audio` appears only when sound arrives without a wire.** It was drawn on every OCIO Write, and
+almost everywhere the wiring had already answered it: nothing on `audio` writes no sound because there is
+none to write, and something on `audio` is a deliberate act with a wire to pull. A toggle that can only hold
+the answer it already has is a row of noise on every write node in a graph.
+
+It is hidden rather than removed, because "wire sound and it gets written, wire none and it does not" is the
+obvious reading and misses one real case: a native ComfyUI `VIDEO` carries its own track INSIDE the object,
+so connecting a movie hands the writer sound that no wire represents. That is what this toggle is for, and
+it holds for a sequence as well, where the track lands beside the frames as a sidecar `.wav`. Wire an
+explicit `audio` alongside a `video` and the wire wins in the writer, so the toggle steps back out.
+
+## OCIO Write's `from_colorspace` is now `input_colorspace`
+
+Three nodes were asking the same question in two vocabularies: `OCIO Read` and `OCIO Player` took
+`input_colorspace`, `OCIO Write` took `from_colorspace`. One word for one idea now.
+
+**A workflow saved from the canvas is unaffected.** Its `widgets_values` is a positional array with no field
+names in it, so what matters is the slot, and the input keeps the same one, second in `required`. Checked
+against a real graph rather than assumed. `tools/test_input_colorspace_rename.py` asserts the slot, so a later
+edit cannot quietly move it and shift every widget after it by one.
+
+**A workflow saved in API format with the old key will be refused, and the fix is one word.** ComfyUI checks
+that every required key is present before a node runs, and answers a missing one with HTTP 400
+`required_input_missing` naming the key. Both ways around it were measured and both cost more than they save:
+a `VALIDATE_INPUTS` naming the old spelling does not lift that check, and moving the input to `optional` to
+make it liftable would push every widget after it one slot along, corrupting the canvas workflows that
+currently survive untouched. So rename `from_colorspace` to `input_colorspace` in the JSON.
+
+`write()` itself still accepts the old keyword, for the callers that reach it directly rather than through a
+prompt: this repo's own `tools/` scripts, `docker/`, and anything driving the node from Python.
+
+## The view list narrows to what a pair can render, the thumbnail stops clamping, and the Player gets a soundtrack
+
+**`view` now offers only what the resolved display actually has.** The combo is built once, when the node is
+registered, as the union of every view across every display of two configs, so most of what it offered was
+wrong for any given pair. Measured on the configs loaded by default: of the 32 real entries, **24 are invalid
+for `Rec.1886 Rec.709 - Display`**, and every one of the nine displays has at least four it cannot use.
+Picking one of them is not a soft miss. It raises at render time, after the graph has already spent its time.
+
+The trap became ordinary rather than exotic when the ACES 1.3 entries arrived in the previous release.
+`ACES 1.1 - SDR Video (Rec.709 lim)` reads like the obvious choice for a Rec.709 deliverable, and it lives on
+`Rec.1886 Rec.2020 - Display`, a display the ACES 2.0 config does not have at all.
+
+The list is narrowed live, as soon as both colorspaces are picked, and it **never changes your pick**. A view
+restored from a saved workflow stays selected even when the pair cannot use it, with the widget's label saying
+so, because silently swapping a rendering transform would change the picture a finished graph produces.
+
+A second way a pair can be impossible is fixed with it, and it is not about the view at all: the two configs
+do not hold the same colorspaces. `D-Log D-Gamut` and `Linear D-Gamut` are in the ACES 2.0 config and not in
+the 1.3 one, so an `ACES 1.3: ` view with either of them on the scene side could not be built even though the
+view was perfectly valid for the display. That used to surface as OCIO's own `Cannot find source color space`
+from inside the processor build, with no mention of the view that caused it. Those entries are now dropped
+from the list, and reaching the render with one names the colorspace instead.
+
+**The thumbnail route decoded video differently from the player, and now does not.** `_read_video` moved to
+planar YUV with the matrix done in float32 last release, because asking ffmpeg for an RGB pixel format makes
+ffmpeg do the matrix into an unsigned integer container, which clamps. `_read_video_frame`, behind
+`/ocio/thumb`, was left asking for `rgb48le`, so one file gave the viewport one picture and the thumbnail
+another.
+
+Measured on a flat limited-range frame (Y 16, Cb 240, Cr 128, BT.709): the file carries green at **-0.0937**
+and the thumbnail decode returned exactly **0.0**. On a real ProRes 4444 written by this pack's own writer the
+two paths disagreed on 0.30% of samples. The clip that turns a float picture into an 8-bit PNG still happens,
+but now at the end, after the colorspace conversion, rather than before it.
+
+**OCIO Player takes an `AUDIO` input.** Its float path shows half-float frames off disk, and a batch of frames
+has no sound in it, so the L/R meters had nothing to read whatever the graph had generated upstream. The track
+is written beside the frames and decoded in the browser, and the meters read it through the same graph the
+`<video>` path uses.
+
+The track is cut to the frames the viewer CACHED rather than to its own length. The cache stops at 240 frames
+and the transport is built from what it holds, so a full-length track against a truncated picture drifts by
+exactly the frames that were dropped, silently. Two limits are deliberate and worth stating: reverse plays
+silent, because a decoded buffer has no negative rate, and the meters fall to zero with it; and a malformed
+`AUDIO` does not stop the picture, unlike everywhere else in this pack, because a viewer that refuses to show
+frames over a bad track is the worse trade. The problem is named in the node's report instead.
+
+While the meters were being wired up it turned out they had never drawn on this node at all, in either mode:
+the one call that draws them lived in OCIO Read's animation loop, and neither of the Player's two loops made
+it. Both do now, so a streamed movie meters as well.
+
+Three test files are added, and two of them run the front-end JavaScript rather than reading it:
+`tools/test_view_narrowing.py` lifts the narrowing function out of `web/ocio_io.js` and executes it under node
+against the real config data, then puts every entry it keeps through the real conversion;
+`tools/test_player_audio.py` does the same with the clock that keeps the soundtrack on the picture, including
+the loop case, where the frame clock wraps by modulo and never re-anchors itself; and
+`tools/test_thumb_no_clamp.py` builds its own lossless fixture and checks the codes came back off the disk
+unchanged before believing a single number it measures.
+
+**`tools/check_deploy_sync.py` can now fix the drift it reports**, with `--apply`. It answered "these two
+copies differ" and left the copying to whoever read it, which on a dev box is a hand-copy per edit and a
+question of which files were missed. It copies only: files that exist just in the install are still reported
+and never removed, because this script cannot tell a stale leftover from something somebody put there on
+purpose. Files written but not yet `git add`ed are copied too, which the comparison itself deliberately
+ignores - the manifest is what ships, but a module written five minutes ago is exactly what someone is
+trying to get in front of a running server. `--quiet` prints one line, for driving it from an editor hook.
+
 ## The view picks its ACES version, a ProRes preview has sound again, and OCIO Write stops trying to be a player
 
 **`view` now offers ACES 1.3 as well as the loaded config's own transforms**, prefixed so the version is

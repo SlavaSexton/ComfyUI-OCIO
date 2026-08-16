@@ -118,7 +118,22 @@ try:
             views = {}
             for d in cfg.getDisplays():
                 views[d] = {"default": cfg.getDefaultView(d), "all": list(cfg.getViews(d))}
-            return web.json_response({"encodings": out, "views": views})
+            # AND THE SECOND CONFIG, because the `view` widget offers two of them. The ACES 1.3 built-in
+            # contributes 18 prefixed entries to that combo, and a view belongs to ONE display: measured on
+            # the configs loaded here, 24 of the 32 real entries are invalid for `Rec.1886 Rec.709 - Display`
+            # alone. Without this the front end cannot tell which of them the resolved display accepts, and
+            # the artist finds out at render time.
+            # `colorspaces` is the SECOND half of that question and not a duplicate of `encodings` above:
+            # the two configs hold different colorspace SETS (`D-Log D-Gamut`, `Linear D-Gamut` exist in the
+            # ACES 2.0 config and not in the 1.3 one), and picking a 1.3 view with one of those on the scene
+            # side fails inside OCIO's own processor build, not on any view check.
+            from .io_nodes import (_alt_views_by_display, _alt_colorspace_names, _alt_default_views,
+                                   _ALT_ACES_LABEL)
+            alt = {"label": _ALT_ACES_LABEL,
+                   "views": _alt_views_by_display(),
+                   "defaults": _alt_default_views(),
+                   "colorspaces": _alt_colorspace_names()}
+            return web.json_response({"encodings": out, "views": views, "alt": alt})
         except Exception as e:
             # An empty answer is the safe one: the front end falls back to offering everything, which is what
             # it did before this route existed. A picker that narrows on bad data is worse than one that does
@@ -426,6 +441,29 @@ try:
             return web.Response(body=arr.tobytes(), content_type="application/octet-stream",
                                 headers={"X-Width": str(w), "X-Height": str(h), "X-Type": "float16",
                                          "Cache-Control": "no-store"})
+        except Exception as e:
+            return web.json_response({"error": str(e)[:200]}, status=400)
+
+    @server.PromptServer.instance.routes.get("/ocio/playeraudio")
+    async def _ocio_player_audio(request):
+        """The OCIO Player's cached soundtrack, as a WAV the browser decodes into an AudioBuffer.
+
+        It sits beside the frames in the same per-node cache dir, written by the node itself, so the only
+        query this takes is that dir - the file NAME is not the caller's to choose. That is deliberate: every
+        other binary route here reads whatever local path it is handed (a single-user local tool, stated at
+        /ocio/thumb), but this one has no reason to, and a route that only ever opens one known filename in a
+        directory cannot be talked into opening something else.
+        """
+        from .io_nodes import _PLAYER_AUDIO
+        d = request.rel_url.query.get("dir", "")
+        p = os.path.join(d, _PLAYER_AUDIO) if d else ""
+        if not (p and os.path.isfile(p)):
+            return web.json_response({"error": "no audio for this player"}, status=404)
+        try:
+            with open(p, "rb") as f:
+                body = f.read()
+            return web.Response(body=body, content_type="audio/wav",
+                                headers={"Cache-Control": "no-store"})
         except Exception as e:
             return web.json_response({"error": str(e)[:200]}, status=400)
 except Exception:

@@ -25,7 +25,7 @@ validate. Widgets are left out here on purpose; the group references cover them.
 | `OCIO CDLTransform` | `image:IMAGE*`, `video:VIDEO*` | `image/sequence/video:IMAGE`, `ComfyUI Video:VIDEO` |
 | `OCIO FileTransform` | `image:IMAGE*`, `video:VIDEO*` | `image/sequence/video:IMAGE`, `ComfyUI Video:VIDEO` |
 | `OCIO LookTransform` | `image:IMAGE*`, `video:VIDEO*` | `image/sequence/video:IMAGE`, `ComfyUI Video:VIDEO` |
-| `OCIO Player` | `images:IMAGE*`, `video:VIDEO*`, `alpha:MASK*` | **none** |
+| `OCIO Player` | `images:IMAGE*`, `video:VIDEO*`, `alpha:MASK*`, `audio:AUDIO*` | **none** |
 | `OCIO VAE Encode` | `pixels:IMAGE`, `vae:VAE` | `latent:LATENT` |
 | `OCIO VAE Decode` | `samples:LATENT`, `vae:VAE` | `image/sequence/video:IMAGE`, `range report:STRING` |
 | `OCIO Write` | `images:IMAGE*`, `video:VIDEO*`, `alpha:MASK*`, `audio:AUDIO*`, `source_meta:STRING*` | `path:STRING` |
@@ -57,7 +57,7 @@ nodes an artist reaches for first:
 | `MASK` | `LoadImage`'s second output, `ImageToMask`, `SolidMask`, `OCIO Read` | Used as the alpha channel on Write and Player. |
 | `VAE` | `VAELoader`, `CheckpointLoaderSimple` | Must be the VAE that belongs to the model. It is trained with the transformer and cannot be swapped. |
 | `LATENT` | `KSampler`, `EmptyLatentImage`, `VAEEncode`, `OCIO VAE Encode` | |
-| `AUDIO` | `LoadAudio`, `VAEDecodeAudio`, an audio VAE decode from a video model | Only `OCIO Write` takes it. |
+| `AUDIO` | `LoadAudio`, `VAEDecodeAudio`, an audio VAE decode from a video model | `OCIO Write` muxes it into the file; `OCIO Player` plays it with the frames and meters it. |
 | `VIDEO` | `LoadVideo`, `CreateVideo`, any node emitting ComfyUI's native `VIDEO` | See the rule below. |
 | `STRING` | `OCIO Read`'s `metadata` output | The only intended source for Write's `metadata`. |
 
@@ -105,8 +105,11 @@ OCIO Read -> OCIO CDLTransform -> OCIO Display -> OCIO Write (container = video)
 ```
 
 **Or in two nodes, since v1.3.0.** `OCIO Write` has a `view` widget that applies the same output transform on
-the way out, and it fills itself in: choose a scene-referred `from_colorspace` and a display-referred
-`output_colorspace`, and the node writes in that display's default view by itself.
+the way out, and it fills itself in: choose a scene-referred `input_colorspace` and a display-referred
+`output_colorspace`, and the node picks that display's view by itself. It picks the **ACES 1.3** one where
+that config has it, because the version a render is made with has to match the version the comp views it
+through, and a Nuke 13 or 14 project is on ACES 1.2 / 1.3. The 2.0 entries are one click away in the same
+list for a 2.0 pipeline.
 
 ```
 OCIO Read -> OCIO CDLTransform -> OCIO Write (container = video, view fills itself in)

@@ -697,7 +697,7 @@ The smallest useful graph. Use it to see what your model actually produced.
 ```
   OCIOWrite  [OCIO Write]
       profile            = none
-      from_colorspace    = sRGB Encoded Rec.709 (sRGB)
+      input_colorspace    = sRGB Encoded Rec.709 (sRGB)
       output_colorspace  = ACEScg
       container          = still image
       still_format       = exr
@@ -776,7 +776,7 @@ Decode side:
       image/sequence/video   into  OCIOWrite.images
 
   OCIOWrite  [OCIO Write]
-      from_colorspace    = ACEScg
+      input_colorspace    = ACEScg
       output_colorspace  = ACEScg
       container          = sequence
       still_format       = exr

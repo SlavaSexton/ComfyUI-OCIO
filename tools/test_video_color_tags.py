@@ -213,7 +213,7 @@ def check_real_encode(io, tmp):
                           ("Rec.2100-PQ - Display", "pq", ("bt2020", "smpte2084", "bt2020nc")),
                           ("Rec.1886 Rec.709 - Display", "r709", ("bt709", "bt709", "bt709")),
                           ("sRGB - Display", "srgb", ("bt709", "iec61966-2-1", "bt709"))):
-        res = w.write(profile="none", from_colorspace="sRGB - Display", output_colorspace=cs, container="video",
+        res = w.write(profile="none", input_colorspace="sRGB - Display", output_colorspace=cs, container="video",
                       still_format="exr", video_codec="prores_422hq", bit_depth="16f", auto_range=False,
                       first_frame=1, last_frame=0, start_number=1, source_start=1, raw_data=False,
                       output_folder="$OUTPUT/vid", filename="v_" + tag, fps=25.0,

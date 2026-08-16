@@ -52,7 +52,7 @@ def _write_node(images_ref, alpha_ref, out_folder, out_name, cs_any):
     is <out_folder>/<out_name>.exr. raw_data on -> pixels written as-is (no conversion)."""
     return {"class_type": "OCIOWrite", "inputs": {
         "profile": "none",
-        "from_colorspace": cs_any, "output_colorspace": cs_any,
+        "input_colorspace": cs_any, "output_colorspace": cs_any,
         "container": "still image", "still_format": "exr", "video_codec": "prores_4444",
         "bit_depth": "32f", "compression": "zip",
         "auto_range": False, "first_frame": 1, "last_frame": 0, "start_number": 1, "source_start": 1,

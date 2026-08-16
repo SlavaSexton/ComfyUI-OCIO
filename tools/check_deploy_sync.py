@@ -51,6 +51,7 @@ import fnmatch
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import urllib.error
@@ -116,6 +117,19 @@ def git_tracked_files(repo_dir: Path):
         return None, err.strip()
     files = [ln.strip() for ln in out.splitlines() if ln.strip()]
     return files, None
+
+
+def git_new_files(repo_dir: Path):
+    """Files that exist and are not ignored, but are not in the index yet.
+
+    NOT part of the comparison - what ships is what git tracks, and that is the question this script was
+    written to answer. They matter to --apply and only there: a module written five minutes ago and not yet
+    `git add`ed is exactly the file someone is trying to get in front of a running ComfyUI, and a sync that
+    skipped it would skip it SILENTLY, leaving the install one file short of the code being tested."""
+    rc, out, _ = run_git(repo_dir, ["ls-files", "--others", "--exclude-standard"])
+    if rc != 0:
+        return []
+    return [ln.strip() for ln in out.splitlines() if ln.strip()]
 
 
 # --------------------------------------------------------------------------------------------------
@@ -304,6 +318,13 @@ def main() -> int:
                      f"fallback (default: {DEFAULT_COMFY_URL})")
     ap.add_argument("--no-server-check", action="store_true", help="never contact a running ComfyUI server")
     ap.add_argument("--all", action="store_true", help="also list identical files in the detail section")
+    ap.add_argument("--apply", action="store_true",
+                    help="copy the differing and missing files from the repository INTO the installed copy, "
+                         "so a running ComfyUI picks up the edit. Never deletes anything: files that exist "
+                         "only in the install are reported and left alone. Undo with `git -C <install> "
+                         "checkout -- .` if that copy is a git checkout.")
+    ap.add_argument("--quiet", action="store_true",
+                    help="print one summary line instead of the full report (for editor hooks)")
     args = ap.parse_args()
 
     repo_root = Path(args.repo_path).expanduser().resolve() if args.repo_path else default_repo_root()
@@ -313,8 +334,9 @@ def main() -> int:
         return 2
 
     install_root, resolve_notes = resolve_install_path(args, repo_root)
-    for n in resolve_notes:
-        print("  " + n)
+    if not args.quiet:
+        for n in resolve_notes:
+            print("  " + n)
 
     if install_root is None:
         print()
@@ -353,8 +375,55 @@ def main() -> int:
         else:
             differs.append(rel)
 
+    # "Extra" means the install has something the repository does not. A file the repository DOES have but
+    # has not committed yet is a different thing entirely, and calling it extra was wrong in a way that
+    # mattered: --apply copies those (see git_new_files), so every sync ended by reporting the files it had
+    # just correctly delivered as strangers, and --quiet returned failure on a run that had succeeded.
+    new_here = {r for r in git_new_files(repo_root)}
+    untracked_in_sync = []
     for rel in sorted(install_all_files - repo_files_set):
-        extra.append(rel)
+        if rel in new_here and (repo_root / rel).is_file() and (install_root / rel).is_file() \
+                and files_identical(repo_root / rel, install_root / rel):
+            untracked_in_sync.append(rel)
+        else:
+            extra.append(rel)
+
+    # --apply: make the install match, so a running ComfyUI can be reloaded onto the edit that was just made.
+    #
+    # COPIES ONLY, NEVER DELETES. `extra` is left exactly where it is: this script cannot tell a stale leftover
+    # from something the user put there on purpose, and a sync tool that removes files nobody asked it to
+    # remove is a worse problem than the drift it was fixing. They stay in the report instead.
+    copied, copy_errors = [], []
+    if args.apply:
+        # plus anything written but not yet `git add`ed - see git_new_files for why that is --apply's business
+        # and not the comparison's
+        fresh = [r for r in git_new_files(repo_root)
+                 if not (install_root / r).is_file() or not files_identical(repo_root / r, install_root / r)]
+        for rel in differs + missing + fresh:
+            src, dst = repo_root / rel, install_root / rel
+            try:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+                copied.append(rel)
+            except OSError as e:
+                copy_errors.append(f"{rel}: {e}")
+        # re-read the state so the report below describes the install as it is NOW, not as it was found. A
+        # summary printed from the pre-copy lists would say OUT OF SYNC on a sync that had just succeeded.
+        if copied:
+            differs = [r for r in differs if r not in set(copied)]
+            missing = [r for r in missing if r not in set(copied)]
+            identical += copied
+            install_git = git_state(install_root)
+
+    if args.quiet:
+        if copy_errors:
+            print(f"OCIO sync: {len(copied)} file(s) copied, {len(copy_errors)} FAILED: {copy_errors[0]}")
+            return 1
+        if args.apply:
+            print(f"OCIO sync: {len(copied)} file(s) -> install" if copied else "OCIO sync: already current")
+            return 0
+        print(f"OCIO sync: {len(differs)} differ, {len(missing)} missing, {len(extra)} extra")
+        return 0 if not (differs or missing or extra) else 1
 
     print()
     print(format_git_line("Repository", repo_root, repo_git))
@@ -376,10 +445,19 @@ def main() -> int:
     total = len(repo_files)
     print()
     print(f"Files: {total} tracked | {len(identical)} identical | {len(differs)} differ | "
-          f"{len(missing)} missing in install | {len(extra)} extra in install")
+          f"{len(missing)} missing in install | {len(extra)} extra in install"
+          + (f" | {len(untracked_in_sync)} uncommitted, in sync" if untracked_in_sync else ""))
 
     in_sync = not differs and not missing and not extra and not head_mismatch
     print("RESULT:", "IN SYNC" if in_sync else "OUT OF SYNC - the installed copy does not match the repository")
+    if args.apply:
+        print(f"APPLIED: {len(copied)} file(s) copied into the install"
+              + (f", {len(copy_errors)} FAILED" if copy_errors else ""))
+        for e in copy_errors:
+            print("  COPY FAILED         " + e)
+        if copied:
+            print("  A running ComfyUI does not re-read Python at runtime: restart the server for io_nodes.py /"
+                  " __init__.py, and hard-refresh the browser (Ctrl+F5) for web/*.js.")
     print()
 
     if args.all:

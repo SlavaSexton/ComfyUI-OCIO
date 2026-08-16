@@ -160,15 +160,16 @@ const CODEC_ALLOW = {
     h264: "delivery", hevc: "delivery", hevc_444_12: "hevc12", ffv1: "anything",
 };
 const STILL_ALLOW = { exr: "anything", tiff: "anything", dpx: "dpx", png: "still16", jpeg: "still8" };
-let _ocioEnc = null;                                  // { encodings: {name: encoding}, views: {display: {...}} }
+let _ocioEnc = null;    // { encodings: {name: encoding}, views: {display: {...}}, alt: {label, views, colorspaces} }
 async function ocioEncodings() {
     if (_ocioEnc) return _ocioEnc;
+    const empty = { label: "", views: {}, colorspaces: [] };
     try {
         const r = await fetch("/ocio/encodings");
         const j = await r.json();
-        _ocioEnc = { encodings: j.encodings || {}, views: j.views || {} };
+        _ocioEnc = { encodings: j.encodings || {}, views: j.views || {}, alt: j.alt || empty };
     } catch (e) {
-        _ocioEnc = { encodings: {}, views: {} };      // no data -> no auto-fill, which is the old behaviour
+        _ocioEnc = { encodings: {}, views: {}, alt: empty };   // no data -> no auto-fill, the old behaviour
     }
     return _ocioEnc;
 }
@@ -227,22 +228,126 @@ async function applyCsNarrowing(node) {
     node.setDirtyCanvas(true, true);
 }
 
+// Which view this pair should fill itself in with. ACES 1.3 WHEN THAT CONFIG HAS ONE FOR THIS DISPLAY, and
+// the loaded config's own default otherwise.
+//
+// The version is a statement about who opens the file, not about which standard is newer. A Nuke 13 or 14
+// comp is on ACES 1.2 / 1.3, and in an ACES project Nuke's Read applies the inverse Output Transform on the
+// way in while the viewer applies the forward one - so a render has to have been made by the version that
+// comp will view it through. Get that wrong and the worst pixel of a real Rec.709 master is off by 35.5%,
+// presenting as "close, but the blacks and highlights are wrong" with nothing in the file to say why.
+//
+// Delivering into a 2.0 pipeline is one click away in the same list. This picks the common case.
+// Pure, so tools/test_view_narrowing.py can run it under node against the real config data.
+function preferredViewFor(enc, cross) {
+    if (!cross) return VIEW_NONE;
+    const alt = enc.alt || {};
+    const altDefault = (alt.defaults || {})[cross.display];
+    const altCs = alt.colorspaces || [];
+    // the 1.3 config must also KNOW the scene colorspace, or the transform cannot be built at all
+    if (altDefault && altCs.indexOf(cross.scene) !== -1) return altDefault;
+    const d = enc.views ? enc.views[cross.display] : null;
+    return (d && d.default) ? d.default : null;                   // null = we have nothing for this display
+}
+
 async function applyAutoView(node) {
     const vw = W(node, "view");
     if (!vw) return;
     if ((node._ocioEdited || new Set()).has("view")) return;      // rule 1: the artist owns it now
     const enc = await ocioEncodings();
-    const cross = crossingOf(enc, W(node, "from_colorspace")?.value, W(node, "output_colorspace")?.value);
+    const cross = crossingOf(enc, W(node, "input_colorspace")?.value, W(node, "output_colorspace")?.value);
     let want = VIEW_NONE;
     if (cross) {
-        const d = enc.views[cross.display];
-        if (d && d.default) want = d.default;
-        else return;                                              // a display we have no views for: leave it
+        want = preferredViewFor(enc, cross);
+        if (!want) return;                                        // a display we have no views for: leave it
     }
     if (vw.value !== want && (vw.options?.values || []).includes(want)) {
         setWSilent(node, "view", want);
         node.setDirtyCanvas(true, true);
     }
+}
+
+// ---- which VIEWS this pair can actually be rendered through -----------------------------------------------
+//
+// A VIEW BELONGS TO A DISPLAY. The combo cannot express that: it is one flat list, fixed when INPUT_TYPES is
+// evaluated, and it is the union across every display of TWO configs. Measured on the configs this pack loads
+// by default, 24 of its 32 real entries are invalid for `Rec.1886 Rec.709 - Display` - and picking one of them
+// is not a soft miss, it raises at render time, after the graph has already spent its time.
+//
+// The trap got ordinary rather than exotic when the ACES 1.3 entries arrived: `ACES 1.1 - SDR Video (Rec.709
+// lim)` reads like the obvious choice for a Rec.709 deliverable and lives on `Rec.1886 Rec.2020 - Display`, a
+// display the ACES 2.0 config does not even have.
+//
+// TWO reasons an entry can be wrong for a pair, and both are checked here because they fail differently:
+//   1. the view is not on the resolved display -> this pack's own ValueError, which names the valid ones;
+//   2. the 1.3 config does not HAVE the scene colorspace (`D-Log D-Gamut`, `Linear D-Gamut` are in the ACES
+//      2.0 config only) -> a raw OCIO "Cannot find source color space" from inside the processor build. The
+//      view is perfectly valid for the display in that case, so rule 1 would let it through.
+//
+// Pure and dependency-free on purpose: tools/test_view_narrowing.py lifts THIS function out of the file and
+// runs it under node against the real config data, so the narrowing is tested by execution rather than by a
+// grep for its name. Returns null when there is nothing to narrow by, which means "leave the list alone".
+function viewsForCrossing(enc, cross) {
+    if (!cross) return null;                                   // no crossing -> `view` does nothing at all
+    const d = enc.views ? enc.views[cross.display] : null;
+    if (!d || !Array.isArray(d.all)) return null;              // a display we have no views for: leave it
+    const out = [VIEW_NONE].concat(d.all);
+    const alt = enc.alt || {};
+    const altViews = (alt.views || {})[cross.display];
+    const altCs = alt.colorspaces || [];
+    if (altViews && altCs.indexOf(cross.scene) !== -1) out.push.apply(out, altViews);
+    return out;
+}
+
+// Narrow `view` to what this from/output pair can be rendered through. Same contract as applyCsNarrowing and
+// for the same reason: IT MUST NEVER COERCE. A value that is no longer on the list is KEPT, still selected,
+// and said out loud in the label - a saved workflow's rendering transform is not ours to swap.
+// `write_audio` is shown for exactly one situation: sound arriving WITHOUT A WIRE.
+//
+// Wiring already answers the question everywhere else. Nothing connected to `audio` writes no sound - not a
+// muxed track, not a sidecar .wav - because there is none to write. Something connected to `audio` is a
+// deliberate act with a wire to pull if it was not wanted. Neither needs a toggle, and a toggle that can only
+// hold the answer it already has is a row of noise on every write node in the graph.
+//
+// The exception is a native ComfyUI VIDEO. It carries its own track INSIDE the object, so connecting a movie
+// hands the writer sound that no wire represents, and this is the only way to ask for picture only. That is
+// why the row appears then, and why it appears for a SEQUENCE too: a sequence cannot hold audio in its files,
+// so the track lands beside them as a .wav, and declining it has to stay possible.
+//
+// An explicit `audio` wire alongside a `video` one wins in the writer, so the toggle steps back out of the
+// way - the wire is the control at that point.
+function applyAudioVis(node) {
+    const w = W(node, "write_audio");
+    if (!w) return;
+    const wired = (name) => {
+        const s = (node.inputs || []).find(i => i.name === name);
+        return !!(s && s.link !== null && s.link !== undefined);
+    };
+    showWidget(node, w, wired("video") && !wired("audio"));
+    node.setSize([node.size[0], node.computeSize()[1]]);
+    node.setDirtyCanvas(true, true);
+}
+
+async function applyViewNarrowing(node) {
+    const w = W(node, "view");
+    if (!w || !w.options) return;
+    const enc = await ocioEncodings();
+    if (!Object.keys(enc.views || {}).length) return;          // no data -> offer everything, as before
+    if (!w._ocioAllViews) w._ocioAllViews = (w.options.values || []).slice();   // the full list, kept once
+    const allow = viewsForCrossing(enc, crossingOf(enc, W(node, "input_colorspace")?.value,
+                                                       W(node, "output_colorspace")?.value));
+    if (!allow) {
+        w.options.values = w._ocioAllViews.slice();
+        w.label = "view";
+        node.setDirtyCanvas(true, true);
+        return;
+    }
+    const ok = w._ocioAllViews.filter(v => allow.includes(v));
+    if (!ok.length) { w.options.values = w._ocioAllViews.slice(); return; }     // never leave an empty picker
+    if (!ok.includes(w.value)) ok.unshift(w.value);            // keep the current pick reachable, never replace it
+    w.options.values = ok;
+    w.label = allow.includes(w.value) ? "view" : "view (not valid for this pair - the render will refuse it)";
+    node.setDirtyCanvas(true, true);
 }
 
 // bit-depth options + default per still format
@@ -1076,14 +1181,98 @@ function _ensureAudio(p) {
     } catch (e) { console.warn("[OCIO] audio init failed:", e && e.message); p._audioFailed = true; p.audio = null; }
     return p.audio;
 }
+// ---- the OTHER source of sound: a decoded AudioBuffer, for frames that never were a movie -------------------
+//
+// The float path shows half-float frames off disk. There is no <video> to tap, so createMediaElementSource has
+// nothing to attach to and the meters read a signal that does not exist - which is why they were blank on the
+// Player no matter what the graph upstream had generated. The `audio` input feeds a WAV beside those frames
+// (/ocio/playeraudio) and it is decoded once into an AudioBuffer here.
+//
+// Downstream of the source node everything is IDENTICAL to the <video> graph on purpose - same splitter, same
+// two analysers, same gain, same field names - so _drawAudioMeter and the mute button work on either without
+// knowing which one they were handed.
+function _ensureBufAudio(p, url) {
+    if (p.bufAudio && p.bufAudio.url === url) {
+        if (p.bufAudio.ctx.state === "suspended") p.bufAudio.ctx.resume();
+        return p.bufAudio;
+    }
+    _stopBufAudio(p);
+    if (!url) return null;
+    try {
+        if (!_ocioAudioCtx) _ocioAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const ctx = _ocioAudioCtx;
+        const splitter = ctx.createChannelSplitter(2);
+        const analyserL = ctx.createAnalyser(), analyserR = ctx.createAnalyser();
+        analyserL.fftSize = 256; analyserR.fftSize = 256;
+        splitter.connect(analyserL, 0); splitter.connect(analyserR, 1);
+        const gain = ctx.createGain(); gain.gain.value = 0;      // muted OUTPUT by default; the meter still reads
+        gain.connect(ctx.destination);
+        const a = { ctx, url, buffer: null, splitter, analyserL, analyserR, gain, muted: true,
+                    dataL: new Uint8Array(analyserL.fftSize), dataR: new Uint8Array(analyserR.fftSize),
+                    levelL: 0, levelR: 0, src: null, startedAt: 0, startOffset: 0 };
+        p.bufAudio = a;
+        fetch(url).then(r => (r.ok ? r.arrayBuffer() : Promise.reject(new Error("HTTP " + r.status))))
+                  .then(buf => ctx.decodeAudioData(buf))
+                  .then(decoded => { if (p.bufAudio === a) a.buffer = decoded; })
+                  .catch(e => { console.warn("[OCIO] player audio unavailable:", e && e.message); });
+        return a;
+    } catch (e) {
+        console.warn("[OCIO] audio init failed:", e && e.message);
+        p.bufAudio = null;
+        return null;
+    }
+}
+function _stopBufSource(a) {
+    if (a && a.src) { try { a.src.stop(); } catch (e) {} try { a.src.disconnect(); } catch (e) {} a.src = null; }
+}
+function _stopBufAudio(p) {
+    if (!p || !p.bufAudio) return;
+    _stopBufSource(p.bufAudio);
+    try { p.bufAudio.gain.disconnect(); } catch (e) {}
+    p.bufAudio = null;
+}
+// How far the sound may drift from the picture before it is re-anchored. An AudioBufferSourceNode is
+// fire-and-forget: it cannot seek and cannot be reused, so keeping it in step means restarting it whenever the
+// picture clock has moved somewhere the sound is not - a loop back to the in-point, a scrub, an fps change.
+// Comparing POSITIONS rather than watching for those events is what makes it cover all of them, including the
+// loop, where the frame clock wraps by modulo and never re-anchors itself.
+//
+// 80 ms is about two frames at 24 fps. Tighter and an ordinary decode hiccup restarts the node constantly;
+// looser and a lip-sync error becomes visible.
+const _AUDIO_SLIP = 0.08;
+function _playerAudioSync(p) {
+    const a = p.bufAudio; if (!a || !a.buffer) return;
+    const pb = p.pb;
+    // REVERSE PLAYS SILENT, and that is a limitation rather than a decision: an AudioBufferSourceNode has no
+    // negative playbackRate, so playing backwards would mean decoding a reversed copy of the whole track. The
+    // meters fall to zero with it, which is honest - there is no signal.
+    if (!pb || !pb.playing || pb.dir < 0) { _stopBufSource(a); return; }
+    if (a.ctx.state === "suspended") a.ctx.resume();
+    const fps = Math.max(0.001, parseFloat(W(p.node, "fps")?.value) || pb.fps || 24);
+    const want = Math.max(0, (_pbCur(p) - _pbIn(p)) / fps);
+    if (a.src) {
+        const at = a.startOffset + (a.ctx.currentTime - a.startedAt);
+        if (at < a.buffer.duration && Math.abs(at - want) < _AUDIO_SLIP) return;   // in step, leave it alone
+        _stopBufSource(a);
+    }
+    if (want >= a.buffer.duration) return;                    // past the end of the track: silence, not a restart loop
+    try {
+        const s = a.ctx.createBufferSource();
+        s.buffer = a.buffer;
+        s.connect(a.splitter); s.connect(a.gain);
+        s.start(0, want);
+        a.src = s; a.startedAt = a.ctx.currentTime; a.startOffset = want;
+    } catch (e) { console.warn("[OCIO] player audio start failed:", e && e.message); }
+}
 function _toggleMute(p, btn) {
-    _ensureAudio(p);
-    if (!p.audio) { btn.title = "Audio unavailable for this clip"; return; }
-    p.audio.muted = !p.audio.muted;
-    p.audio.gain.gain.value = p.audio.muted ? 0 : 1;
-    _setIcon(btn, p.audio.muted ? _SVG.soundOff : _SVG.soundOn);
-    btn.style.opacity = p.audio.muted ? "0.55" : "1";
-    btn.style.color = p.audio.muted ? "#e0e8f0" : "#4caf50";
+    const a = p.bufAudio || _ensureAudio(p);
+    if (!a) { btn.title = "Audio unavailable for this clip"; return; }
+    a.muted = !a.muted;
+    a.gain.gain.value = a.muted ? 0 : 1;
+    if (a.ctx && a.ctx.state === "suspended") a.ctx.resume();
+    _setIcon(btn, a.muted ? _SVG.soundOff : _SVG.soundOn);
+    btn.style.opacity = a.muted ? "0.55" : "1";
+    btn.style.color = a.muted ? "#e0e8f0" : "#4caf50";
 }
 // Level zones are FIXED positions on the bar (NOT a whole-bar recolor): the fill just extends into green (0-75%),
 // then yellow (75-95%), then red (95-100%) as the level rises. Fast attack, slow decay so it reads like a VU.
@@ -1112,9 +1301,12 @@ function _drawMeterBars(cv, lvL, lvR, active) {
         g.fillStyle = "#000"; g.fillRect(fx(_MTR_GY), y, 1, barH); g.fillRect(fx(_MTR_YR), y, 1, barH);         // zone dividers
     });
 }
+// Reads whichever source this preview has: the <video> tap, or the decoded buffer on the Player's float path.
+// The seqMode test that used to be here was doing two jobs - "no audio on an image sequence" is already said by
+// the audioRow being hidden, and saying it twice is what kept the meters dark on the Player once it HAD sound.
 function _drawAudioMeter(p) {
-    const t = p.transport; if (!t || !t.meter || p.pb.seqMode || t.audioRow.style.display === "none") return;
-    const a = p.audio;
+    const t = p.transport; if (!t || !t.meter || t.audioRow.style.display === "none") return;
+    const a = p.audio || p.bufAudio;
     if (!a) { _drawMeterBars(t.meter, 0, 0, false); return; }
     const peak = arr => { let m = 0; for (let i = 0; i < arr.length; i++) { const v = Math.abs(arr[i] - 128); if (v > m) m = v; } return m / 128; };
     a.analyserL.getByteTimeDomainData(a.dataL); a.analyserR.getByteTimeDomainData(a.dataR);
@@ -1413,7 +1605,7 @@ function findUpstreamType(node, typeName, seen) {
 
 // ---- profile widget: HDR source preset -> from/output colorspace + still_format/bit_depth (silent) ---------
 // These must stay byte-identical to the backend mapping in io_nodes.py (OCIOWrite.write), and the from/out
-// strings must be values the from_colorspace combo actually offers - ComfyUI rejects an unknown combo value
+// strings must be values the input_colorspace combo actually offers - ComfyUI rejects an unknown combo value
 // with HTTP 400 and no fallback. tools/test_ltx_hdr_profiles.py asserts the mirror - it reads this table and
 // compares it against the backend mapping parsed out of io_nodes.py by AST. (This line used to name
 // tools/test_write_output.py, which contains no profile assertion at all and never has.)
@@ -1452,7 +1644,7 @@ function applyProfile(node, profileName) {
     const p = PROFILE_CS[profileName];
     if (!p) return;                                    // "none" / "auto" (unresolved) / "Seedance ..." -> no-op here
     node._ocioProfileSetting = true;                    // guard: the colorspace writes below are OURS, not a manual edit
-    setWSilent(node, "from_colorspace", p.from);
+    setWSilent(node, "input_colorspace", p.from);
     setWSilent(node, "output_colorspace", p.out);
     // GUARDED, and this is not defensive style. setWSilent is a bare `w.value = value`, so a row without fmt/bit
     // used to write JavaScript `undefined` straight into two COMBO widgets. Both serialisations of that are a
@@ -2076,6 +2268,8 @@ function _playerEnsureRaf(node, p) {
         if (node._ocioPlayer !== p) { p.raf = 0; return; }
         if ((node.mode === 2 || node.mode === 4) && p.texCache && p.texCache.size) { _playerClearTex(p); _playerDraw(p); }   // muted / bypassed -> free the frame textures from VRAM
         _playerTick(p, now || 0);
+        _playerAudioSync(p);                                 // keep the track in step with the frame clock
+        _drawAudioMeter(p);
         _syncTransport(p);
         p.raf = requestAnimationFrame(loop);
     };
@@ -2085,6 +2279,10 @@ function _playerStop(p) {
     if (!p) return;
     if (p.raf) { cancelAnimationFrame(p.raf); p.raf = 0; }
     if (p.pb) { p.pb.playing = false; }
+    // The rAF is what keeps the track in step, so it has to be torn down HERE and not left to the next tick -
+    // there is no next tick. A buffer source outlives the node that started it otherwise, and the sound of a
+    // deleted Player keeps playing.
+    _stopBufAudio(p);
     _playerClearTex(p);                                  // free the frame textures from VRAM on teardown
 }
 
@@ -2128,6 +2326,7 @@ function _playerVideoRaf(node, p) {
         if (node._ocioPlayer !== p || !p.videoMode) { p.raf = 0; return; }
         _tickPlayback(p, now || 0);                          // shared video clock (seqMode=false -> drives p.video)
         _playerVideoDraw(p);
+        _drawAudioMeter(p);                                  // the streamed clip has its own track, via _ensureAudio
         _syncTransport(p);
         p.raf = requestAnimationFrame(loop);
     };
@@ -2369,7 +2568,11 @@ function playerOnExecuted(node, message) {
     const _sig = JSON.stringify([first(message && message.video_path), first(message && message.player_dir),
         first(message && message.player_total), first(message && message.player_cached),
         first(message && message.resolution), first(message && message.input_cs),
-        first(message && message.content_sig)]);   // content_sig: first-frame mean/std -> a LogConvert swap (same dir/size, different pixels) re-inits instead of going stale
+        first(message && message.content_sig),
+        // audio_sig (rate_channels_samples) for the same reason content_sig exists: swap ONLY the track upstream
+        // and the dir, the count and the pixels are all identical, so without a term of its own the viewer would
+        // keep playing the sound it already had.
+        first(message && message.audio_sig)]);   // content_sig: first-frame mean/std -> a LogConvert swap (same dir/size, different pixels) re-inits instead of going stale
     if (_sig === p._lastExecSig && (p.player || p.videoMode)) return;   // unchanged -> leave the current viewport playing
     p._lastExecSig = _sig;
     // VIDEO source (a Load Video / OCIO Read video traced to a file): stream it client-side, NOT the float batch.
@@ -2396,6 +2599,7 @@ function playerOnExecuted(node, message) {
     const resolution = first(message && message.resolution) || "";
     const fps = parseFloat(first(message && message.fps) || "") || 0;
     const inputCs = first(message && message.input_cs) || "";
+    const rangeNote = first(message && message.range_note) || "";
     if (!dir || !(cached > 0)) { renderPlayerMeta(node, null); return; }
     p.player = { dir, total, cached, resolution };
     _playerClearTex(p);                                  // fresh render -> the old frame textures are stale, drop them
@@ -2408,11 +2612,21 @@ function playerOnExecuted(node, message) {
     syncPlayerFromUpstream(node);                        // mirror source frame numbering (base) + fps from the upstream OCIO Read, through any chain of nodes
     // show the viewport, hide the placeholder; show the transport bar
     p.empty.style.display = "none"; p.canvas.style.display = "";
-    p.pb.showTransport = true; if (p.transport) { p.transport.bar.style.display = "flex"; if (p.transport.audioRow) p.transport.audioRow.style.display = "none"; }
+    // THE METER ROW NOW DEPENDS ON WHETHER THERE IS A TRACK, not on which path drew the picture. It was hidden
+    // unconditionally here, which was right while a batch of frames could not have sound and wrong the moment
+    // the `audio` input existed.
+    const audioName = first(message && message.player_audio) || "";
+    const audioUrl = audioName ? "/ocio/playeraudio?dir=" + encodeURIComponent(dir) : "";
+    if (audioUrl) _ensureBufAudio(p, audioUrl); else _stopBufAudio(p);
+    p.pb.showTransport = true;
+    if (p.transport) {
+        p.transport.bar.style.display = "flex";
+        if (p.transport.audioRow) p.transport.audioRow.style.display = audioUrl ? "flex" : "none";
+    }
     if (!_playerInitGL(p)) {                             // no WebGL2 -> message, no viewport
         p.canvas.style.display = "none"; p.empty.style.display = "flex";
         p.empty.firstChild.textContent = "WebGL2 unavailable - cannot show float viewport";
-        renderPlayerMeta(node, { resolution, total, cached, fps: p.pb.fps, input_cs: inputCs });   // p.pb.fps = source fps after syncPlayerFromUpstream
+        renderPlayerMeta(node, { resolution, total, cached, fps: p.pb.fps, input_cs: inputCs, range_note: rangeNote });   // p.pb.fps = source fps after syncPlayerFromUpstream
         return;
     }
     _playerLayout(node);
@@ -2420,7 +2634,7 @@ function playerOnExecuted(node, message) {
     _playerShow(p);                                      // upload + draw the current frame
     _playerPrefetch(p);                                  // warm the rest of [in,out] into the texture cache (teal bar shows progress)
     _playerEnsureRaf(node, p);
-    renderPlayerMeta(node, { resolution, total, cached, fps: p.pb.fps, input_cs: inputCs });   // p.pb.fps = source fps after syncPlayerFromUpstream
+    renderPlayerMeta(node, { resolution, total, cached, fps: p.pb.fps, input_cs: inputCs, range_note: rangeNote });   // p.pb.fps = source fps after syncPlayerFromUpstream
 }
 
 // ---- Player metadata panel: resolution / frames / fps / colorspace, from the onExecuted payload + widgets.
@@ -2433,6 +2647,11 @@ const PLAYER_META_ROWS = [
     // times for the node while onDrawForeground ran zero. This panel is an addDOMWidget, so it renders on both
     // frontends, and it already exists to describe what is on screen.
     ["presentation", "Display"],
+    // WHETHER PULLING EXPOSURE DOWN CAN REVEAL ANYTHING, answered before it is tried. A display-referred
+    // master's ceiling IS white - the writer clips there - so its highlights were gone before the file
+    // existed, and a viewer that just darkens looks broken while behaving correctly. Measured on a real
+    // Rec.709 ProRes from this pack's own writer: 136 samples above white across 121 frames, 0.000125%.
+    ["range_note", "Range check"],
 ];
 // A ROW WITH NOTHING TO SAY IS NOT DRAWN. The panel used to print every label always and fill the unknown ones
 // with a dash, so a clip the browser cannot decode showed "Resolution: -" and a still with no timecode showed
@@ -2497,6 +2716,7 @@ function renderPlayerMeta(node, data) {
         input_colorspace: W(node, "input_colorspace")?.value || data.input_cs,
         output_colorspace: W(node, "output_colorspace")?.value,
         presentation: (presentationLine() || {}).text,
+        range_note: data.range_note,
     };
     // ESCAPED, because these values are not all ours. `input_colorspace` and `output_colorspace` are read from
     // widgets, and a widget value arrives from the workflow JSON - which on a shared graph is a stranger's file, not
@@ -2779,6 +2999,7 @@ app.registerExtension({
                     }
                     applyCodecLabel();
                     applyFormat();
+                    applyAudioVis(node);                                        // sound is a movie's question only
                     pokeWidgets(node);                                          // Vue re-render (hides + labels)
                     node.setSize([node.size[0], node.computeSize()[1]]);
                     node.setDirtyCanvas(true, true);
@@ -2813,8 +3034,15 @@ app.registerExtension({
                 // on a real change of either. applyAutoView refuses to act once the artist has touched `view`
                 // by hand, and is never called from onNodeCreated - which fires after a saved graph's values
                 // are restored, and would otherwise rewrite somebody's finished setup on open.
-                for (const w of ["from_colorspace", "output_colorspace"]) {
-                    onChange(this, w, () => { applyAutoView(node); applyCsNarrowing(node); });
+                // Narrow FIRST, then auto-fill: the display's own default view is always on the narrowed list,
+                // so the order is safe either way, but doing it in this one keeps the widget from flashing a
+                // list the pair cannot use.
+                for (const w of ["input_colorspace", "output_colorspace"]) {
+                    onChange(this, w, async () => {
+                        await applyViewNarrowing(node);
+                        applyAutoView(node);
+                        applyCsNarrowing(node);
+                    });
                 }
                 // and a hand-set view is the artist's from then on, same contract as auto_range
                 onChange(this, "view", () => {
@@ -2838,7 +3066,7 @@ app.registerExtension({
                 // profile: a concrete HDR preset silently drives from/output colorspace + still_format/bit_depth;
                 // "auto" resolves via resolveAutoProfile (upstream trace); a manual colorspace edit flips back to "none"
                 onChange(this, "profile", (v) => { if (v !== "auto") applyProfile(node, v); });
-                for (const w of ["from_colorspace", "output_colorspace"]) {
+                for (const w of ["input_colorspace", "output_colorspace"]) {
                     onChange(this, w, () => {
                         if (node._ocioProfileSetting) return;               // our own silent write, not a user edit
                         const pw = W(node, "profile");
@@ -2852,14 +3080,24 @@ app.registerExtension({
                 // beneath it because there is nothing to view - OCIO Write has no preview of its own (see the
                 // note at the top of this file).
                 this.addWidget("button", "▶ Render", null, () => ocioWriteRender(this), { serialize: false });
-                setTimeout(() => { applyContainer(); syncWriteFromUpstream(node); resolveAutoProfile(node); }, 0);
+                // applyViewNarrowing runs here too, and unlike applyAutoView that is safe on a loaded graph:
+                // it only ever changes which choices the list OFFERS, never the value. So an artist opening a
+                // saved workflow sees a `view` list the pair can actually be rendered through, and their own
+                // pick - valid or not - is still exactly what they left.
+                setTimeout(() => {
+                    applyContainer(); syncWriteFromUpstream(node); resolveAutoProfile(node);
+                    applyViewNarrowing(node);
+                }, 0);
                 return r;
             };
             const onConn = nodeType.prototype.onConnectionsChange;
             nodeType.prototype.onConnectionsChange = function () {
                 const r = onConn ? onConn.apply(this, arguments) : undefined;
                 const node = this;
-                setTimeout(() => { syncWriteFromUpstream(node); resolveAutoProfile(node); }, 0);   // wire (re)connected -> pull range/fps + auto profile
+                // applyAudioVis belongs here as well as in applyContainer: connecting or pulling the `audio`
+                // or `video` wire changes whether there is any sound to decline, and no container change
+                // accompanies it.
+                setTimeout(() => { syncWriteFromUpstream(node); resolveAutoProfile(node); applyAudioVis(node); }, 0);   // wire (re)connected -> pull range/fps + auto profile
                 return r;
             };
             const onConfigW = nodeType.prototype.onConfigure;
@@ -2885,7 +3123,7 @@ app.registerExtension({
             nodeType.prototype.onDrawForeground = function (ctx) {
                 onDraw && onDraw.apply(this, arguments);
                 if (this.flags && this.flags.collapsed) return;
-                const a = W(this, "from_colorspace"), b = W(this, "output_colorspace");
+                const a = W(this, "input_colorspace"), b = W(this, "output_colorspace");
                 if (!a || !b) return;
                 const fmt = (W(this, "container")?.value === "video") ? W(this, "video_codec")?.value : W(this, "still_format")?.value;
                 ctx.save();

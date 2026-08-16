@@ -29,7 +29,7 @@ special OCIO tensor format to learn.
 
 ## The colorspace combo (55 entries, shared by four widgets)
 
-`OCIO Read`'s `input_colorspace` and `output_colorspace`, and `OCIO Write`'s `from_colorspace` and
+`OCIO Read`'s `input_colorspace` and `output_colorspace`, and `OCIO Write`'s `input_colorspace` and
 `output_colorspace`, all draw from the exact same list: every colorspace the active OCIO config exposes
 (`cfg.getColorSpace().getName()` for each space in `cfg.getColorSpaces()`, live-loaded, not a hard-coded
 table in this pack). Confirmed live at exactly 55 entries. In the order the API returns them:
@@ -222,7 +222,7 @@ short on a bare EXR and long on a camera master. Two consequences worth knowing:
 ```
 OCIO Read (source = a sequence folder, input_colorspace = ACEScg, output_colorspace = ACEScg)
   -> OCIO CDLTransform (slope/offset/power/saturation grade, image input/output)
-  -> OCIO Write (from_colorspace = ACEScg, output_colorspace = ACEScg, container = sequence, still_format = exr)
+  -> OCIO Write (input_colorspace = ACEScg, output_colorspace = ACEScg, container = sequence, still_format = exr)
 ```
 Wire `OCIO Read`'s `metadata` output (slot 5) into `OCIO Write`'s `metadata` input as a second,
 parallel wire alongside the image chain, so the plate's camera/lens/reel identity survives into the
@@ -257,7 +257,7 @@ it plugs into any core masking node exactly like a mask from `LoadImageMask` or 
 OCIO Read (source = a plate frame or sequence, output_colorspace = sRGB - Display)
   -> VAEEncode (pixels = image output, vae = your checkpoint's VAE)
   -> KSampler (latent_image = the encoded latent, plus model/positive/negative/etc.)
-  -> VAEDecode -> OCIO Write (from_colorspace = sRGB - Display, output_colorspace = ACEScg, still_format = exr)
+  -> VAEDecode -> OCIO Write (input_colorspace = sRGB - Display, output_colorspace = ACEScg, still_format = exr)
 ```
 `VAEEncode`'s image input is literally named `pixels`, not `image`; it accepts the same plain `IMAGE`
 type `OCIO Read` emits with no adapter needed. This chain reads a plate, runs it through a diffusion
@@ -325,8 +325,8 @@ the way `metadata` is.
 
 | Input | Type | Accepts | Default | Notes |
 |---|---|---|---|---|
-| `profile` | COMBO | `none`, `auto`, `LTX 2.3 HDR`, `LumiPic LogC3 (Flux/Qwen)`, `LumiPic V10 LogC4`, `Seedance 4K 10-bit`, `SDR Rec.709 delivery` | `none` | A source preset that silently sets `from_colorspace`/`output_colorspace` (and, for the HDR presets, forces `still_format = exr`, `bit_depth = 16f`). See the dedicated section below; several of these values do nothing at all on the server. |
-| `from_colorspace` | COMBO (55 colorspaces) | See the shared list above. | `sRGB - Display` | What your `IMAGE` batch is actually in right now (ComfyUI's own working space by default). Should match whatever colorspace the upstream chain, usually an `OCIO Read`'s `output_colorspace`, left the pixels in. |
+| `profile` | COMBO | `none`, `auto`, `LTX 2.3 HDR`, `LumiPic LogC3 (Flux/Qwen)`, `LumiPic V10 LogC4`, `Seedance 4K 10-bit`, `SDR Rec.709 delivery` | `none` | A source preset that silently sets `input_colorspace`/`output_colorspace` (and, for the HDR presets, forces `still_format = exr`, `bit_depth = 16f`). See the dedicated section below; several of these values do nothing at all on the server. |
+| `input_colorspace` | COMBO (55 colorspaces) | See the shared list above. | `sRGB - Display` | What your `IMAGE` batch is actually in right now (ComfyUI's own working space by default). Should match whatever colorspace the upstream chain, usually an `OCIO Read`'s `output_colorspace`, left the pixels in. |
 | `output_colorspace` | COMBO (55 colorspaces) | See the shared list above. | `ACEScg` | What the *file* should be encoded in. Defaults to `ACEScg` because the default `still_format` is `exr`, and an EXR is expected to be scene-linear render data. |
 | `container` | COMBO | `still image`, `sequence`, `video` | `sequence` | Controls which of `still_format`/`video_codec` is used and which frame-range widgets are visible (see the table below). |
 | `still_format` | COMBO | `exr`, `tiff`, `png`, `jpeg`, `dpx` | `exr` | Used for `still image` and `sequence`; hidden for `video`. `dpx` was added after the pack was found to *read* DPX with no way to write it, which for the format that exists to move plates between a film pipeline and everyone else is the wrong asymmetry. Integer only, and it takes `bit_depth` 10 or 16; anything else raises and names those two. Written through ffmpeg's `dpx` encoder (`gbrp10le` at 10, `rgb48le` at 16) rather than by a second hand-rolled SMPTE ST 268 header, since this pack already maintains one of those on the reading side and two copies of a header layout drift. Verified by reading each file back with this pack's own DPX reader on a 4096-step ramp: 1024 distinct levels at 10-bit, 4096 at 16-bit. Netflix's Non-Graded Archival Master specification names 16-bit DPX first for log-encoded material. |
@@ -338,7 +338,7 @@ the way `metadata` is.
 | `last_frame` | INT | 0 to 100000000 | `0` | For `sequence`/`video`: the last frame number to write; `0` means "to the end of the batch." Ignored for `still image`. |
 | `start_number` | INT | 0 to 100000000 | `1` | The output file's own numbering start (the delivered name's frame number), independent of the source's numbering. This is a re-base, not a retime: it renames frames, it does not resample them. |
 | `source_start` | INT | 0 to 100000000 | `1` | The source batch's own first frame number, used to translate `first_frame`/`last_frame` into a 0-based slice of the incoming tensor. Despite the tooltip's "set by the wire" language, there is no data wire for this: it's a plain widget the canvas fills in by tracing the graph topology back to an `OCIO Read` (see Traps). |
-| `raw_data` | BOOLEAN | true / false | `false` | Skips the `from_colorspace -> output_colorspace` pixel conversion entirely, **and** skips authoring any colorimetry (chromaticities, `adoptedNeutral`, `colorInteropID`, `com.ocio.colorspace`) into the output. Frame rate, frame counter and timecode are still written. Confirmed on a real write: with `raw_data` on, the PNG carried a `timecode` text chunk but no `colorspace` chunk and no chromaticities. **This now holds for movies too, and it did not before.** Video went down a separate path that had no "unspecified" branch, so a `raw_data` ProRes came out tagged `bt709` / `iec61966-2-1` / `bt709` while the same flag on an EXR correctly wrote nothing (measured, identical pixels, only the flag flipped). Unconverted pixels have no delivery space to name: an untagged file leaves a player guessing, which is honest, while a confidently mistagged one makes it guess wrong and believe it is right. |
+| `raw_data` | BOOLEAN | true / false | `false` | Skips the `input_colorspace -> output_colorspace` pixel conversion entirely, **and** skips authoring any colorimetry (chromaticities, `adoptedNeutral`, `colorInteropID`, `com.ocio.colorspace`) into the output. Frame rate, frame counter and timecode are still written. Confirmed on a real write: with `raw_data` on, the PNG carried a `timecode` text chunk but no `colorspace` chunk and no chromaticities. **This now holds for movies too, and it did not before.** Video went down a separate path that had no "unspecified" branch, so a `raw_data` ProRes came out tagged `bt709` / `iec61966-2-1` / `bt709` while the same flag on an EXR correctly wrote nothing (measured, identical pixels, only the flag flipped). Unconverted pixels have no delivery space to name: an untagged file leaves a player guessing, which is honest, while a confidently mistagged one makes it guess wrong and believe it is right. |
 | `colorspace_in_name` | BOOLEAN | true / false | `true` | Puts the sanitized `output_colorspace` (or literally `raw` when `raw_data` is on) into the filename before the frame number, e.g. `name_acescg.0001.exr` or `name_rec_1886_rec_709_display.0086.mov`. See Traps for why this exists and what turning it off actually costs you. |
 | `output_folder` | STRING | Empty for the ComfyUI output directory; `$OUTPUT` or `$OUTPUT/sub` for a path under it; a plain relative path for the same; an absolute path (e.g. `E:\path\to\shots\out` or `//nas/vfx/out`) is written there verbatim. | `""` | Use the **Output Folder** button to browse, or type it. Prefer `$OUTPUT/...` or a relative path over an absolute one: this string is stored in the saved *workflow*, not embedded in the delivered media file, but a workflow you share (as a `.json`, or a graph embedded in someone else's PNG) then reveals your local machine's folder layout. |
 | `filename` | STRING | Any base name. | `"ocio_out"` | Numbering and extension are added automatically per the rules in the outputs section below. |
@@ -416,9 +416,26 @@ applying it at all.
 **What the entries mean.** `Un-tone-mapped` and `Video (colorimetric)` produce exactly the same numbers as
 `(none)`; they appear because the list is read from the config rather than curated. `Raw` leaves values alone.
 The `ACES 2.0 - SDR 100 nits (Rec.709)` entry is the ordinary cinema render for a normal monitor; the `P3 D65`
-and `HDR ... nits` entries target other displays and are wrong for a Rec.709 deliverable. A view belongs to a
-display, so choosing one that does not exist on the display your pair resolves to is refused with a message
-naming what that display does offer, rather than silently ignored.
+and `HDR ... nits` entries target other displays and are wrong for a Rec.709 deliverable.
+
+**A view belongs to a display, and the list now says so.** The combo is built once, when the node is
+registered, as the union of every view across every display of both configs - so most of what it offers is
+wrong for any given pair. Measured on the configs loaded by default: of its 32 real entries, 24 are invalid
+for `Rec.1886 Rec.709 - Display`. The node narrows the list live as soon as both colorspaces are picked,
+leaving the ones that display actually has. `ACES 1.3: ACES 1.1 - SDR Video (Rec.709 lim)` is the entry that
+made this necessary: it reads like the obvious pick for a Rec.709 deliverable and it lives on
+`Rec.1886 Rec.2020 - Display`, which the ACES 2.0 config does not have at all.
+
+The narrowing never CHANGES your pick. A view restored from a saved workflow stays selected even when it is
+not on the list, with the widget's label saying so, because silently swapping a rendering transform would
+change the picture a finished graph produces. Render it anyway and it is refused, with a message naming what
+that display does offer.
+
+One more pairing is refused for a different reason: the two configs do not hold the same colorspaces.
+`D-Log D-Gamut` and `Linear D-Gamut` exist in the ACES 2.0 config and not in the 1.3 one, so an `ACES 1.3: `
+view with either of them on the scene side cannot be built at all - the view is fine for the display, the
+source space simply is not in that config. Those entries are dropped from the list too, and reaching the
+render with one names the colorspace rather than passing OCIO's own message through.
 
 **On another config the names differ, and that is intended.** The list comes from whichever OCIO config is
 loaded. On ACES 2.0 the SDR view is `ACES 2.0 - SDR 100 nits (Rec.709)`; on an ACES 1.3 config it is
@@ -517,6 +534,21 @@ on node creation and on every `container`/`still_format` change.
 | `source_start` | always hidden (internal) | always hidden | always hidden |
 | `auto_colorspace` | always hidden (legacy) | always hidden | always hidden |
 | `render_nonce` | always hidden (internal) | always hidden | always hidden |
+| `write_audio` | shown only while `video` is connected and `audio` is not | same | same |
+
+`write_audio` is the one widget whose visibility has nothing to do with the container. It appears for
+exactly one situation: **sound arriving without a wire.**
+
+Everywhere else the wiring has already answered the question. Nothing on `audio` writes no sound at all,
+because there is none to write. Something on `audio` is a deliberate act, and pulling the wire is how you
+undo it. A toggle that can only hold the answer it already has is a row of noise on every write node in the
+graph.
+
+The exception is a native ComfyUI `VIDEO`, which carries its own track inside the object: connect a movie
+and the writer adopts that track, with no wire to represent it. That is the only case this widget exists
+for, and it holds for a sequence too, where the track lands beside the frames as a sidecar `.wav`. Wire an
+explicit `audio` alongside a `video` and the wire wins in the writer, so the toggle steps back out of the
+way.
 
 Where a timecode lands is unchanged, even though there is no longer a field for one. Measured by writing one
 short sequence per format and reading each file back with a third-party reader rather than trusting the
@@ -550,7 +582,7 @@ invent a count that does not exist there.
 
 ### `profile`, in full
 
-| Value | `from_colorspace` | `output_colorspace` | Forces format? | Resolved where |
+| Value | `input_colorspace` | `output_colorspace` | Forces format? | Resolved where |
 |---|---|---|---|---|
 | `none` | untouched | untouched | no | nowhere; this is the inert default |
 | `auto` | untouched | untouched | no | **front end only** (see Traps) |
@@ -605,7 +637,7 @@ so a display-referred SDR image written into one would come back wrong if reload
 OCIO Read (source = an EXR sequence, ACEScg -> ACEScg)
   -> OCIO CDLTransform (the grade)
   -> OCIO Write
-       (from_colorspace = ACEScg, output_colorspace = Rec.1886 Rec.709 - Display,
+       (input_colorspace = ACEScg, output_colorspace = Rec.1886 Rec.709 - Display,
         container = video, video_codec = prores_422hq,
         first_frame/last_frame/start_number/source_start matching the Read's real frame numbers,
         source_meta wired from the Read, audio wired from LoadAudio if there's a temp mix)
@@ -651,7 +683,7 @@ ambiguous about which frame of the sequence it actually is.
 ```
 LoadVideo -> OCIO Write
   (video = LoadVideo's VIDEO output, container = video, video_codec = dnxhr_hqx,
-   from_colorspace/output_colorspace set to match the clip's real colorspace)
+   input_colorspace/output_colorspace set to match the clip's real colorspace)
 ```
 Wiring a clip into the `video` socket (instead of `images`) renders the *whole* clip out using every
 other Write setting, and a native `Video` input's own audio track rides along automatically unless
@@ -738,8 +770,8 @@ A sequence and a movie are measured across every frame.
 > telling filename) is front-end only. `write()`'s own `profile` handling has explicit branches for the
 > five real preset names and nothing else; the comment in the source is direct about it: `"Seedance 4K
 > 10-bit" and "none"/"auto": no backend mapping`. Confirmed live: posting `profile: "auto"` alongside
-> explicit, mismatched `from_colorspace`/`output_colorspace` values executed exactly those values with
-> no substitution at all. If you're driving this node from outside the canvas, set `from_colorspace`/
+> explicit, mismatched `input_colorspace`/`output_colorspace` values executed exactly those values with
+> no substitution at all. If you're driving this node from outside the canvas, set `input_colorspace`/
 > `output_colorspace` (and, for the HDR presets, `still_format`/`bit_depth`) yourself; `profile` is
 > convenience for a human clicking a dropdown, not a server-side feature.
 

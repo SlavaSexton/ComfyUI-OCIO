@@ -68,7 +68,7 @@ def _load():
 io_nodes, core = _load()
 REQ = io_nodes.OCIOWrite.INPUT_TYPES()["required"]
 PROFILES = list(REQ["profile"][0])
-CS_VALUES = set(REQ["from_colorspace"][0])
+CS_VALUES = set(REQ["input_colorspace"][0])
 
 P23 = "LTX 2.3 HDR"
 P25_REMOVED = "LTX 2.5 HDR (ACEScct)"
@@ -93,7 +93,7 @@ import ast
 
 
 def backend_mapping(path):
-    """{profile name: (from_colorspace, output_colorspace)} as actually assigned inside OCIOWrite.write."""
+    """{profile name: (input_colorspace, output_colorspace)} as actually assigned inside OCIOWrite.write."""
     tree = ast.parse(open(path, encoding="utf-8").read())
     write = None
     for node in ast.walk(tree):
@@ -118,11 +118,11 @@ def backend_mapping(path):
         for st in node.body:
             if isinstance(st, ast.Assign) and isinstance(st.value, ast.Constant) \
                     and isinstance(st.targets[0], ast.Name) \
-                    and st.targets[0].id in ("from_colorspace", "output_colorspace"):
+                    and st.targets[0].id in ("input_colorspace", "output_colorspace"):
                 assigns[st.targets[0].id] = st.value.value
-        if "from_colorspace" in assigns and "output_colorspace" in assigns:
+        if "input_colorspace" in assigns and "output_colorspace" in assigns:
             for nm in names:
-                found[nm] = (assigns["from_colorspace"], assigns["output_colorspace"])
+                found[nm] = (assigns["input_colorspace"], assigns["output_colorspace"])
     return found
 
 
@@ -236,7 +236,7 @@ if m:
         check(f"the {w} write is guarded on the profile actually carrying it", guarded,
               f"guarded={guarded} unguarded-assignment-present={bare}")
     check("the colorspace writes are NOT guarded, since every mapped profile carries both",
-          re.search(r"setWSilent\(\s*node\s*,\s*[\"']from_colorspace", body) is not None)
+          re.search(r"setWSilent\(\s*node\s*,\s*[\"']input_colorspace", body) is not None)
 
 print("\nthe backend really maps each profile, and the EXR-16f forcing list holds exactly the HDR presets")
 src_txt = open(os.path.join(_ROOT, "io_nodes.py"), encoding="utf-8").read()
@@ -282,7 +282,7 @@ for rel in ("io_nodes.py", os.path.join("web", "ocio_io.js")):
 
 print("\nOCIO's ACEScct -> ACEScg IS the published decode, which is what makes the manual route trustworthy")
 # This section outlived the preset it was written for. With "LTX 2.5 HDR (ACEScct)" gone, ACEScct is still a
-# value the from_colorspace combo offers, and it is still the transfer an artist undoes by hand on real HDR
+# value the input_colorspace combo offers, and it is still the transfer an artist undoes by hand on real HDR
 # material - so the claim it guards is now about the MANUAL route rather than a preset. ACEScct's native
 # primaries ARE AP1, so ACEScct -> ACEScg should be the transfer decode and nothing else. tools/test_acescct.py
 # and tools/test_acescct_reference_parity.py cover this pack's own curve functions in nodes.py; nothing but
@@ -290,7 +290,7 @@ print("\nOCIO's ACEScct -> ACEScg IS the published decode, which is what makes t
 # widget. Reference: Lightricks/LTX-2 ltx-core hdr.py:75-79, the published AMPAS S-2016-001 constants.
 A_LIN, B_LIN, Y_BRK, LOG_M, LOG_B = 10.5402377416545, 0.0729055341958355, 0.155251141552511, 17.52, 9.72
 
-check("ACEScct is still a from_colorspace the combo offers, so the manual route exists",
+check("ACEScct is still a input_colorspace the combo offers, so the manual route exists",
       "ACEScct" in CS_VALUES)
 
 

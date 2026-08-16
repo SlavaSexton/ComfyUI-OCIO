@@ -339,7 +339,7 @@ OCIO ColorSpace   (your ACEScg result)
        display         = Rec.1886 Rec.709 - Display
        view            = ACES 2.0 - SDR 100 nits (Rec.709)
   into OCIO Write
-       from_colorspace = Rec.1886 Rec.709 - Display
+       input_colorspace = Rec.1886 Rec.709 - Display
        raw_data        = true
 ```
 
@@ -613,7 +613,7 @@ OCIO Read           (an ACEScg EXR sequence, values above 1.0 present)
   into OCIO LogConvert
      operation      = Log to Linear
      curve          = ACEScct
-  into OCIO Write             from_colorspace = ACEScg, EXR 16f
+  into OCIO Write             input_colorspace = ACEScg, EXR 16f
 ```
 
 `ACEScct` reaches 222.861 at code 1.0, so it covers an HDR render, and it is C1 at its cut. The log into linear
@@ -834,7 +834,7 @@ OCIO ColorSpace   (graded ACEScg)
        in_colorspace = ACEScg
        display       = Rec.2100-PQ - Display
        view          = ACES 2.0 - HDR 1000 nits (Rec.2020)
-  into OCIO Write        from_colorspace = Rec.2100-PQ - Display, raw_data = true
+  into OCIO Write        input_colorspace = Rec.2100-PQ - Display, raw_data = true
 ```
 
 Check the pair against the table above before queueing, since `Rec.2100-PQ - Display` accepts that view and
@@ -1263,7 +1263,7 @@ OCIO ColorSpace    (graded ACEScg)
        in_colorspace  = ACEScg
        out_colorspace = sRGB - Display
        look           = ACES 1.3 Reference Gamut Compression
-  into OCIO Write     from_colorspace = sRGB - Display, raw_data = true
+  into OCIO Write     input_colorspace = sRGB - Display, raw_data = true
 ```
 
 Fewer nodes, and one processor, so this is the faster form when you do not need to grade between the look and
@@ -1340,6 +1340,7 @@ that its viewport refreshes, and it passes nothing on.
 | `video` | `VIDEO` (optional) | | a `Load Video` output, streamed rather than materialised |
 | `alpha` | `MASK` (optional) | | alpha to view alongside the RGB |
 | `base` | `STRING` (optional) | `"0"` | source first-frame number, filled in by the front end |
+| `audio` | `AUDIO` (optional) | | a soundtrack for the frames, played with them and metered |
 
 **What you wire into each socket.**
 
@@ -1350,6 +1351,17 @@ that its viewport refreshes, and it passes nothing on.
   resolves to a real file on disk streams in the browser; a `VIDEO` built in memory by an upstream OCIO node is
   unwrapped to frames and shown through the float path instead.
 - `alpha`: `OCIO Read` (`alpha`), `Load Image` (`MASK`), `ImageToMask`, `LoadImageMask`.
+- `audio`: `Load Audio`, an audio VAE decode from a video model, or anything else emitting `AUDIO`. A batch of
+  frames carries no sound, so without this the L/R meters have nothing to read no matter what the graph
+  generated upstream. The track is cut to the frames the viewer cached, which matters because the cache stops
+  at 240 frames: a full-length track against a truncated picture drifts by exactly the frames that were
+  dropped. Ignored when a movie is streamed through `video`, since that clip brings its own track.
+
+  Two limits worth knowing. Reverse plays silent, because a decoded buffer has no negative rate and the
+  meters fall to zero with it, which is honest rather than broken. And a bad `AUDIO` does not stop the
+  picture: everywhere else in this pack a malformed track raises, because there the result is a delivered
+  file that is silently silent, while here the frames still play and the node's report says the track was
+  dropped.
 - `base` is filled in by the front end from an upstream `OCIO Read` so the timeline shows real source frame
   numbers. It is a `STRING` on purpose, so a blank value cannot fail prompt validation. Leave it alone.
 

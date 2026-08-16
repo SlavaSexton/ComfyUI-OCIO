@@ -72,7 +72,7 @@ IMGS = torch.from_numpy(np.stack([np.full((8, 8, 3), v, np.float32) for v in (0.
 # DNxHD refuses anything under 256x120 ("Input dimensions too small"), so the video checks get their own,
 # larger batch. Same three distinct values, for the same reason.
 VID = torch.from_numpy(np.stack([np.full((128, 256, 3), v, np.float32) for v in (0.10, 0.50, 0.90)]))
-BASE = dict(profile="none", from_colorspace="ACEScg", output_colorspace="ACEScg", video_codec="prores_4444",
+BASE = dict(profile="none", input_colorspace="ACEScg", output_colorspace="ACEScg", video_codec="prores_4444",
             auto_range=False, first_frame=1, last_frame=0, start_number=1, source_start=1, raw_data=False,
             colorspace_in_name=False, auto_colorspace=False, compression="zip", fps=24.0,
             still_format="exr", bit_depth="16f")

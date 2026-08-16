@@ -48,7 +48,7 @@ def _write(io, folder, frames=3, **kw):
     import torch
     imgs = torch.zeros((frames, 6, 8, 3))
     imgs[..., 0], imgs[..., 1], imgs[..., 2] = 0.40, 0.60, 0.10
-    args = dict(profile="none", from_colorspace="sRGB - Display", output_colorspace="ACEScg",
+    args = dict(profile="none", input_colorspace="sRGB - Display", output_colorspace="ACEScg",
                 container="sequence", still_format="exr", video_codec="h264", bit_depth="16f",
                 compression="zip", auto_range=False, first_frame=1, last_frame=0, start_number=1001,
                 source_start=1, raw_data=False, colorspace_in_name=False, auto_colorspace=False,

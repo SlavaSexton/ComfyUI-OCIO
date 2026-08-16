@@ -182,7 +182,7 @@ def check_sequence_write(io, tmp):
     imgs = torch.zeros((4, 6, 8, 3))
     imgs[..., 0], imgs[..., 1], imgs[..., 2] = 0.40, 0.60, 0.10
     w = io.OCIOWrite()
-    res = w.write(profile="none", from_colorspace="sRGB - Display", output_colorspace="ACEScg",
+    res = w.write(profile="none", input_colorspace="sRGB - Display", output_colorspace="ACEScg",
                   container="sequence", still_format="exr", video_codec="prores_4444", bit_depth="16f",
                   auto_range=False, first_frame=1, last_frame=0, start_number=1001, source_start=1,
                   raw_data=False, output_folder="$OUTPUT/seq", filename="meta", fps=23.976,
@@ -222,7 +222,7 @@ def check_sequence_write(io, tmp):
     assert "lin_ap1_scene" in ui[0] and "01:00:00:00" in ui[0], f"ui.meta does not report what was written: {ui}"
 
     # raw_data writes NO colorimetry: unconverted pixels are of unknown gamut and must not claim one.
-    w.write(profile="none", from_colorspace="sRGB - Display", output_colorspace="ACEScg", container="sequence",
+    w.write(profile="none", input_colorspace="sRGB - Display", output_colorspace="ACEScg", container="sequence",
             still_format="exr", video_codec="prores_4444", bit_depth="16f", auto_range=False, first_frame=1,
             last_frame=0, start_number=1, source_start=1, raw_data=True, output_folder="$OUTPUT/raw",
             filename="r", fps=24.0, metadata=TC_META, images=imgs)
@@ -244,7 +244,7 @@ def check_reports_only_what_it_wrote(io, tmp):
     import torch
     w = io.OCIOWrite()
     for fmt, bd in (("png", "8"), ("tiff", "16"), ("jpeg", "8")):
-        res = w.write(profile="none", from_colorspace="sRGB - Display", output_colorspace="sRGB - Display",
+        res = w.write(profile="none", input_colorspace="sRGB - Display", output_colorspace="sRGB - Display",
                       container="still image", still_format=fmt, video_codec="prores_4444", bit_depth=bd,
                       auto_range=False, first_frame=1, last_frame=0, start_number=1, source_start=1,
                       raw_data=False, output_folder="$OUTPUT/nohdr", filename="n_" + fmt, fps=24.0,
@@ -257,7 +257,7 @@ def check_reports_only_what_it_wrote(io, tmp):
         assert fmt in note and "no colour metadata header" in note, (
             f"{fmt}: the node should say plainly that this format carries no header. Got: {note!r}")
     # EXR is the format that DOES carry it, and it must still say so.
-    res = w.write(profile="none", from_colorspace="sRGB - Display", output_colorspace="ACEScg",
+    res = w.write(profile="none", input_colorspace="sRGB - Display", output_colorspace="ACEScg",
                   container="still image", still_format="exr", video_codec="prores_4444", bit_depth="16f",
                   auto_range=False, first_frame=1, last_frame=0, start_number=1, source_start=1, raw_data=False,
                   output_folder="$OUTPUT/hdr", filename="y", fps=24.0, metadata=TC_META,
@@ -280,7 +280,7 @@ def check_passthrough(io, tmp):
         "amf": "shot_v01.amf.xml", "asc_mhl_hash": "deadbeef", "hdr10plus": "{...}",
         "Content Credentials": "signed", "st2094_40": "{}"}})
     w = io.OCIOWrite()
-    res = w.write(profile="none", from_colorspace="sRGB - Display", output_colorspace="ACEScg",
+    res = w.write(profile="none", input_colorspace="sRGB - Display", output_colorspace="ACEScg",
                   container="sequence", still_format="exr", video_codec="prores_4444", bit_depth="16f",
                   auto_range=False, first_frame=1, last_frame=0, start_number=1, source_start=1, raw_data=False,
                   output_folder="$OUTPUT/pt", filename="pt", fps=24.0,
@@ -308,7 +308,7 @@ def check_passthrough(io, tmp):
     assert "dropped" in note and "c2pa.manifest" in note, (
         f"the drop was silent. ui.meta must NAME what did not travel: {note!r}")
     # malformed JSON on the wire must not take the render down
-    res2 = w.write(profile="none", from_colorspace="sRGB - Display", output_colorspace="ACEScg",
+    res2 = w.write(profile="none", input_colorspace="sRGB - Display", output_colorspace="ACEScg",
                    container="sequence", still_format="exr", video_codec="prores_4444", bit_depth="16f",
                    auto_range=False, first_frame=1, last_frame=0, start_number=1, source_start=1, raw_data=False,
                    output_folder="$OUTPUT/pt2", filename="pt2", fps=24.0,
@@ -322,7 +322,7 @@ def check_passthrough(io, tmp):
     hostile = json.dumps({"source": "bad.exr", "kind": "exr", "attrs": {
         "chromaticities": "not even a number", "adoptedNeutral": {"nested": "dict"},
         "timeCode": "01:00:00:00", "whiteLuminance": [1, 2, 3], "reel_name": "C003"}})
-    res3 = w.write(profile="none", from_colorspace="sRGB - Display", output_colorspace="ARRI LogC4",
+    res3 = w.write(profile="none", input_colorspace="sRGB - Display", output_colorspace="ARRI LogC4",
                    container="sequence", still_format="exr", video_codec="prores_4444", bit_depth="16f",
                    auto_range=False, first_frame=1, last_frame=0, start_number=1, source_start=1, raw_data=False,
                    output_folder="$OUTPUT/pt3", filename="pt3", fps=24.0,
@@ -413,7 +413,7 @@ def check_append_only(io):
     # Changing this list is allowed - but it has to be a deliberate edit here, with the knowledge that every
     # already-saved workflow reads its widget values by position.
     WANT_REQUIRED = [
-        "profile", "from_colorspace", "output_colorspace", "container", "still_format", "video_codec",
+        "profile", "input_colorspace", "output_colorspace", "container", "still_format", "video_codec",
         "bit_depth", "compression", "auto_range", "first_frame", "last_frame", "start_number", "source_start",
         "raw_data", "colorspace_in_name", "output_folder", "filename", "auto_colorspace",
     ]

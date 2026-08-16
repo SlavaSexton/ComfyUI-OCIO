@@ -104,7 +104,7 @@ print("\nDWA on a 32f write is REPORTED, because the file says float and carries
 W = io.OCIOWrite()
 rng = np.random.default_rng(3)
 img = torch.from_numpy((rng.random((1, 64, 64, 3), dtype=np.float32) * 3.0 - 0.4).astype(np.float32))
-BASE = dict(profile="none", from_colorspace="ACEScg", output_colorspace="ACEScg", container="sequence",
+BASE = dict(profile="none", input_colorspace="ACEScg", output_colorspace="ACEScg", container="sequence",
             still_format="exr", video_codec="prores_4444", auto_range=False, first_frame=1, last_frame=0,
             start_number=1, source_start=1, raw_data=False, colorspace_in_name=False, auto_colorspace=False,
             fps=24.0, images=img)

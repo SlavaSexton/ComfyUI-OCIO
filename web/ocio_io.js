@@ -96,6 +96,142 @@ function autoOutCs(container, stillFormat) {
     return CS_SRGB;
 }
 
+// ---- the `view` widget, filled in automatically -----------------------------------------------------------
+//
+// NOBODY SHOULD HAVE TO KNOW THAT ACEScg -> Rec.709 NEEDS A VIEW PICKED BY HAND. The widget decides whether a
+// scene/display crossing is rendered (the ACES Output Transform) or merely re-encoded (colorimetric), and the
+// difference is not subtle: scene-linear 4.0 leaves as 1.78 and is clipped flat by the container, against
+// 0.905 rolled off. But the fork only exists on pairs that actually cross, and knowing which pairs those are
+// means knowing which of 55 colorspaces is scene-referred and which is display-referred.
+//
+// So the node works it out. /ocio/encodings serves OCIO's own `encoding` per colorspace and the config's
+// default view per display; on a colorspace change this fills the widget with the display's default view when
+// the pair crosses, and clears it back to the do-nothing value when it does not.
+//
+// TWO RULES IT MUST OBEY, both learned here the hard way:
+//   1. A HUMAN EDIT ALWAYS WINS. Once the artist touches `view` it is theirs; this never overwrites it again.
+//      Same contract as auto_range and the same one issue #3 was about.
+//   2. IT MUST NOT FIRE ON LOAD. onNodeCreated runs its timer AFTER configure() restores saved values, so a
+//      naive "fill it in" would rewrite a saved graph's view on open - silently re-rendering somebody's
+//      finished work. Only a real change of colorspace triggers it.
+// MUST match _VIEW_NONE in io_nodes.py exactly. It is the widget's default and the value that means "leave
+// this alone", so a typo here would make the auto-fill try to set a choice that does not exist, and the
+// includes() guard below would silently do nothing forever.
+const VIEW_NONE = "(none) colorimetric, no tone map";
+
+// ---- which colorspaces make sense for which output ------------------------------------------------------
+//
+// WHY NARROW AT ALL. Writing ACEScg into a 10-bit ProRes is legal here and useless in practice. Measured on a
+// nine-stop ramp through the real writer: 43.55% of samples clipped, the brightest surviving scene-linear
+// value 1.000 out of 92.2 - six and a half of nine stops gone - and in the shadows the worst step between
+// adjacent codes is 33.33% of luminance, against 2.63% for a display space, where about 1% is the threshold
+// of visibility. The same ramp through ARRI LogC4 clips nothing and keeps all nine stops.
+//
+// Which is why the rule is NOT "video means Rec.709": camera log in a ProRes is how masters are delivered,
+// and forbidding it would break the most ordinary professional job there is. The line falls between log and
+// scene-linear, not between display and everything else.
+//
+// ffv1 is deliberately exempt. It is 16-bit RGB and bit-exact - decoded output equals input, max abs diff 0 -
+// and at 16 bits even scene-linear steps by 0.54%, under the visibility threshold. Lumping it in with ProRes
+// would forbid the one video codec where the objection does not apply.
+//
+// `null` means no narrowing at all.
+const ENC_ALLOW = {
+    prores:   ["sdr-video", "hdr-video", "edr-video", "log"],   // >=10-bit integer video: display + camera log
+    dnxhr8:   ["sdr-video"],                                    // 8-bit: log steps 23-46% in the shadows
+    delivery: ["sdr-video", "hdr-video"],                       // h264 / hevc, feeding consumer decoders
+    hevc12:   ["sdr-video", "hdr-video", "log"],                // 12-bit 4:4:4: log steps fall to 0.8-2.9%
+    dpx:      ["log", "sdr-video"],                             // the Cineon lineage, ADX included
+    still16:  ["sdr-video", "log"],
+    still8:   ["sdr-video"],
+    anything: null,                                             // float and lossless destroy nothing
+};
+const CODEC_ALLOW = {
+    prores_4444: "prores", prores_422hq: "prores", prores_422: "prores", prores_4444xq: "prores",
+    prores_4444_mxf: "prores", prores_4444xq_mxf: "prores",
+    dnxhr_hqx: "prores", dnxhr_444: "prores", dnxhr_hqx_mxf: "prores", dnxhr_444_mxf: "prores",
+    dnxhr_hq: "dnxhr8", dnxhr_hq_mxf: "dnxhr8", dnxhr_hq_mxf_opatom: "dnxhr8",
+    h264: "delivery", hevc: "delivery", hevc_444_12: "hevc12", ffv1: "anything",
+};
+const STILL_ALLOW = { exr: "anything", tiff: "anything", dpx: "dpx", png: "still16", jpeg: "still8" };
+let _ocioEnc = null;                                  // { encodings: {name: encoding}, views: {display: {...}} }
+async function ocioEncodings() {
+    if (_ocioEnc) return _ocioEnc;
+    try {
+        const r = await fetch("/ocio/encodings");
+        const j = await r.json();
+        _ocioEnc = { encodings: j.encodings || {}, views: j.views || {} };
+    } catch (e) {
+        _ocioEnc = { encodings: {}, views: {} };      // no data -> no auto-fill, which is the old behaviour
+    }
+    return _ocioEnc;
+}
+
+// (display, scene) when this pair crosses the scene/display boundary, else null. Mirrors _crosses_scene_display
+// in io_nodes.py - the backend decides the same question the same way, and the two must not drift.
+function crossingOf(enc, fromCs, outCs) {
+    if (!fromCs || !outCs || fromCs === outCs) return null;
+    const a = enc.encodings[fromCs], b = enc.encodings[outCs];
+    if (!a || !b) return null;
+    const aDisp = a.endsWith("-video"), bDisp = b.endsWith("-video");
+    if (aDisp === bDisp) return null;
+    return aDisp ? { display: fromCs, scene: outCs } : { display: outCs, scene: fromCs };
+}
+
+// Narrow `output_colorspace` to what the chosen output can actually carry.
+//
+// THE ONE THING IT MUST NEVER DO IS COERCE. The bit_depth narrowing a few lines up resets an out-of-range
+// value to the format default, which is right there: depth is cosmetic and the file is written either way.
+// A colorspace is not. Silently swapping a restored one would change the rendered image of a saved workflow
+// without anybody asking, which is the exact failure this pack refuses everywhere else. So a value that is
+// no longer on the list is KEPT, still selected, and named in the label - the artist decides.
+//
+// Frontend only, and that is load-bearing. INPUT_TYPES is static and cannot see the current container, so a
+// backend list is impossible anyway; more importantly a backend filter would make ComfyUI reject the whole
+// prompt with value_not_in_list, killing saved workflows outright rather than warning about them.
+async function applyCsNarrowing(node) {
+    const w = W(node, "output_colorspace");
+    if (!w || !w.options) return;
+    const enc = await ocioEncodings();
+    if (!Object.keys(enc.encodings).length) return;          // no data -> offer everything, as before
+    if (!w._ocioAllCs) w._ocioAllCs = (w.options.values || []).slice();   // the full list, kept once
+    const container = W(node, "container")?.value;
+    const key = container === "video" ? CODEC_ALLOW[W(node, "video_codec")?.value]
+                                      : STILL_ALLOW[W(node, "still_format")?.value];
+    const allow = key ? ENC_ALLOW[key] : null;
+    if (!allow) {                                            // "anything", or an output we have no rule for
+        w.options.values = w._ocioAllCs.slice();
+        if (w.label) w.label = "output_colorspace";
+        return;
+    }
+    const ok = w._ocioAllCs.filter(cs => allow.includes(enc.encodings[cs] || ""));
+    if (!ok.length) { w.options.values = w._ocioAllCs.slice(); return; }  // never leave an empty picker
+    if (!ok.includes(w.value)) ok.unshift(w.value);          // keep the current pick reachable, never replace it
+    w.options.values = ok;
+    // A kept-but-inadvisable value is said out loud rather than fixed behind the artist's back.
+    const bad = !allow.includes(enc.encodings[w.value] || "");
+    w.label = bad ? "output_colorspace (not advised for this output)" : "output_colorspace";
+    node.setDirtyCanvas(true, true);
+}
+
+async function applyAutoView(node) {
+    const vw = W(node, "view");
+    if (!vw) return;
+    if ((node._ocioEdited || new Set()).has("view")) return;      // rule 1: the artist owns it now
+    const enc = await ocioEncodings();
+    const cross = crossingOf(enc, W(node, "from_colorspace")?.value, W(node, "output_colorspace")?.value);
+    let want = VIEW_NONE;
+    if (cross) {
+        const d = enc.views[cross.display];
+        if (d && d.default) want = d.default;
+        else return;                                              // a display we have no views for: leave it
+    }
+    if (vw.value !== want && (vw.options?.values || []).includes(want)) {
+        setWSilent(node, "view", want);
+        node.setDirtyCanvas(true, true);
+    }
+}
+
 // bit-depth options + default per still format
 // dpx is integer-only and takes 10 or 16: 16-bit is what Netflix's archival-master spec names first for log
 // material, 10-bit matches a 10-bit camera original. No float entry, because DPX has no float variant here.
@@ -2642,15 +2778,29 @@ app.registerExtension({
                 // change, which is a deliberate act. Same split as OCIO Read, issue #3.
                 onChange(this, "container", () => {
                     applyContainer();
+                    applyCsNarrowing(node);
                     setW(node, "output_colorspace", autoOutCs(W(node, "container")?.value, W(node, "still_format")?.value));
                 });
                 onChange(this, "still_format", () => {
                     applyFormat();
+                    applyCsNarrowing(node);
                     applyCompressionVis();
                     setW(node, "output_colorspace", autoOutCs(W(node, "container")?.value, W(node, "still_format")?.value));
                     pokeWidgets(node);
                 });
-                onChange(this, "video_codec", () => { applyCodecLabel(); pokeWidgets(node); node.setDirtyCanvas(true, true); });
+                onChange(this, "video_codec", () => { applyCsNarrowing(node); applyCodecLabel(); pokeWidgets(node); node.setDirtyCanvas(true, true); });
+                // THE `view` WIDGET FILLS ITSELF IN. Whether a scene/display crossing should be rendered or
+                // merely re-encoded is a question only these two widgets can answer, so it is answered here,
+                // on a real change of either. applyAutoView refuses to act once the artist has touched `view`
+                // by hand, and is never called from onNodeCreated - which fires after a saved graph's values
+                // are restored, and would otherwise rewrite somebody's finished setup on open.
+                for (const w of ["from_colorspace", "output_colorspace"]) {
+                    onChange(this, w, () => { applyAutoView(node); applyCsNarrowing(node); });
+                }
+                // and a hand-set view is the artist's from then on, same contract as auto_range
+                onChange(this, "view", () => {
+                    (node._ocioEdited || (node._ocioEdited = new Set())).add("view");
+                });
                 // auto frame range / fps from the upstream OCIO Read
                 onChange(this, "auto_range", (v) => { if (v) syncWriteFromUpstream(node); });
                 // fps belongs here too: auto_range pulls it from the Read like the others, and its tooltip has

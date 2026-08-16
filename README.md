@@ -14,6 +14,41 @@
 
 **By [AI VFX NEWS](https://aivfxnews.com/) · Slava Sexton.**
 
+---
+
+### float32 from the model to the master. Nothing is clamped on the way.
+
+`OCIO VAE Decode` runs the decode at **float32 with nothing clamped**, and that one choice is what the rest of
+this pack is built on.
+
+**There is no ceiling to hit.** How many stops a render carries is a property of that render, not of this
+pack: nothing here caps it, and float32 holds whatever came out of the decode. One frame of one LTX-2.5 master
+written through these nodes, opened and counted: peak **131.75**, which is 7 stops over diffuse white, and
+**14.25 stops** between the 0.1 and 99.9 percentiles. The next render will read differently. That is the
+point - the number comes from the material, and nothing on the way out decides it for you.
+
+**Values below 0 survive too, and that matters more than it sounds.** A negative is not noise to clean up - it
+is what a colour outside the working gamut looks like from inside it. Clamp the black and that colour is gone,
+along with the headroom a grade needs. Nothing here clamps it.
+
+**Nothing is ever forced through 8 bits.** The master goes out as 32-bit float EXR, or 12-bit ProRes 4444, or
+DPX in log, or a Rec.2100 PQ / HLG deliverable. Scene-linear, log, display-referred: the colorspace is
+declared, converted through OpenColorIO, and written as it is.
+
+One LTX-2.5 generation, one latent, one frame, written three ways and counted:
+
+| | distinct brightness levels | picture a viewer could tell apart from the float master |
+| --- | --- | --- |
+| this pack, ProRes 4444 | **3520** | **0.0001%** |
+| stock workflow at 10-bit | 882 | 0.0596% |
+| stock workflow as it ships | 220 | 5.8098% |
+
+The float master itself carried 2304. This pack lands above it because 12-bit ProRes quantises a wider range
+more finely than the source's own container did - and either way, none of it was thrown away first.
+
+---
+
+
 ![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-FFD27D.svg)
 ![ComfyUI](https://img.shields.io/badge/ComfyUI-custom_nodes-5BAEE3.svg)
 ![OpenColorIO](https://img.shields.io/badge/OpenColorIO-2.x-9aa3b2.svg)
@@ -783,6 +818,11 @@ it simply was never thrown away.
 
 <div align="center">
 
+<img src="docs/assets/ltx25_rec709_pipeline.svg" width="880" alt="The pipeline as a diagram. OCIO Read loads the plate as sRGB - Display. OCIO ColorSpace takes it to Rec.1886 Rec.709 - Display, the space the model works in. LTX-2.5 generates, and its audio VAE produces a synchronised track that bypasses colour. OCIO VAE Decode returns float32 with no clamp. Two OCIO Write nodes hang off that decode: the master, a 32-bit float EXR sequence taken to ACEScg through the ACES 1.3 output transform, and the review movie, 12-bit ProRes 4444 carrying the audio.">
+
+*The whole route in one picture. Both writes hang off the same decode: one is the master the comp opens, the
+other is what you send out.*
+
 <img src="docs/assets/workflow_input.png" width="880" alt="The input half of the graph: two OCIO Read nodes with their previews, an OCIO ColorSpace node converting sRGB - Display to Rec.1886 Rec.709 - Display, and an OCIO Player. A note explains that sRGB inputs should be converted to Rec.709 before the model to keep detail near black.">
 
 *Input. The plate goes to `Rec.1886 Rec.709 - Display` before the model, either through `OCIO ColorSpace` as
@@ -850,20 +890,26 @@ ByteDance2TextToVideoNode -> OCIO Write (the `video` input)
 The clip is rendered out with every other Write setting you have set (container, codec, colorspace, bit depth),
 and a `video` container inherits the movie's own frame rate rather than the `fps` widget.
 
-The older route still works and is the one to use when you want the file on disk in between, or when you need
-OCIO Read's frame range and metadata panel:
+There is an older route through a file, and it is **not** a peer of the direct wire. Reach for it only when you
+genuinely need the clip on disk in between, or need OCIO Read's frame range and metadata panel:
 
 ```
 ByteDance2TextToVideoNode -> SaveVideo -> OCIO Read (the saved .mp4) -> OCIO Write
 ```
 
-**It does not cost you bit depth, which is worth stating because it is the obvious thing to suspect.** Measured
-on a 10-bit HEVC ramp: the source carried 879 distinct values per channel, `SaveVideo` wrote it back still
-`yuv420p10le` at 879 (by default it remuxes rather than re-encodes), and even forcing a re-encode to H.264 kept
-`yuv420p10le` at 881. An 8-bit control of the same ramp read 221, so the measurement can tell the two apart.
-ComfyUI decodes video to `gbrpf32le`, float32, and OCIO Write reads it through `get_components()`, so nothing on
-this path quantises to 8-bit. The reason to prefer the direct wire is the extra lossy encode and the disk trip,
-not the bit depth.
+**What that intermediate file costs you is RANGE, not bit depth.** It is an integer, display-referred
+container: its ceiling is white and its floor is black, so anything a colour operation put above 1.0 or below
+0 is gone at that step, and no amount of code values brings it back. Put a grade or a display transform
+anywhere in that chain and you are grading what survived the round trip, not what the model produced. The
+direct wire has no such step - the `VIDEO` reaches OCIO Write with its frames intact, and the only encode is
+the one you asked for.
+
+Bit depth, on the other hand, really does survive, and it is worth saying because it is the obvious thing to
+suspect and suspecting it sends people looking in the wrong place. Measured on a 10-bit HEVC ramp: the source
+carried 879 distinct values per channel, `SaveVideo` wrote it back still `yuv420p10le` at 879 (by default it
+remuxes rather than re-encodes), and even forcing a re-encode to H.264 kept `yuv420p10le` at 881. An 8-bit
+control of the same ramp read 221, so the measurement can tell the two apart. That number answers a question
+about resolution inside the range. It says nothing about the range itself.
 
 Seedance renders 4K natively at 10-bit (announced for **Seedance 2.0** at Volcengine's FORCE 2026), which is
 why it is worth color-managing rather than treating as a finished clip. Note which model you pick: read from

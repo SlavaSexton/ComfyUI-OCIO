@@ -3034,12 +3034,14 @@ def _video_encoder_args(codec, hdr=False):
 
 
 def save_video(arr01, out_path, codec, fps, output_colorspace=None, audio_pcm=None,
-               meta_attrs=None, timecode=None, source_meta=None):
+               meta_attrs=None, timecode=None, source_meta=None, write_sidecar=True):
     """Encode the batch. meta_attrs / timecode / source_meta drive the metadata written alongside it.
 
-    Returns the sidecar .json path when one was written, else None. The sidecar is not optional politeness: a
-    container keeps only what _video_tag_args passes it (a MOV keeps nearly everything, an MP4 a whitelist), so
-    the full set has to live beside the movie or it does not survive at all."""
+    Returns the sidecar .json path when one was written, else None. On a movie the sidecar is where the
+    metadata actually survives: a container keeps only what _video_tag_args passes it (a MOV keeps nearly
+    everything, an MP4 a whitelist), so the rest has to live beside the file or not at all. `write_sidecar`
+    exists for the delivery that must be the movie and nothing else, and the cost of turning it off is named in
+    the written file itself, under `sidecar_only`."""
     _require_ffmpeg()
     n, h, w, _ = arr01.shape
     # A FILE MUST NOT STATE A STANDARD IT CANNOT HOLD. When the delivery space is BT.2100 (HLG or PQ) the
@@ -3114,7 +3116,7 @@ def save_video(arr01, out_path, codec, fps, output_colorspace=None, audio_pcm=No
                 os.remove(a_path)
             except Exception:
                 pass
-    if meta_attrs or timecode or source_meta:
+    if write_sidecar and (meta_attrs or timecode or source_meta):
         return _write_meta_sidecar(out_path, _sidecar_payload(out_path, meta_attrs, timecode, source_meta, fps, codec))
     return None
 
@@ -3688,6 +3690,21 @@ class OCIOWrite:
             # OPTIONAL input that way, whereas a missing REQUIRED one is a hard error).
             "write_audio": ("BOOLEAN", {"default": True,
                             "tooltip": "OFF: no sound at all, no muxed track and no sidecar .wav, even when one is wired or a native Video input brings its own. ON: the wired input wins, else the Video input's track. Off for a picture-only master."}),
+            # APPENDED AFTER write_audio, for the positional reason above: widgets_values is read by index, so a
+            # new widget belongs at the end or every saved graph shifts.
+            #
+            # The sidecar is worth different amounts per format, and until now the node charged the same price
+            # for all of them. Read a written .json and it says so itself: beside a MOV, `sidecar_only` lists the
+            # four attributes the container cannot hold, so the file is the ONLY home for them. Beside an EXR,
+            # `sidecar_only` is empty - the header took all eight, and the .json is a second copy of what is
+            # already in the frames. Delivering an EXR sequence to a client who did not ask for it means an extra
+            # file to explain.
+            #
+            # Default True, which is the behaviour every existing graph already has. A saved workflow that has
+            # never seen this widget keeps writing the sidecar: an absent OPTIONAL input falls through to the
+            # Python default.
+            "write_sidecar": ("BOOLEAN", {"default": True,
+                              "tooltip": "The <name>.json written beside the render, holding the FULL metadata set. ON is right for a movie, whose container cannot hold all of it - check `sidecar_only` in the file to see exactly what would be lost. OFF is safe for EXR, whose header already carries everything (`sidecar_only` is empty there), and for any delivery that must be the picture files and nothing else. It never affects the pixels, the container tags or the .wav beside a sequence."}),
         }}
 
     RETURN_TYPES = ("STRING",)
@@ -3703,7 +3720,7 @@ class OCIOWrite:
               bit_depth, auto_range, first_frame, last_frame, start_number, source_start, raw_data,
               output_folder, filename, colorspace_in_name=True, auto_colorspace=True, compression="zip",
               alpha=None, fps=24.0, render_nonce="", images=None, video=None, audio=None,
-              metadata="", write_audio=True,
+              metadata="", write_audio=True, write_sidecar=True,
               view=_VIEW_NONE):   # render_nonce: cache-buster (see INPUT_TYPES). images/video: mutually-exclusive inputs.
         if video is not None:                                        # a native ComfyUI VIDEO -> render it out with ALL these Write settings (container, codec, colorspace, bit depth)
             images, _vfps, _vaudio = _video_unwrap(video)
@@ -3888,7 +3905,7 @@ class OCIOWrite:
             _save_still(saved, arr[idx], still_format, bit_depth, alpha_of(a_arr, idx, arr[idx]), cs, compression,
                         _frame_attrs(still_attrs, 0, as_text))
             count, preview, written = 1, arr[idx], arr[idx]     # `written` is what the clip check must measure
-            if still_attrs:
+            if still_attrs and write_sidecar:
                 side = _write_meta_sidecar(saved, _sidecar_payload(
                     saved, _frame_attrs(still_attrs, 0, True), tc_text(0), src_meta, rate,
                     f"{still_format} {bit_depth}", kind="still image", bit_depth=bit_depth, frames=1,
@@ -3907,7 +3924,8 @@ class OCIOWrite:
             if container == "video":
                 saved = _wp(1)[0]
                 side = save_video(sub, saved, video_codec, rate, None if raw_data else output_colorspace, apcm,
-                                  meta_attrs=base_attrs, timecode=tc_text(0), source_meta=src_meta)
+                                  meta_attrs=base_attrs, timecode=tc_text(0), source_meta=src_meta,
+                                  write_sidecar=write_sidecar)
                 if apcm is not None and video_codec in _MXF_MUXER and _MXF_MUXER[video_codec] == "mxf_opatom":
                     # OPAtom holds ONE essence per file (ST 390) and ffmpeg refuses a second stream outright, so
                     # the track goes beside it rather than being dropped in silence - the same answer an image
@@ -3925,7 +3943,7 @@ class OCIOWrite:
                     _save_still(paths[i], sub[i], still_format, bit_depth, alpha_of(sub_a, i, sub[i]), cs, compression,
                                 _frame_attrs(still_attrs, i, as_text))
                 saved = paths[0]
-                if still_attrs:
+                if still_attrs and write_sidecar:
                     # ONE sidecar for the whole sequence, not one per frame: the attributes are shot-level, and
                     # N copies of the same JSON is noise an artist has to tidy up. The per-frame parts are given
                     # as the start code plus the frame count and the first / last filenames.
@@ -4028,9 +4046,21 @@ class OCIOWrite:
         if container == "video":
             # The output video can sit ANYWHERE on disk; ComfyUI's native preview only serves output/temp/input, and a
             # still PNG renders broken inside its <video> for a video node ("Invalid URL"). So write a small, always-
-            # servable H.264 preview into the temp dir and show it as an animated (playing) preview instead.
-            ui["images"] = self._video_preview(sub, fps, saved, apcm)      # apcm, not the raw AUDIO: it is already cut to this write's range, so the preview cannot disagree with the master about where the clip starts
-            ui["animated"] = (True,)
+            # servable H.264 preview into the temp dir.
+            #
+            # UNDER `mov`, NOT `images` (2026-08-16). Handed back as `images` the front end renders it ITSELF, in
+            # markup this pack does not own: on the Vue frontend that is a Vue-managed element whose classes are
+            # its own business and change between versions. Nothing in an extension can collapse it, so the node
+            # could not offer the Viewer toggle OCIO Read has, and the movie had a player while a sequence had
+            # none. Under a key core does not know, the node draws the movie in its own DOM widget instead, and
+            # one toggle and one transport then cover all three containers.
+            #
+            # The cost, named rather than glossed: a preview under this key does not appear in ComfyUI's output
+            # gallery or queue history. For an output node whose product is the file on disk, that is the right
+            # trade; it is not free.
+            # apcm, not the raw AUDIO: it is already cut to this write's range, so the preview cannot disagree
+            # with the master about where the clip starts.
+            ui["mov"] = self._video_preview(sub, fps, saved, apcm)
         elif container == "sequence" and int(getattr(written, "shape", [0])[0] or 0) > 1:
             # A SEQUENCE IS A CLIP, AND WAS SHOWN AS ONE STILL FRAME. Every format this branch writes - EXR, DPX,
             # TIFF, PNG - is one the browser either cannot decode at all or cannot animate, so a frame range came
@@ -4066,10 +4096,11 @@ class OCIOWrite:
                 #
                 # No audio on this path even when a track is wired: a frame sequence carries none, and a preview
                 # that plays sound the written files do not have would misrepresent what was produced.
-                ui["images"] = self._video_preview(written, fps, saved)
-                ui["animated"] = (True,)
+                ui["mov"] = self._video_preview(written, fps, saved)
         else:
-            ui["images"] = self._preview(preview)
+            # A still, under `still` for the same reason the movie moved to `mov`: the node draws its own
+            # preview so one Viewer toggle covers every container.
+            ui["still"] = self._preview(preview)
         return {"ui": ui, "result": (saved,)}
 
     def _preview(self, frame0):

@@ -1,5 +1,48 @@
 # Changelog
 
+## OCIO Write draws its own viewport, and the .json beside a render is now a choice
+
+**The sidecar can be declined.** A `<name>.json` landed beside every render with no way to say no. The new
+`write_sidecar` widget turns it off, and it defaults to ON, so nothing a saved graph does changes.
+
+Whether that is a loss depends entirely on the format, and the written file has always said so itself. Beside
+a MOV, `sidecar_only` lists the four attributes the container physically cannot hold, and the .json is their
+only home. Beside an EXR that list is **empty**: the header took all eight, and the .json is a second copy of
+what is already in the frames. So it is worth keeping for a movie and worth declining for an EXR sequence
+going to a client who did not ask for it. Read `sidecar_only` in the file before deciding.
+
+The switch touches the sidecar and nothing else. The pixels, the container tags, the EXR header and the .wav
+that ships beside a sequence are all unaffected, which `tools/test_write_sidecar_toggle.py` asserts by reading
+the header back off a frame written with the sidecar turned off.
+
+**The node now draws all three of its previews itself** - the sequence flipbook, the movie and the still - in
+one widget, with a transport and a collapsible Viewer.
+
+This started as a UI request and turned out to be structural. A preview handed back as `images` is rendered by
+the FRONT END, in markup this pack does not own; on the Vue frontend it is a Vue-managed element whose classes
+are its own business and change between versions. Nothing in an extension can reliably collapse it. That is
+why the movie had a player while a sequence had none, and why neither could be folded away the way OCIO Read's
+Viewer can. Under keys core does not know (`mov`, `still`) the node draws them itself, and one toggle and one
+transport then cover every container.
+
+- **Transport**: play / pause, stop (rewind to the first frame), a scrub, and a frame counter. Deliberately
+  smaller than OCIO Read's, which has in / out points, reverse, an exposure strip and a GPU frame cache
+  because it is a grading viewport over a plate it has never touched. This looks at a write that just
+  finished, on a local disk, and answers "is that the clip I meant to make".
+- **`▾ Viewer`**: the same chevron toggle OCIO Read carries. Collapsing gives the height back - measured, 876
+  px to 622 on a test node - and stops the flipbook's clock, so a hidden strip is not still asking the server
+  for frames.
+- A still gets no transport, because one frame has nothing to scrub.
+
+The cost, named rather than glossed: a preview under these keys does not appear in ComfyUI's output gallery or
+queue history. For an output node whose product is the file on disk, that is the right trade; it is not free.
+
+Verified in the canvas rather than reasoned about. The sequence scrub was checked by reading the PIXEL at each
+position, not the label: position three returns blue and stop returns red, from a source whose three frames
+were deliberately different colours. On the movie, a 2 s clip advances to 1.291 s with the element unpaused.
+An earlier 0.125 s clip looked like a broken play button and was not - three frames at 24 fps finish and loop
+before a probe can look.
+
 ## Files stop making claims about themselves that are not true
 
 Three defects with one shape, found in one pass: the writer describing a file as something it is not. None of

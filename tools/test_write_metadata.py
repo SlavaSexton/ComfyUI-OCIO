@@ -428,24 +428,24 @@ def check_append_only(io):
     # arrives with the plate through the `metadata` wire instead of being typed here. Removing a widget is
     # otherwise forbidden for the positional reason spelled out above, and was allowed only because that one
     # never reached a release - no published graph holds a value at its index.
-    assert opt[-3:] == ["audio", "metadata", "write_audio"], (
-        f"the last three optional inputs are {opt[-3:]}, expected "
-        "['audio', 'metadata', 'write_audio']. Each was appended so it could only add a trailing "
-        "widgets_values slot / input slot; moving any of them up re-points saved links and values.")
+    assert opt[-4:] == ["audio", "metadata", "write_audio", "write_sidecar"], (
+        f"the last four optional inputs are {opt[-4:]}, expected "
+        "['audio', 'metadata', 'write_audio', 'write_sidecar']. Each was appended so it could only add a "
+        "trailing widgets_values slot / input slot; moving any of them up re-points saved links and values.")
     assert ins["optional"]["metadata"][1].get("forceInput") is True, (
         "source_meta must be forceInput: as a plain STRING it would render a widget and occupy a "
         "widgets_values slot, which is the thing being avoided.")
     # The tail above is the DICT order; what actually indexes widgets_values is the WIDGET order, which skips
     # the sockets. Asserting the dict tail alone would pass with a widget inserted ahead of write_audio as long
-    # as it stayed inside the last three, so the widget sequence is asserted directly.
+    # as it stayed inside the last few, so the widget sequence is asserted directly.
     _SOCKETS = {"images", "video", "audio", "alpha", "mask"}
     opt_widgets = [k for k in opt
                    if k not in _SOCKETS and not (isinstance(ins["optional"][k][1], dict)
                                                  and ins["optional"][k][1].get("forceInput"))]
-    assert opt_widgets[-2:] == ["render_nonce", "write_audio"], (
-        f"the last two optional WIDGETS are {opt_widgets[-2:]}, expected ['render_nonce', 'write_audio']. "
-        "widgets_values is positional over widgets only, so this - not the dict tail - is what a saved workflow "
-        "reads by index.")
+    assert opt_widgets[-3:] == ["render_nonce", "write_audio", "write_sidecar"], (
+        f"the last three optional WIDGETS are {opt_widgets[-3:]}, expected "
+        "['render_nonce', 'write_audio', 'write_sidecar']. widgets_values is positional over widgets only, so "
+        "this - not the dict tail - is what a saved workflow reads by index.")
     assert "start_timecode" not in opt_widgets, (
         "start_timecode is back. It was removed on 2026-08-13: a code typed into the writer is a code invented "
         "at delivery, and the start now arrives with the plate through the `metadata` wire. Re-adding it as a "

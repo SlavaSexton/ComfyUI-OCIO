@@ -325,9 +325,14 @@ file can never end up carrying two disagreeing timecodes.
 The node **previews what it wrote**, in its output colorspace, so a wrong colorspace pick looks visibly wrong
 rather than quietly wrong: a still shows that frame, a movie plays a browser-servable copy, and a sequence
 flips through **the written files themselves**, each rendered server-side through OCIO rather than re-encoded
-to 8-bit. One preview, never two. The sequence strip carries a refresh square for when the files on disk
-change under a preview already drawn. It reports **"wrote N frame(s)"**, and the **▶ Render** button queues
-the graph. Details in [docs/NODES_IO.md](docs/NODES_IO.md).
+to 8-bit. One preview, never two, with **play / pause, stop and a scrub** under it, a `↻` that re-reads from
+disk, and a **`▾ Viewer`** chevron that folds the whole viewport away and gives the height back. It reports
+**"wrote N frame(s)"**, and the **▶ Render** button queues the graph. Details in
+[docs/NODES_IO.md](docs/NODES_IO.md).
+
+`write_sidecar` decides whether a `<name>.json` carrying the full metadata set lands beside the render.
+Default on. Worth keeping for a movie, whose container cannot hold all of it; safe to turn off for EXR, whose
+header already carries everything. The file names the difference itself, under `sidecar_only`.
 
 Naming: still image -> `<name>.<ext>`; sequence -> `<name>.0086.<ext>, <name>.0087.<ext>, ...`; video ->
 `<name>.mov` (ProRes / DNxHR) or `<name>.mp4` (h264 / hevc).

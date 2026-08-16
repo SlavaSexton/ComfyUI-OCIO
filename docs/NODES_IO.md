@@ -366,6 +366,7 @@ only form that conforms correctly downstream. Nothing wired, no timecode written
 | `metadata` | STRING | JSON from `OCIO Read`'s "metadata" output. | none | **`forceInput: true`**: unlike every other widget on this node, this field never renders as a text box, only as a wire-only socket. Wire `OCIO Read`'s slot-5 output here to carry the plate's camera/lens/editorial identity **and its start timecode** into the written file - this wire is the only route a timecode has, since the node has no field for one. Attributes describing a specific pixel state (C2PA manifests, ST 2086/2094 HDR mastering data, an ACES AMF, an MHL hash list) are dropped rather than copied, because a colorspace conversion makes them false; container attributes (`dataWindow`, `channels`, `compression`) are never copied either, since the writer recomputes those from the real pixels. The fields this node re-authors for itself (chromaticities, frame rate, frame counter, timecode) are stripped from the incoming set in **any spelling** and written fresh, so a plate that calls its code `timecode` where we call it `timeCode` cannot leave two conflicting timecodes in one header. Confirmed on a real write: a test attribute named to match the "mastering" filter was silently removed from both the EXR header and the sidecar JSON, while unrecognized custom attributes and the seven identity fields (reel, scene, shot, take, camera, lens, timecode) passed through intact. Confirmed on a real camera master (DaVinci Resolve MXF, ProRes 4444 XQ): all twelve of its attributes reached the EXR header, with a single, correctly typed timecode advancing per frame. |
 | `write_audio` | BOOLEAN | true / false | `true` | Off: no audio at all is written, not even as a sidecar `.wav`, regardless of what's wired or what a native `Video` input carries. On (default): a wired `audio` input wins over a native `Video`'s own track. This is the only way to *decline* a `Video` input's own audio, since there's no wire to disconnect for it. |
 | `view` | COMBO (the config's views, plus a do-nothing entry) | `(none) colorimetric, no tone map` first, then every view the loaded config offers | `(none)` | **Only does anything when one of your two colorspaces is display-referred and the other is scene-referred.** On every other pair it is ignored outright. Read the section below before using it. |
+| `write_sidecar` | BOOLEAN | true / false | `true` | The `<name>.json` written beside the render, holding the FULL metadata set. Whether turning it off loses anything depends on the format, and the file says so itself under `sidecar_only`: beside a MOV that list names the attributes the container cannot hold, so the .json is their only home; beside an EXR it is **empty**, because the header already took all eight. Off is safe for an EXR sequence, and for any delivery that must be the picture files and nothing else. It never affects the pixels, the container tags, the EXR header or the `.wav` beside a sequence. |
 
 ### `view`: the one control that changes what the picture looks like
 
@@ -431,10 +432,23 @@ runs as a side effect (it writes the file) whether or not this output is wired t
 
 ### What appears on the node after a write
 
-**A `video` container** shows a small H.264 copy, playing. The master can sit anywhere on disk, and ComfyUI's
-native preview only serves `output`, `temp` and `input`; a still PNG also renders broken inside a video
-node's player. So a browser-playable proxy goes to the temp dir instead. It carries the audio too, trimmed to
-the same frame cap, so lip sync can be checked without opening the master.
+The node draws its own viewport, the same one for every container, with a transport under it and a `▾ Viewer`
+chevron that folds the whole thing away and gives the height back - the same toggle `OCIO Read` carries.
+
+That is worth a sentence of why, because it is the reason the node behaves consistently at all. A preview
+handed back to ComfyUI as `images` is drawn by the FRONT END, in markup this pack does not own; nothing in an
+extension can collapse it. So this node hands nothing back to be drawn. The cost is named rather than hidden:
+its previews do not appear in ComfyUI's output gallery or queue history.
+
+**The transport** is play / pause, stop (rewind to the first frame), a scrub and a frame counter. It is
+smaller than `OCIO Read`'s on purpose - no in / out points, no reverse, no exposure strip - because this looks
+at a write that has just finished on a local disk, and the question is "is that the clip I meant to make",
+not "how does this grade".
+
+**A `video` container** shows a small H.264 copy. The master can sit anywhere on disk, and ComfyUI's native
+preview only serves `output`, `temp` and `input`; a still PNG also renders broken inside a video player. So a
+browser-playable proxy goes to the temp dir instead. It carries the audio too, trimmed to the same frame cap,
+so lip sync can be checked without opening the master.
 
 **A `sequence` of more than one frame** plays as **its own frames**, not as a proxy. Every format that branch
 writes - EXR, DPX, TIFF, PNG, JPEG - is one a browser either cannot decode or cannot animate, so a frame range
@@ -453,18 +467,20 @@ The H.264 proxy is the **fallback**, not a companion: it ships only when the fra
 so exactly one preview appears on the node. Both at once meant two pictures of the same write disagreeing
 about colour, with nothing on the node to say which was the master.
 
-The `↻` in the strip's top-left re-reads the frames from disk, bypassing the browser's cache. Use it when
-something else has written into that folder since - another graph, a retake, a re-render - and you want to be
-sure you are looking at what is there now. The colorspace the strip renders through is the one that was on
-the node when the write ran, so a later widget edit cannot make the picture disagree with the files. If a
+The `↻` in the viewport's top-left re-reads what was written, from disk, bypassing the browser's cache. Use it
+when something else has written into that folder since - another graph, a retake, a re-render - and you want
+to be sure you are looking at what is there now. The colorspace the strip renders through is the one that was
+on the node when the write ran, so a later widget edit cannot make the picture disagree with the files. If a
 frame cannot be read back, the strip is replaced by the folder path rather than freezing on the last good
 frame.
+
+**A single still** shows that one frame and no transport, because one frame has nothing to scrub.
 
 No audio on the sequence path even when a track is wired, because a frame sequence carries none, and a
 preview that played sound the files do not have would misrepresent what was produced.
 
-**A single still** shows that one frame naively, in its output colorspace - so a wrong colorspace pick looks
-visibly wrong rather than quietly wrong.
+Every preview is shown in the output colorspace, naively - so a wrong colorspace pick looks visibly wrong
+rather than quietly wrong.
 
 | Output | Type | What it connects to |
 |---|---|---|

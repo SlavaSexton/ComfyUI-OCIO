@@ -64,7 +64,7 @@ def check_sequence_is_flipbook_only(io):
     """A multi-frame sequence: the real frames, and nothing standing beside them."""
     ui = _write(io, 3, output_folder="$OUTPUT/seq3")
     assert "seq_src" in ui, f"a 3-frame sequence lost its flipbook; ui keys were {sorted(ui)}"
-    assert "images" not in ui and "animated" not in ui, (
+    assert "mov" not in ui, (
         f"TWO previews on one node: the flipbook AND the H.264 proxy; ui keys were {sorted(ui)}")
     # The range has to describe the files that exist, or the flipbook asks /ocio/thumb for frames it will 404 on.
     first, last = int(ui["seq_first"][0]), int(ui["seq_last"][0])
@@ -78,28 +78,43 @@ def check_sequence_is_flipbook_only(io):
 def check_video_is_proxy_only(io):
     """A movie: the proxy, and no flipbook - /ocio/thumb cannot scrub a single container file."""
     ui = _write(io, 3, container="video", video_codec="h264", output_folder="$OUTPUT/mov")
-    assert "images" in ui and "animated" in ui, f"a movie lost its playable preview; ui keys were {sorted(ui)}"
-    assert "seq_src" not in ui, (
-        f"a movie was handed a frame-range flipbook it cannot serve; ui keys were {sorted(ui)}")
+    assert "mov" in ui, f"a movie lost its playable preview; ui keys were {sorted(ui)}"
+    assert "seq_src" not in ui and "still" not in ui, (
+        f"a movie was handed a second preview it cannot serve; ui keys were {sorted(ui)}")
 
 
 def check_single_frame_has_no_clip(io):
-    """One frame is a still: its own PNG thumb, and nothing that pretends to move.
-
-    `images` IS expected here and is not the proxy - it is _preview(), a static PNG of the first written frame.
-    What must not appear is `animated` (an H.264 clip of one frame) or `seq_src` (a range of one).
-    """
+    """One frame is a still: its own PNG, and nothing that pretends to move."""
     ui = _write(io, 1, output_folder="$OUTPUT/one")
     assert "seq_src" not in ui, f"a single frame was described as a flipbook; ui keys were {sorted(ui)}"
-    assert "animated" not in ui, f"a single frame was given a moving preview; ui keys were {sorted(ui)}"
-    assert "images" in ui, f"a single frame lost its still thumb; ui keys were {sorted(ui)}"
+    assert "mov" not in ui, f"a single frame was given a moving preview; ui keys were {sorted(ui)}"
+    assert "still" in ui, f"a single frame lost its preview; ui keys were {sorted(ui)}"
+
+
+def check_nothing_is_handed_to_the_front_end_to_draw(io):
+    """No container returns `images`, and that is the point.
+
+    `images` is rendered by the front end, in markup this pack does not own - a Vue-managed element on the new
+    frontend. Nothing in an extension can collapse it, so as long as any container used it, OCIO Write could
+    not offer the Viewer toggle OCIO Read has, and a movie had transport controls while a sequence had none.
+    A regression here is silent: the preview still appears, so it looks fine, and only the toggle stops working.
+    """
+    for label, kw in (("sequence", dict(frames=3, output_folder="$OUTPUT/nf_seq")),
+                      ("movie", dict(frames=3, container="video", video_codec="h264",
+                                     output_folder="$OUTPUT/nf_mov")),
+                      ("still", dict(frames=1, output_folder="$OUTPUT/nf_one"))):
+        ui = _write(io, **kw)
+        assert "images" not in ui and "animated" not in ui, (
+            f"the {label} branch handed its preview back as `images` for the front end to draw; "
+            f"ui keys were {sorted(ui)}")
 
 
 def main():
     tmp = tempfile.mkdtemp(prefix="ocio_prev_")
     io = _load_io_nodes(tmp)
     failures = []
-    for fn in (check_sequence_is_flipbook_only, check_video_is_proxy_only, check_single_frame_has_no_clip):
+    for fn in (check_sequence_is_flipbook_only, check_video_is_proxy_only, check_single_frame_has_no_clip,
+               check_nothing_is_handed_to_the_front_end_to_draw):
         try:
             fn(io)
             print(f"  ok  {fn.__name__}")

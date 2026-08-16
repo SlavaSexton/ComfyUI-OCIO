@@ -104,6 +104,23 @@ numbers.
 OCIO Read -> OCIO CDLTransform -> OCIO Display -> OCIO Write (container = video)
 ```
 
+**Or in two nodes, since v1.3.0.** `OCIO Write` has a `view` widget that applies the same output transform on
+the way out, and it fills itself in: choose a scene-referred `from_colorspace` and a display-referred
+`output_colorspace`, and the node writes in that display's default view by itself.
+
+```
+OCIO Read -> OCIO CDLTransform -> OCIO Write (container = video, view fills itself in)
+```
+
+**Do not do both.** An `OCIO Display` upstream plus a `view` on the write applies the output transform twice,
+which is worse than applying it neither time. In a graph that already has the Display node, leave `view` on
+`(none)`.
+
+Which to use is taste: the separate node makes the step visible in the graph, the widget keeps the graph
+shorter. The pixels are the same. What is NOT the same is leaving both off - a scene-linear render written
+straight to Rec.709 carries values above 1.0 that the container then clips flat, which is the failure the
+`view` widget exists to prevent. See docs/NODES_IO.md.
+
 **Apply a show LUT.** A LUT is defined over a bounded input range, so put the data into the space the file was
 authored for first. On a scene-linear plate that means a log encode ahead of it.
 

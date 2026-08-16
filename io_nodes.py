@@ -3043,6 +3043,109 @@ def _convert(image, in_cs, out_cs):
     return _apply_processor(image, cpu)
 
 
+# The value that means "do what this pack has always done". It is first in the list and the default, because
+# ComfyUI fills a widget missing from a saved workflow with the node's current default: a default that applied
+# a transform would silently re-render every graph ever saved, including for anyone already compensating with
+# an OCIO Display node, who would then get it applied twice.
+_VIEW_NONE = "(none) colorimetric, no tone map"
+
+
+def _view_choices():
+    """The do-nothing value, then every view the loaded config offers.
+
+    Read from the config rather than hardcoded: on ACES 2.0 the view is `ACES 2.0 - SDR 100 nits (Rec.709)`,
+    on someone's ACES 1.3 config it is `ACES 1.0 - SDR Video`, and a hardcoded list would be wrong for them.
+    Union across displays, since the widget cannot know which display a pair resolves to until both
+    colorspaces are picked."""
+    out = [_VIEW_NONE]
+    try:
+        _require_ocio()
+        cfg, _ = _resolve_config_keyed("")
+        if cfg is not None:
+            for d in cfg.getDisplays():
+                for v in cfg.getViews(d):
+                    if v not in out:
+                        out.append(v)
+    except Exception:
+        pass
+    return out
+
+
+def _crosses_scene_display(in_cs, out_cs):
+    """(display, scene, direction) when this pair crosses the scene/display boundary, else None.
+
+    `direction` is "forward" for scene -> display (a render being made viewable) and "inverse" for
+    display -> scene (a finished picture taken back to a working space).
+
+    Asked of OCIO, not of a name list: `getReferenceSpaceType()` reports REFERENCE_SPACE_SCENE or
+    REFERENCE_SPACE_DISPLAY per colorspace, so this keeps working on a user's own config where the names are
+    not ours to predict. None for scene<->scene, display<->display and anything unresolvable - those pairs
+    have no fork, and a rendering transform applied there would be simply wrong."""
+    if not in_cs or not out_cs or in_cs == out_cs:
+        return None
+    _require_ocio()
+    cfg, _ = _resolve_config_keyed("")
+    if cfg is None:
+        return None
+    try:
+        import PyOpenColorIO as OCIO
+        a, b = cfg.getColorSpace(in_cs), cfg.getColorSpace(out_cs)
+        if a is None or b is None:
+            return None
+        disp = OCIO.ReferenceSpaceType.REFERENCE_SPACE_DISPLAY
+        a_disp = a.getReferenceSpaceType() == disp
+        b_disp = b.getReferenceSpaceType() == disp
+    except Exception:
+        return None
+    if a_disp == b_disp:
+        return None
+    return (in_cs, out_cs, "inverse") if a_disp else (out_cs, in_cs, "forward")
+
+
+def _convert_via_view(image, in_cs, out_cs, view):
+    """Cross the scene/display boundary through a display + view instead of a plain colorspace conversion.
+
+    THE TWO ANSWERS. ACEScg to Rec.1886 Rec.709 through a plain ColorSpaceTransform maps scene-linear 0.18 to
+    0.489436 and 4.0 to 1.781807, because OCIO crosses the boundary using the config's
+    `default_view_transform`, which the ACES 2.0 studio config sets to `Un-tone-mapped`. That is a
+    colorimetric conversion, a named and legitimate operation - it is bit-identical to Nuke's
+    `Utility - Rec.709 - Display`. What it is not is a picture render: super-white keeps going past 1.0 and is
+    then clipped by whatever container is written, flattening every highlight onto the same white. Through the
+    ACES Output Transform the same values land on 0.383116 and 0.905089, and nothing reaches code 1.0 until
+    scene-linear around 128.
+
+    Neither is right for every job, which is why this is a choice and not a silent correction. A review
+    deliverable wants the rendered picture. A technical re-encode, a display-to-display change, or material
+    that is already scene-referred must NOT be put through a rendering transform.
+
+    Deliberately NOT inside `_convert`: that is shared by OCIO Read, OCIO Write, the viewport LUT, the
+    /ocio/thumb preview and six scripts under tools/accuracy. Changing behaviour there would move all of them
+    at once, including the measurements this pack's own claims rest on."""
+    cross = _crosses_scene_display(in_cs, out_cs)
+    if not view or view == _VIEW_NONE or cross is None:
+        return _convert(image, in_cs, out_cs)
+    display, scene, direction = cross
+    _require_ocio()
+    cfg, cfg_key = _resolve_config_keyed("")
+    if cfg is None:
+        return image
+    offered = list(cfg.getViews(display))
+    if view not in offered:
+        raise ValueError(
+            f"OCIO Write: view '{view}' does not exist on display '{display}'. This config offers {offered}. "
+            f"A view belongs to a display, and picking one from a different display is how this usually goes "
+            f"wrong.")
+
+    def build():
+        import PyOpenColorIO as OCIO
+        t = OCIO.DisplayViewTransform(src=scene, display=display, view=view)
+        d = OCIO.TRANSFORM_DIR_INVERSE if direction == "inverse" else OCIO.TRANSFORM_DIR_FORWARD
+        return cfg.getProcessor(t, d)
+
+    cpu = _cached_cpu_processor(cfg_key, ("displayview", scene, display, view, direction), build)
+    return _apply_processor(image, cpu)
+
+
 def _acescct_to_lin(x):
     """ACEScct code value [0,1]-ish -> scene-linear (ACES spec, per channel). Used as a LOG SHAPER so an [0,1]
     3D LUT can carry a scene-linear (HDR) signal: the LUT's sampling axis is ACEScct-coded, decoded to linear
@@ -3431,6 +3534,19 @@ class OCIOWrite:
             "auto_colorspace": ("BOOLEAN", {"default": True,
                                  "tooltip": "Superseded and inert - it changes nothing, which is why it is hidden. Use profile = 'auto', which traces the upstream source and covers more cases. Kept only so earlier saved graphs keep their other values in place."}),
         }, "optional": {
+            # OPTIONAL, NOT REQUIRED, AND APPENDED RATHER THAN INSERTED. A new required input is a hard
+            # validation error for any API caller that omits it (execution.py:901-913), and a widget added in
+            # the middle shifts every value in every already-saved workflow, which reads them by position.
+            # Both were caught by test_write_metadata.py on the first attempt at adding this.
+            "view": (_view_choices(), {"default": _VIEW_NONE,
+                     "tooltip": "How to cross the scene/display boundary, on the pairs that cross it at all. "
+                                "Left on (none) the conversion is colorimetric: no tone mapping, so "
+                                "scene-linear 4.0 leaves as 1.78 and the container clips it flat. Pick a view "
+                                "and the ACES Output Transform is applied instead, rolling highlights off - "
+                                "4.0 becomes 0.905, and nothing reaches 1.0 until about 128. Use a view for a "
+                                "review deliverable; leave it off for a technical re-encode or for material "
+                                "already scene-referred. Ignored entirely when both colorspaces sit on the "
+                                "same side, so camera logs and ACEScg to ACEScct are untouched."}),
             "images": ("IMAGE", {"tooltip": "An image / sequence / video frame batch to write. Mutually exclusive with the ComfyUI Video input."}),
             "video": ("VIDEO", {"tooltip": "A ComfyUI native VIDEO (e.g. Load Video) to render out with ALL these Write settings (container, codec, colorspace, bit depth). Mutually exclusive with the image input; the movie's own frame rate is used for a video container."}),
             "alpha": ("MASK", {"tooltip": "Optional alpha channel -> RGBA (EXR / TIFF / PNG; ignored for JPEG). Wire OCIO Read's alpha output, or any MASK."}),
@@ -3481,7 +3597,8 @@ class OCIOWrite:
               bit_depth, auto_range, first_frame, last_frame, start_number, source_start, raw_data,
               output_folder, filename, colorspace_in_name=True, auto_colorspace=True, compression="zip",
               alpha=None, fps=24.0, render_nonce="", images=None, video=None, audio=None,
-              metadata="", write_audio=True):   # render_nonce: cache-buster (see INPUT_TYPES). images/video: mutually-exclusive inputs.
+              metadata="", write_audio=True,
+              view=_VIEW_NONE):   # render_nonce: cache-buster (see INPUT_TYPES). images/video: mutually-exclusive inputs.
         if video is not None:                                        # a native ComfyUI VIDEO -> render it out with ALL these Write settings (container, codec, colorspace, bit depth)
             images, _vfps, _vaudio = _video_unwrap(video)
             if _vfps and _vfps > 0:
@@ -3545,7 +3662,7 @@ class OCIOWrite:
                        "LumiPic V10 LogC4") and not raw_data \
                 and container != "video":
             still_format, bit_depth = "exr", "16f"                       # HDR presets always land as EXR 16f
-        img = images if raw_data else _convert(images, from_colorspace, output_colorspace)
+        img = images if raw_data else _convert_via_view(images, from_colorspace, output_colorspace, view)
         arr = img.detach().cpu().numpy().astype(np.float32)
         a_arr = None
         if alpha is not None:

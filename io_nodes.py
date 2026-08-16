@@ -2688,6 +2688,33 @@ def _video_color_tags(output_colorspace):
     # not name, which still lands on the documented sRGB default.
     if output_colorspace is None:
         return []
+    # AND THE SAME REASONING APPLIES TO EVERY SPACE CICP CANNOT DESCRIBE, which the paragraph above stated as a
+    # principle and then applied to exactly one branch. Measured 2026-08-15: 39 of this config's 55 colorspaces
+    # fell through to the sRGB default below, so an ACEScg ProRes left this machine tagged
+    # `primaries=bt709 transfer=iec61966-2-1 matrix=bt709` - the file declaring itself sRGB while holding linear
+    # AP1, and a player that trusts the tag applies the sRGB EOTF to linear data.
+    #
+    # It is not fixable by adding branches, because the codes do not exist. ITU-T H.273 (V4, 07/2024) Table 3
+    # defines TransferCharacteristics 0-18 with 19-255 reserved, and its only logarithmic entries are 9 (100:1)
+    # and 10 (100*sqrt(10):1) - there is no code for ARRI LogC3/LogC4, S-Log3, V-Log, Canon Log, Log3G10,
+    # D-Log, Apple Log, BMDFilm, DaVinci Intermediate, ACEScc, ACEScct or ADX. Table 2 defines ColourPrimaries
+    # 0-12 and 22, with no AP0, AP1, or any camera wide gamut.
+    #
+    # So: log and scene-linear say nothing at all, which is the honest answer. Note this is NOT because linear
+    # is untaggable - H.273 value 8 IS "Linear" - but because the primaries almost always are, and a file that
+    # names a transfer while lying about the gamut is no better off.
+    #
+    # Asked of the config through `encoding`, not matched against names. OCIO carries that attribute for
+    # exactly this kind of grouping, and the name-matching below is what made `Linear Rec.709 (sRGB)` pick up
+    # `trc=bt709` from the substring "rec.709" - scene-linear data tagged with a gamma curve.
+    try:
+        _require_ocio()
+        _cfg, _ = _resolve_config_keyed("")
+        _cs_obj = _cfg.getColorSpace(output_colorspace) if _cfg is not None else None
+        if _cs_obj is not None and (_cs_obj.getEncoding() or "") in ("log", "scene-linear"):
+            return []
+    except Exception:
+        pass                                     # a tagging decision must never take the write down
     cs = output_colorspace.lower()
     # HLG IS TESTED BEFORE PQ, and that order is the whole fix. The old predicate was `"2100" in cs or "pq" in cs`
     # -> PQ, and the config's HLG space is literally named "Rec.2100-HLG - Display", so it matched on "2100" and
@@ -2978,6 +3005,26 @@ def save_video(arr01, out_path, codec, fps, output_colorspace=None, audio_pcm=No
             f"{codec} is 8-bit by profile and cannot carry {output_colorspace}: ITU-R BT.2100 defines HLG and "
             f"PQ at 10 or 12 bits per sample. Use {_HDR_8BIT_PROFILES[codec]}, or pick an SDR output "
             f"colorspace such as 'Rec.1886 Rec.709 - Display'.")
+    # A FILE MUST NOT ASK FOR A DECODER THAT DOES NOT EXIST, EITHER. HEVC levels top out at 35 651 584 luma
+    # samples per frame across Levels 6, 6.1 and 6.2 (H.265 Table A.8). Above that, x265 does not reach for the
+    # 6.3 and 7.x levels the standard gained in 2023 - it does not implement them - and stamps the file
+    # **Level 8.5** instead, which is the "decoder, work it out yourself" value. Hardware decoders are not
+    # obliged to play that, and generally will not.
+    #
+    # Measured on this build rather than read off a table: 640x480 -> Level-3, 8192x4320 (35 389 440 samples,
+    # just under the ceiling) -> Level-6, 16384x8192 (134 217 728) -> Level-8.5. The spec number and the
+    # observed switch land on the same boundary.
+    #
+    # A warning, not a refusal: the file is valid, decodes in software, and a dome or large-format plate may be
+    # exactly what someone means to write. What they must not do is find out at playback that no hardware will
+    # take it.
+    if codec in ("hevc", "hevc_444_12") and (w * h) > 35651584:
+        logging.warning(
+            "OCIO Write: %dx%d is %d luma samples, past the %d ceiling of HEVC Levels 6.x. x265 does not "
+            "implement the 6.3 / 7.x levels added in 2023 and will stamp this file Level 8.5, which hardware "
+            "decoders are not required to play. It will decode in software. For hardware playback, write "
+            "ProRes or DNxHR, or keep the frame at or under 8192x4352.",
+            w, h, w * h, 35651584)
     enc = _video_encoder_args(codec, hdr=hdr)
     muxer = _MXF_MUXER.get(codec)
     cmd = [_FFMPEG, "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb48le",

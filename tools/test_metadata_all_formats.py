@@ -443,7 +443,14 @@ def check_mxf():
 
     audio = {"waveform": torch.zeros((1, 2, 48000)), "sample_rate": 48000}
     for codec, op, muxed in (("dnxhr_hq_mxf", "OP1a", True), ("dnxhr_hq_mxf_opatom", "OPAtom", False)):
-        res = write(container="video", video_codec=codec, output_folder="mxf_" + op, filename="q", audio=audio)
+        # A DISPLAY colorspace, not the file-wide ACEScg default, and that is the point of this block. What is
+        # under test is whether the MXF CONTAINER carries colour tags through, so the write has to be one that
+        # produces tags at all. Since 2026-08-15 log and scene-linear spaces are written with NO tags on
+        # purpose - CICP cannot describe them and a wrong description is worse than none - so an ACEScg write
+        # would come back untagged for a reason having nothing to do with MXF, and the check below would be
+        # measuring the wrong thing while looking like it had caught a container defect.
+        res = write(container="video", video_codec=codec, output_folder="mxf_" + op, filename="q", audio=audio,
+                    output_colorspace="Rec.1886 Rec.709 - Display")
         saved = res["result"][0]
         check(f"{op}: the file was written", os.path.isfile(saved) and os.path.getsize(saved) > 0,
               f"{os.path.basename(saved)} {os.path.getsize(saved) if os.path.isfile(saved) else 0} bytes")

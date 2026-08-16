@@ -73,12 +73,49 @@ WANT = {
     "Rec.1886 Rec.709 - Display": ("bt709",    "bt709",          "bt709"),
     "Gamma 2.4 Encoded Rec.709":  ("bt709",    "bt709",          "bt709"),
     "sRGB - Display":             ("bt709",    "iec61966-2-1",   "bt709"),
-    "ACEScg":                     ("bt709",    "iec61966-2-1",   "bt709"),   # not a display space: falls to the default
+    # ACEScg USED TO BE ASSERTED HERE AS ("bt709", "iec61966-2-1", "bt709"), with the comment "not a display
+    # space: falls to the default". The assertion was correct about the code and wrong about the intent: it
+    # pinned a ProRes full of linear AP1 declaring itself sRGB, which is the mistake this pack warns about
+    # everywhere else. Moved to SILENT below (2026-08-15).
     "":                           ("bt709",    "iec61966-2-1",   "bt709"),
     # P3 primaries.
     "Display P3 - Display":       ("smpte432", "iec61966-2-1",   "bt709"),
     "P3-D65 - Display":           ("smpte432", "iec61966-2-1",   "bt709"),
 }
+
+# SPACES THAT MUST BE WRITTEN WITH NO COLOUR TAGS AT ALL, because CICP has no way to describe them and a wrong
+# description is worse than none. ITU-T H.273 (V4, 07/2024) Table 3 defines TransferCharacteristics 0-18 with
+# 19-255 reserved, and its only log entries are 9 and 10, which are not any camera curve; Table 2 defines
+# ColourPrimaries 0-12 and 22, with no AP0, AP1 or camera wide gamut.
+#
+# Measured before the fix: 39 of the config's 55 colorspaces fell through to the sRGB default, so an ACEScg
+# ProRes shipped tagged primaries=bt709 transfer=iec61966-2-1 - the file declaring itself sRGB while holding
+# linear AP1. A player that trusts the tag then applies the sRGB EOTF to linear data.
+#
+# Asserted per ENCODING rather than per name, which is also how the fix decides: name matching is what made
+# "Linear Rec.709 (sRGB)" pick up trc=bt709 from the substring "rec.709".
+SILENT = ["ACEScg", "ACES2065-1", "ACEScc", "ACEScct", "ADX10", "ADX16",
+          "ARRI LogC3 (EI800)", "ARRI LogC4", "S-Log3 S-Gamut3", "Log3G10 REDWideGamutRGB",
+          "Linear Rec.709 (sRGB)", "Linear Rec.2020", "Linear ARRI Wide Gamut 4"]
+
+
+def check_silent(io, cfg):
+    # EVERY NAME IS CONFIRMED TO EXIST FIRST. A typo here would make the lookup return None, the fix would fall
+    # through to name matching, and the row would be testing the old behaviour while looking like it tested the
+    # new one. Caught for real on the first run: "Sony S-Log3 S-Gamut3" is not a name in this config, the space
+    # is called "S-Log3 S-Gamut3".
+    missing = [cs for cs in SILENT if cfg.getColorSpace(cs) is None]
+    assert not missing, f"these names are not in the config, so they test nothing: {missing}"
+    for cs in SILENT:
+        enc = cfg.getColorSpace(cs).getEncoding() or ""
+        assert enc in ("log", "scene-linear"), f"{cs!r} is encoding {enc!r}, not the kind this list is about"
+        tags = io._video_color_tags(cs)
+        assert tags == [], (
+            f"{cs!r} must be written with NO colour tags, got {tags}.\n"
+            "CICP cannot describe log or scene-linear, so any tag here is a false statement the file makes "
+            "about itself. If this fires, the encoding lookup in _video_color_tags stopped working and the "
+            "name-matching branches below it are answering instead.")
+    print(f"[PASS] {len(SILENT)} log / scene-linear spaces are written untagged rather than mislabelled")
 
 
 def check_table(io):
@@ -248,6 +285,9 @@ def main():
     tmp = tempfile.mkdtemp(prefix="ocio_vidtag_test_")
     io = _load_io_nodes(tmp)
     check_table(io)
+    import importlib.util as _iu, sys as _sys
+    _cfg, _ = _sys.modules["ocio_pkg.nodes"]._resolve_config_keyed("")
+    check_silent(io, _cfg)
     check_tag_whitelist(io)
     check_real_encode(io, tmp)
     check_preview_has_no_sidecar(io, tmp)

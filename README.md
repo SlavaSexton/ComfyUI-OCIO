@@ -48,7 +48,6 @@ more finely than the source's own container did - and either way, none of it was
 
 ---
 
-
 ![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-FFD27D.svg)
 ![ComfyUI](https://img.shields.io/badge/ComfyUI-custom_nodes-5BAEE3.svg)
 ![OpenColorIO](https://img.shields.io/badge/OpenColorIO-2.x-9aa3b2.svg)
@@ -778,12 +777,6 @@ recipe below writes EXR at `16f`. ACEScct itself is a published standard, ACES l
 toe, black at `0.0729`, defined in SMPTE S-2016-001 - so both ends of the chain are specified by someone other
 than us.
 
-<div align="center">
-
-<img src="docs/assets/ltx25_pipeline.svg" width="880" alt="The LTX-2.5 ACEScct pipeline in three columns. INPUT: OCIO Read of a folder of EXR frames in ACEScg scene-linear, into OCIO LogConvert set to Linear to Log with the ACEScct curve, giving ACEScct codes in 0 to 1, into OCIO VAE Encode, which runs at float32 and reports any value landing outside the range the VAE was trained on. MODEL: LTX-2.5, a 22B transformer with a 128-channel video VAE trained alongside it, and a separate audio VAE producing the synchronised track, which bypasses colour entirely. OUTPUT: OCIO VAE Decode in float32 with no clamp, giving ACEScct codes back, into OCIO LogConvert set to Log to Linear, giving scene-linear HDR, which feeds two writes: an EXR 16f or 32f master with compression set to zip for a lossless master, and a ProRes 4444 review movie carrying the audio track.">
-
-</div>
-
 ### What the stock path costs, on one clip
 
 The same LTX-2.5 generation, written two ways: through ComfyUI's own LTX-2.5 template, and through this pack.
@@ -818,7 +811,7 @@ it simply was never thrown away.
 
 <div align="center">
 
-<img src="docs/assets/ltx25_rec709_pipeline.svg" width="880" alt="The pipeline as a diagram. OCIO Read loads the plate as sRGB - Display. OCIO ColorSpace takes it to Rec.1886 Rec.709 - Display, the space the model works in. LTX-2.5 generates, and its audio VAE produces a synchronised track that bypasses colour. OCIO VAE Decode returns float32 with no clamp. Two OCIO Write nodes hang off that decode: the master, a 32-bit float EXR sequence taken to ACEScg through the ACES 1.3 output transform, and the review movie, 12-bit ProRes 4444 carrying the audio.">
+<img src="docs/assets/ltx25_pipeline.svg" width="880" alt="The pipeline as a diagram. OCIO Read loads the plate as sRGB - Display. OCIO ColorSpace takes it to Rec.1886 Rec.709 - Display, the space the model works in. LTX-2.5 generates, and its audio VAE produces a synchronised track that bypasses colour. OCIO VAE Decode returns float32 with no clamp. Two OCIO Write nodes hang off that decode: the master, a 32-bit float EXR sequence taken to ACEScg through the ACES 1.3 output transform, and the review movie, 12-bit ProRes 4444 carrying the audio.">
 
 *The whole route in one picture. Both writes hang off the same decode: one is the master the comp opens, the
 other is what you send out.*

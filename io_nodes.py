@@ -115,9 +115,21 @@ VIDEO_DISPLAY = "Rec.1886 Rec.709 - Display"
 
 
 def _auto_output_cs(container, still_format):
+    """The colorspace a freshly chosen container/format starts on. MUST stay in step with autoOutCs() in
+    web/ocio_io.js - if the two disagree the node shows one colorspace and the backend writes another.
+
+    DPX gets ADX10 because DPX is the film-scan container: it exists to carry printing density, and ADX10 is
+    the ACES encoding of exactly that (SMPTE ST 2065-3). Until 2026-08-15 it fell through to the display
+    default, which declares a scanned negative to be a finished picture on a monitor - the same class of error
+    as reading log as linear. ADX16 exists for 16-bit DPX, but the depth default is chosen separately, so this
+    stays on the 10-bit encoding and a hand-set depth is the artist's to match."""
     if container == "video":
         return VIDEO_DISPLAY
-    return "ACEScg" if still_format == "exr" else WORKING
+    if still_format == "exr":
+        return "ACEScg"
+    if still_format == "dpx":
+        return "ADX10"
+    return WORKING
 
 
 # --------------------------------------------------------------------------- loading

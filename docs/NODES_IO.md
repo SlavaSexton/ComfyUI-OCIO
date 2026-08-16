@@ -365,6 +365,64 @@ only form that conforms correctly downstream. Nothing wired, no timecode written
 | `audio` | AUDIO | A ComfyUI `AUDIO` dict (`{"waveform": [B,C,T] tensor, "sample_rate": int}`). | none | `LoadAudio`, `LTXVAudioVAEDecode` (named explicitly in the tooltip), or any AUDIO-producing node. A `video` container muxes it in (24-bit PCM for `.mov`/MXF OP1a, AAC for `.mp4`), trimmed to exactly the frame range being written. A `sequence` gets a sidecar `.wav` instead, because EXR/TIFF/PNG hold no audio track, and so does an MXF OPAtom write, which by design holds exactly one essence per file. |
 | `metadata` | STRING | JSON from `OCIO Read`'s "metadata" output. | none | **`forceInput: true`**: unlike every other widget on this node, this field never renders as a text box, only as a wire-only socket. Wire `OCIO Read`'s slot-5 output here to carry the plate's camera/lens/editorial identity **and its start timecode** into the written file - this wire is the only route a timecode has, since the node has no field for one. Attributes describing a specific pixel state (C2PA manifests, ST 2086/2094 HDR mastering data, an ACES AMF, an MHL hash list) are dropped rather than copied, because a colorspace conversion makes them false; container attributes (`dataWindow`, `channels`, `compression`) are never copied either, since the writer recomputes those from the real pixels. The fields this node re-authors for itself (chromaticities, frame rate, frame counter, timecode) are stripped from the incoming set in **any spelling** and written fresh, so a plate that calls its code `timecode` where we call it `timeCode` cannot leave two conflicting timecodes in one header. Confirmed on a real write: a test attribute named to match the "mastering" filter was silently removed from both the EXR header and the sidecar JSON, while unrecognized custom attributes and the seven identity fields (reel, scene, shot, take, camera, lens, timecode) passed through intact. Confirmed on a real camera master (DaVinci Resolve MXF, ProRes 4444 XQ): all twelve of its attributes reached the EXR header, with a single, correctly typed timecode advancing per frame. |
 | `write_audio` | BOOLEAN | true / false | `true` | Off: no audio at all is written, not even as a sidecar `.wav`, regardless of what's wired or what a native `Video` input carries. On (default): a wired `audio` input wins over a native `Video`'s own track. This is the only way to *decline* a `Video` input's own audio, since there's no wire to disconnect for it. |
+| `view` | COMBO (the config's views, plus a do-nothing entry) | `(none) colorimetric, no tone map` first, then every view the loaded config offers | `(none)` | **Only does anything when one of your two colorspaces is display-referred and the other is scene-referred.** On every other pair it is ignored outright. Read the section below before using it. |
+
+### `view`: the one control that changes what the picture looks like
+
+Every other widget on this node decides where the file goes, what wraps it, or how many bits it has. This one
+decides what the image *is*, so it gets its own section.
+
+**When it applies.** Only on a pair that crosses between scene-referred and display-referred. The node asks
+OCIO which side each colorspace sits on, so this is not a list of names anyone maintains:
+
+| pair | crosses? | does `view` do anything? |
+| --- | --- | --- |
+| `ACEScg` -> `Rec.1886 Rec.709 - Display` | yes, scene to display | **yes** |
+| `Rec.1886 Rec.709 - Display` -> `ACEScg` | yes, display to scene | **yes** |
+| `ARRI LogC3 (EI800)` -> `ACEScg` | no, both scene-referred | no, ignored |
+| `ACEScg` -> `ACEScct` | no, both scene-referred | no, ignored |
+| `sRGB - Display` -> `Rec.1886 Rec.709 - Display` | no, both display-referred | no, ignored |
+
+So every camera-log conversion, everything between ACES spaces, and every display-to-display re-encode is
+untouched by this widget. If your work is one of those, you never need to think about it.
+
+**What the two answers are, in numbers.** Writing a movie from an `ACEScg` render:
+
+| scene-linear in | `(none)` | `ACES 2.0 - SDR 100 nits (Rec.709)` |
+| --- | --- | --- |
+| 0.18 (mid grey) | 0.489436 | 0.383116 |
+| 1.0 | 1.000006 | 0.722 |
+| 4.0 | **1.781807** | 0.905089 |
+| 16.0 | **3.174806** | 0.976046 |
+
+The bold numbers are the problem. A Rec.709 container encodes up to 1.0, so 1.78 and 3.17 are both written as
+white and every highlight above diffuse white lands on the same value. With a view they roll off instead, and
+nothing reaches 1.0 until scene-linear around 128. **For a review movie out of a scene-linear render, pick a
+view.**
+
+Reading the other way, a Rec.709 picture taken back to `ACEScg` for a master: mid-grey 0.5 becomes 0.189468
+with `(none)` and 0.324827 with a view, and the ceiling goes from 1.0 to about 128. The second is what Nuke
+produces when its Read node is set to a display colorspace in an ACES project, and it is what a compositor
+expects to receive.
+
+**Why `(none)` is still the default, and when it is right.** It is what this pack has always done, and it is a
+real named operation, not a mistake: OCIO calls the transform behind it `Un-tone-mapped`, and the result is
+bit-identical to Nuke's own `Utility - Rec.709 - Display`. Keep it for a technical re-encode where the values
+must not move, for material that is already scene-referred but tagged as display, and any time you have
+already applied an output transform yourself with `OCIO Display` - applying it twice is worse than not
+applying it at all.
+
+**What the entries mean.** `Un-tone-mapped` and `Video (colorimetric)` produce exactly the same numbers as
+`(none)`; they appear because the list is read from the config rather than curated. `Raw` leaves values alone.
+The `ACES 2.0 - SDR 100 nits (Rec.709)` entry is the ordinary cinema render for a normal monitor; the `P3 D65`
+and `HDR ... nits` entries target other displays and are wrong for a Rec.709 deliverable. A view belongs to a
+display, so choosing one that does not exist on the display your pair resolves to is refused with a message
+naming what that display does offer, rather than silently ignored.
+
+**On another config the names differ, and that is intended.** The list comes from whichever OCIO config is
+loaded. On ACES 2.0 the SDR view is `ACES 2.0 - SDR 100 nits (Rec.709)`; on an ACES 1.3 config it is
+`ACES 1.0 - SDR Video`, and the numbers differ too - the 1.x output transform tops out near 16.29 where 2.0
+reaches 128. Neither is wrong; they are different versions of the standard.
 
 ### Every output
 

@@ -80,9 +80,20 @@ const CS_ACESCG = "ACEScg";
 // disagree, the node shows one colourspace and the backend writes another. Fixed 2026-08-12.
 const CS_REC709_DISPLAY = "Rec.1886 Rec.709 - Display";
 function autoInCs(filename) { return isExr(filename) ? CS_ACESCG : CS_SRGB; }
+// DPX gets ADX10, and that is not a preference. DPX is the film-scan container: it exists to carry printing
+// density, and ADX10 is the ACES encoding of exactly that (SMPTE ST 2065-3). Falling through to sRGB - Display,
+// which is what it did before, declares a scanned negative to be a finished picture on a monitor - the same
+// class of error as reading log as linear, and it mis-stated every plate written this way.
+//
+// ADX16 exists for 16-bit DPX, but the depth default is chosen separately (BIT_DEF), so this stays on the
+// 10-bit encoding, which is what a 10-bit scan and a Cineon-lineage file are. Change the depth by hand and the
+// colorspace is yours to match; this only fills a sane starting point, and any manual edit wins over it.
+const CS_ADX10 = "ADX10";
 function autoOutCs(container, stillFormat) {
     if (container === "video") return CS_REC709_DISPLAY;
-    return stillFormat === "exr" ? CS_ACESCG : CS_SRGB;
+    if (stillFormat === "exr") return CS_ACESCG;
+    if (stillFormat === "dpx") return CS_ADX10;
+    return CS_SRGB;
 }
 
 // bit-depth options + default per still format

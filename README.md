@@ -811,7 +811,7 @@ it simply was never thrown away.
 
 <div align="center">
 
-<img src="docs/assets/ltx25_pipeline.svg" width="880" alt="The pipeline as a diagram. OCIO Read loads the plate as sRGB - Display. OCIO ColorSpace takes it to Rec.1886 Rec.709 - Display, the space the model works in. LTX-2.5 generates, and its audio VAE produces a synchronised track that bypasses colour. OCIO VAE Decode returns float32 with no clamp. Two OCIO Write nodes hang off that decode: the master, a 32-bit float EXR sequence taken to ACEScg through the ACES 1.3 output transform, and the review movie, 12-bit ProRes 4444 carrying the audio.">
+<img src="docs/assets/ltx25_pipeline_v13.svg" width="880" alt="The pipeline as a diagram. OCIO Read loads the plate as sRGB - Display. OCIO ColorSpace takes it to Rec.1886 Rec.709 - Display, the space the model works in. LTX-2.5 generates, and its audio VAE produces a synchronised track that bypasses colour. OCIO VAE Decode returns float32 with no clamp. Two OCIO Write nodes hang off that decode: the master, a 32-bit float EXR sequence taken to ACEScg through the ACES 1.3 output transform, and the review movie, 12-bit ProRes 4444 carrying the audio.">
 
 *The whole route in one picture. Both writes hang off the same decode: one is the master the comp opens, the
 other is what you send out.*

@@ -195,236 +195,12 @@ function crossingOf(enc, fromCs, outCs) {
 // Frontend only, and that is load-bearing. INPUT_TYPES is static and cannot see the current container, so a
 // backend list is impossible anyway; more importantly a backend filter would make ComfyUI reject the whole
 // prompt with value_not_in_list, killing saved workflows outright rather than warning about them.
-// ---- the written-sequence flipbook -----------------------------------------------------------------------
-//
-// A DOM widget holding one <img>, driven by a frame clock, each frame fetched from /ocio/thumb - which
-// renders it server-side through OCIO from the file that was just written. The Read node has done this since
-// July; this is the same idea on the other end of the graph.
-//
-// Deliberately simpler than Read's player in two ways. It prefetches nothing: a write has already finished,
-// so the frames are on a local disk and warm, where Read is often scrubbing a 4K plate it has never touched.
-// And it has no scrub bar, because there is nothing to choose - a write shows what it wrote, start to end.
-function writeThumbUrl(seq, frameNo, bust) {
-    const q = {
-        src: seq.src, frame: String(frameNo),
-        in_cs: seq.cs,                 // what the FILE holds
-        out_cs: CS_SRGB,               // what a browser can show
-        raw: "0", full: "0",
-    };
-    // Refresh has to reach DISK, and every frame URL here is byte-identical from one pass to the next, so the
-    // browser would serve the whole strip from its own cache and the button would do nothing visible. The
-    // counter changes the URL without changing what is asked for.
-    if (bust) q._ = String(bust);
-    return "/ocio/thumb?" + new URLSearchParams(q).toString();
-}
-
-// ---- OCIO Write's own viewport ------------------------------------------------------------------------
-//
-// The node draws ALL THREE of its previews itself - the sequence flipbook, the movie and the still - in one
-// DOM widget it owns, rather than handing anything back as `images` for the front end to render.
-//
-// That is not a preference. A preview rendered by the front end lives in markup this pack does not own, and on
-// the Vue frontend it is a Vue-managed element whose classes are its own business; nothing in an extension can
-// reliably collapse it. So the movie had a player and a sequence had none, and neither could be folded away
-// the way OCIO Read's Viewer can. One widget, one Viewer toggle, one transport, and the behaviour is the same
-// on every frontend.
-//
-// The transport is deliberately small next to OCIO Read's: play / pause, stop, and a scrub. Read has in/out
-// points, reverse, an exposure strip and a GPU frame cache because it is a grading viewport over a plate it
-// has never touched. This looks at a write that has just finished, on a local disk, and its job is to answer
-// "is that the clip I meant to make".
-const WRITE_MEDIA_MAX = 220;                       // px; the strip never grows past this, whatever the node width
-
-function _writeBtn(label, title) {
-    const b = document.createElement("button");
-    b.textContent = label; b.title = title;
-    b.style.cssText = "min-width:28px;height:22px;padding:0 6px;border:0;border-radius:3px;background:#2b2b40;" +
-                      "color:#cde;cursor:pointer;font:13px/1 sans-serif;";
-    b.onmouseenter = () => b.style.background = "#39395a";
-    b.onmouseleave = () => b.style.background = "#2b2b40";
-    return b;
-}
-
-function ensureWriteView(node) {
-    if (node._ocioView) return node._ocioView;
-    const box = document.createElement("div");
-    box.style.cssText = "position:relative;width:100%;display:flex;align-items:center;justify-content:center;min-height:60px";
-    const img = document.createElement("img");
-    img.style.cssText = "max-width:100%;max-height:" + WRITE_MEDIA_MAX + "px;image-rendering:auto;display:none";
-    const video = document.createElement("video");
-    video.style.cssText = "max-width:100%;max-height:" + WRITE_MEDIA_MAX + "px;display:none";
-    video.playsInline = true; video.loop = true;
-    // A note that REPLACES the picture when it cannot be read, rather than leaving the last good frame up with
-    // the clock still running. A preview that silently freezes on a stale frame is worse than no preview.
-    const err = document.createElement("div");
-    err.style.cssText = "display:none;padding:10px;color:#e6a;font:12px sans-serif;text-align:center";
-    // Persistent top-left square, the same one OCIO Player's viewport carries and for the same reason: what is
-    // on disk can change under a preview that is already drawn - a re-render into the same folder, a retake
-    // from another graph - and the only honest way back is to re-read it.
-    const refresh = document.createElement("button");
-    refresh.textContent = "↻";
-    refresh.title = "Re-read what was written, from disk";
-    refresh.style.cssText = "position:absolute;top:6px;left:6px;z-index:5;width:26px;height:26px;padding:0;border:0;" +
-        "border-radius:4px;background:" + OV_BASE + ";color:#cde;cursor:pointer;font:16px/1 sans-serif;" +
-        "box-shadow:0 1px 4px rgba(0,0,0,0.5);";
-    refresh.onmouseenter = () => refresh.style.background = "rgba(57,57,90,0.95)";
-    refresh.onmouseleave = () => refresh.style.background = OV_BASE;
-    refresh.onclick = () => { node._ocioViewBust = Date.now(); showWriteView(node); };
-    box.append(img, video, err, refresh);
-
-    const bar = document.createElement("div");
-    bar.style.cssText = "display:none;align-items:center;gap:6px;padding:4px 6px;width:100%;box-sizing:border-box";
-    const play = _writeBtn("▶", "Play / pause");
-    const stop = _writeBtn("■", "Stop and rewind to the first frame");
-    const slider = document.createElement("input");
-    slider.type = "range"; slider.min = "0"; slider.max = "100"; slider.step = "1"; slider.value = "0";
-    slider.style.cssText = "flex:1;min-width:40px;accent-color:#6a7;cursor:pointer";
-    const counter = document.createElement("span");
-    counter.style.cssText = "color:#9ab;font:11px monospace;min-width:74px;text-align:right";
-    bar.append(play, stop, slider, counter);
-
-    const wrap = document.createElement("div");
-    wrap.style.cssText = "width:100%;display:flex;flex-direction:column";
-    wrap.append(box, bar);
-    const w = node.addDOMWidget("__ocio_view", "div", wrap, { serialize: false });
-
-    const v = node._ocioView = { wrap, box, img, video, err, refresh, bar, play, stop, slider, counter, widget: w,
-                                mode: null, cur: 0, playing: false, timer: null };
-    play.onclick = () => writeViewPlay(node, !v.playing);
-    stop.onclick = () => { writeViewPlay(node, false); writeViewGoto(node, 0); };
-    slider.oninput = () => { writeViewPlay(node, false); writeViewGoto(node, parseInt(slider.value, 10) || 0); };
-    video.onloadedmetadata = () => { if (v.mode === "mov") writeViewSyncMov(node); };
-    video.ontimeupdate = () => { if (v.mode === "mov" && !v.scrubbing) writeViewSyncMov(node); };
-    return v;
-}
-
-function writeViewFrames(node) {                    // how many positions the transport has, per mode
-    const v = node._ocioView, s = node._ocioSeq;
-    if (!v) return 0;
-    if (v.mode === "seq" && s) return Math.max(1, s.last - s.first + 1);
-    if (v.mode === "mov") return Math.max(1, Math.round((v.video.duration || 0) * (node._ocioMovFps || 24)));
-    return 1;
-}
-
-function writeViewGoto(node, i) {
-    const v = node._ocioView; if (!v) return;
-    const n = writeViewFrames(node);
-    v.cur = Math.max(0, Math.min(n - 1, i | 0));
-    if (v.mode === "seq") {
-        const s = node._ocioSeq;
-        v.img.src = writeThumbUrl(s, s.first + v.cur, node._ocioViewBust);
-        v.counter.textContent = (s.first + v.cur) + " / " + s.last;
-    } else if (v.mode === "mov") {
-        const fps = node._ocioMovFps || 24;
-        if (Math.abs((v.video.currentTime || 0) - v.cur / fps) > 1 / (2 * fps)) v.video.currentTime = v.cur / fps;
-        v.counter.textContent = (v.cur + 1) + " / " + n;
-    }
-    v.slider.max = String(Math.max(0, n - 1));
-    v.slider.value = String(v.cur);
-}
-
-function writeViewSyncMov(node) {                   // the <video> is the clock in movie mode; the bar follows it
-    const v = node._ocioView; if (!v || v.mode !== "mov") return;
-    const fps = node._ocioMovFps || 24, n = writeViewFrames(node);
-    v.cur = Math.max(0, Math.min(n - 1, Math.round((v.video.currentTime || 0) * fps)));
-    v.slider.max = String(Math.max(0, n - 1));
-    v.slider.value = String(v.cur);
-    v.counter.textContent = (v.cur + 1) + " / " + n;
-    v.playing = !v.video.paused;
-    v.play.textContent = v.playing ? "⏸" : "▶";
-}
-
-function writeViewPlay(node, on) {
-    const v = node._ocioView; if (!v) return;
-    v.playing = !!on;
-    v.play.textContent = v.playing ? "⏸" : "▶";
-    if (v.timer) { clearInterval(v.timer); v.timer = null; }
-    if (v.mode === "mov") { if (on) v.video.play().catch(() => {}); else v.video.pause(); return; }
-    if (v.mode !== "seq" || !on) return;
-    const fps = (node._ocioSeq && node._ocioSeq.fps) || 24;
-    // A frame clock rather than requestAnimationFrame: each frame here is a server round trip, so pacing by
-    // wall time is both closer to the real rate and kinder to the machine than redrawing as fast as it can.
-    v.timer = setInterval(() => {
-        const n = writeViewFrames(node);
-        writeViewGoto(node, (v.cur + 1) % n);
-    }, Math.max(40, 1000 / fps));
-}
-
-function writeViewStop(node) {                      // tear the clock down; called before every re-show and on removal
-    const v = node._ocioView; if (!v) return;
-    if (v.timer) { clearInterval(v.timer); v.timer = null; }
-    v.playing = false; v.play.textContent = "▶";
-    try { v.video.pause(); } catch (e) { /* not playing */ }
-}
-
-// Draw whatever the last execution produced. mode comes from what the SERVER sent, never guessed from widgets:
-// a widget can be edited after the render, and then the strip would describe a file that was never written.
-function showWriteView(node) {
-    const v = ensureWriteView(node);
-    writeViewStop(node);
-    v.err.style.display = "none";
-    v.img.style.display = "none";
-    v.video.style.display = "none";
-    v.bar.style.display = "none";
-    const seq = node._ocioSeq, mov = node._ocioMov, still = node._ocioStill;
-    if (seq && seq.last > seq.first) {              // a single frame is a still, not a clip
-        v.mode = "seq";
-        v.img.style.display = "";
-        v.bar.style.display = "flex";
-        v.img.onerror = () => {
-            writeViewStop(node);
-            v.img.style.display = "none"; v.bar.style.display = "none";
-            v.err.textContent = "cannot read the written frames back for preview - they are on disk at " + seq.src;
-            v.err.style.display = "";
-        };
-        writeViewGoto(node, 0);
-        writeViewPlay(node, true);                  // a clip that has just been written should show that it moves
-    } else if (mov) {
-        v.mode = "mov";
-        v.video.style.display = "";
-        v.bar.style.display = "flex";
-        const want = mov + (node._ocioViewBust ? (mov.indexOf("?") < 0 ? "?" : "&") + "_=" + node._ocioViewBust : "");
-        if (v.video.src !== want) v.video.src = want;
-        v.video.onerror = () => {
-            writeViewStop(node);
-            v.video.style.display = "none"; v.bar.style.display = "none";
-            v.err.textContent = "the preview copy of the movie could not be played; the master is on disk";
-            v.err.style.display = "";
-        };
-        v.video.play().then(() => writeViewSyncMov(node)).catch(() => {});
-    } else if (still) {
-        v.mode = "still";
-        v.img.style.display = "";
-        v.img.onerror = () => {
-            v.img.style.display = "none";
-            v.err.textContent = "the written still could not be previewed; it is on disk";
-            v.err.style.display = "";
-        };
-        v.img.src = still + (node._ocioViewBust ? (still.indexOf("?") < 0 ? "?" : "&") + "_=" + node._ocioViewBust : "");
-    } else {
-        v.mode = null;
-    }
-    applyWriteViewerCollapse(node);
-    node.setDirtyCanvas(true, true);
-}
-
-function applyWriteViewerCollapse(node) {
-    const v = node._ocioView; if (!v) return;
-    const c = !!node._ocioWriteCollapsed;
-    v.wrap.style.display = c ? "none" : "flex";
-    if (c) writeViewStop(node);
-    if (v.widget) v.widget.computeSize = () => [0, c || !v.mode ? 0 : WRITE_MEDIA_MAX + 34];
-    node.setSize([node.size[0], node.computeSize()[1]]);
-}
-
-// A ComfyUI temp-dir entry ({filename, subfolder, type}) as a URL the browser can fetch.
-function writeViewUrl(entry) {
-    if (!entry) return null;
-    if (typeof entry === "string") return entry;
-    return "/api/view?" + new URLSearchParams({
-        filename: entry.filename || "", subfolder: entry.subfolder || "", type: entry.type || "temp",
-    }).toString();
-}
+// OCIO Write has NO preview of its own, and that is a decision rather than an omission (2026-08-16).
+// It briefly grew one: a flipbook of the written frames, a movie player, a transport and a collapsible
+// Viewer. All of it is gone. The pack already has a viewer and it is a better one - OCIO Player is a
+// float viewport with in / out points, reverse, an exposure strip, audio metering and a GPU frame
+// cache - and a second, smaller player on every Write node turned a graph of four writes into a column
+// of four video players. The node reports in text and writes files; wire OCIO Player to look.
 
 async function applyCsNarrowing(node) {
     const w = W(node, "output_colorspace");
@@ -2448,7 +2224,14 @@ function playerVideoStart(node, p, path, meta) {
     if (!_playerInitGL(p)) { p.canvas.style.display = "none"; p.empty.style.display = "flex"; p.empty.firstChild.textContent = "WebGL2 unavailable - cannot show the viewport"; return; }
     _playerRefreshLut(node, p);                              // bake the in_cs -> out_cs display LUT
     p.empty.style.display = "none"; p.canvas.style.display = "";
-    p.pb.showTransport = true; if (p.transport) { p.transport.bar.style.display = "flex"; if (p.transport.audioRow) p.transport.audioRow.style.display = "none"; }
+    // AUDIO ROW ON, because in this mode there is real audio to meter: the Player is driving a <video>
+    // element over the source file (or its proxy), exactly as OCIO Read's viewer does, and that element
+    // carries the track. It was hidden here while the identical Read path showed it, so the same clip metered
+    // and played sound in one node and was silent in the other - a difference with no reason behind it. The
+    // mute button starts muted, so nothing makes noise until it is asked to. (The float-frame path further
+    // down keeps the row hidden, and that one is right: half-float textures are pictures, with no track at
+    // all.)
+    p.pb.showTransport = true; if (p.transport) { p.transport.bar.style.display = "flex"; if (p.transport.audioRow) p.transport.audioRow.style.display = "flex"; }
     if (p.refreshOverlay) { p.refreshOverlay._stale = false; p.refreshOverlay.style.background = "rgba(40,40,64,0.85)"; p.refreshOverlay.title = "Refresh this viewport"; p.refreshOverlay.style.display = ""; }   // persistent top-left Refresh square in video mode: re-reads the current upstream file (switch the Load Video file -> click)
     _setVideoOutput(node, true);                             // streaming a video (any trigger) -> expose the VIDEO output
     renderPlayerMeta(node, { resolution: meta.res || "-", total: meta.frames || 0, cached: meta.frames || 0, fps: meta.fps || 24, input_cs: W(node, "input_colorspace")?.value });   // show meta now; loadedmetadata fills in the resolution
@@ -3064,21 +2847,9 @@ app.registerExtension({
                 }
                 showWidget(this, W(this, "render_nonce"), false);   // internal cache-buster - hidden with a true collapse (no blank row)
                 this.addWidget("button", "Output Folder", null, () => openFolderDialog(this), { serialize: false });
-                this.addWidget("button", "▶ Render", null, () => ocioWriteRender(this), { serialize: false });
-                // Collapsible Viewer, matching OCIO Read's: the same chevron, down when open and right when
-                // closed. It folds the preview and its transport away and gives the height back, which is the
-                // difference between a graph of Write nodes you can read and a column of video players. Only
-                // possible because this node draws its own preview (see ensureWriteView); a front-end-rendered
-                // one cannot be collapsed from an extension at all. Runtime-only, deliberately not serialized:
-                // reopening a workflow shows the picture, because a hidden viewport is not a setting worth
-                // inheriting from whoever saved the file.
-                const viewerToggle = this.addWidget("button", "▾ Viewer", null, () => {
-                    node._ocioWriteCollapsed = !node._ocioWriteCollapsed;
-                    _setWidgetLabel(viewerToggle, (node._ocioWriteCollapsed ? "▸" : "▾") + " Viewer");
-                    applyWriteViewerCollapse(node);
-                    node.setDirtyCanvas(true, true);
-                }, { serialize: false });
-                viewerToggle._ocioAlwaysVisible = true;
+                // ▶ Render is the LAST widget on this node, deliberately. There is no Viewer toggle because
+                // there is nothing to view: OCIO Write has no preview of its own (see the note at the top of
+                // this file). Anything added below Render pushes the button an artist reaches for most.
                 setTimeout(() => { applyContainer(); syncWriteFromUpstream(node); resolveAutoProfile(node); }, 0);
                 return r;
             };
@@ -3153,35 +2924,9 @@ app.registerExtension({
                 const mt = message && message.meta;
                 this._ocioAudio = au ? (Array.isArray(au) ? au[0] : au) : null;
                 this._ocioMeta = mt ? (Array.isArray(mt) ? mt[0] : mt) : null;
-                // WHAT WAS WRITTEN, DRAWN BY THIS NODE. A sequence flips through the real frames rather than an
-                // H.264 copy of them: each is rendered server-side through OCIO by /ocio/thumb, the same route
-                // OCIO Read's viewer uses. thumb_frame takes the written folder and a frame NUMBER directly.
-                // A movie and a still arrive under `mov` / `still` as temp-dir entries, and are drawn by the
-                // same widget, so one Viewer toggle and one transport cover every container.
-                //
-                // Exactly one of the three is ever set, because the server sets exactly one.
-                const sq = message && message.seq_src;
-                if (sq) {
-                    this._ocioSeq = {
-                        src: Array.isArray(sq) ? sq[0] : sq,
-                        first: parseInt((message.seq_first || [1])[0], 10),
-                        last: parseInt((message.seq_last || [1])[0], 10),
-                        fps: parseFloat((message.seq_fps || [24])[0]) || 24,
-                        // The file holds output_colorspace; the browser needs sRGB. Read at execute time
-                        // rather than at draw time, so a later widget edit cannot make the strip disagree
-                        // with the frames it is showing.
-                        cs: W(this, "output_colorspace")?.value || "",
-                    };
-                } else {
-                    this._ocioSeq = null;
-                }
-                const mv = message && message.mov, st = message && message.still;
-                this._ocioMov = mv ? writeViewUrl(Array.isArray(mv) ? mv[0] : mv) : null;
-                this._ocioStill = st ? writeViewUrl(Array.isArray(st) ? st[0] : st) : null;
-                // The movie's rate comes from the widget the write used, so the frame counter counts the frames
-                // that were written rather than guessing 24 for everything.
-                this._ocioMovFps = parseFloat(W(this, "fps")?.value) || 24;
-                showWriteView(this);
+                // Nothing here draws a picture. What OCIO Write reports after a run is text: the frame count,
+                // the colour transform, the metadata verdict and the audio verdict, as corner text on the
+                // canvas and as toasts on Vue frontends where that corner text is never drawn.
                 if (c) {
                     this._ocioWrote = Array.isArray(c) ? c[0] : c; this.setDirtyCanvas(true, true);
                     // Vue frontends do not draw the canvas "wrote N" corner text; a toast carries the count there

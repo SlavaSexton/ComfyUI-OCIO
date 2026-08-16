@@ -1,24 +1,22 @@
-"""Regression: OCIO Write shows exactly ONE preview per write (run: python tools/test_write_preview_single.py).
+"""Regression: OCIO Write returns NO preview, for any container (run: python tools/test_write_preview_single.py).
 
-A written sequence got TWO previews on the node (2026-08-15): the flipbook of the real frames, and above/below
-it an H.264 proxy of the same frames. They do not agree - the proxy is 8-bit and carries no colour conversion,
-so it reads darker than the frames it claims to preview - and nothing on the node says which one is the master.
-An artist reading colour off the wrong one is the whole failure this pack exists to prevent.
+This node writes files and reports in text. It does not show pictures, and that is a decision rather than an
+omission: the pack already has a viewer, and OCIO Player is a better one - a float viewport with in / out
+points, reverse, an exposure strip, audio metering and a GPU frame cache. A second, smaller player living on
+every Write node turned a graph of four writes into a column of four video players.
 
-Neither preview was wrong on its own; shipping both was. So the rule under test is a COUNT, not a value:
+It got there the long way. The node has carried, at different times, a still PNG, an animated H.264 copy of
+the clip, a flipbook of the real written frames, its own transport and a collapsible Viewer. Each was added
+for a good local reason and the sum was wrong, which is exactly the kind of thing that creeps back one
+harmless-looking key at a time. So the rule under test is about what is ABSENT:
 
-1. A SEQUENCE ships the flipbook (seq_src + range + fps) and NO proxy. thumb_frame reads the written frames
-   with _read_still, the same reader OCIO Read uses, so every still format this branch writes is one the
-   flipbook can serve back - the proxy has nothing left to add.
+1. No preview key of any kind, whatever the container - not `images`, `animated`, `mov`, `still`, or the
+   `seq_*` set that described a frame range to flip through.
+2. The text report survives, because that is not a preview. `count`, `ocio`, `saved` and `meta` carry the
+   frame count, the colour transform, the file written and the metadata verdict - including anything DROPPED
+   or CLIPPED, which is a delivery fact an artist has to be told.
 
-2. A VIDEO still ships the proxy, and no flipbook. A movie is one file, not a numbered range; /ocio/thumb can
-   only hand back its FIRST frame, so a flipbook there would be a still pretending to be a clip.
-
-3. A SINGLE-FRAME sequence ships neither. One frame is a still: the node's own thumb already shows it, and an
-   H.264 clip of one frame is a video that cannot move.
-
-The counts are read off the real return of OCIOWrite.write(), not from the source text - a preview key that is
-merely PRESENT in the file proves nothing about which branch sets it.
+A regression here is quiet by nature: a preview reappearing looks like a feature, not a fault.
 """
 import importlib.util
 import os
@@ -29,6 +27,10 @@ import types
 os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Every key the node has ever used to hand a picture to the front end. Named individually rather than as
+# "anything unexpected", so the test says WHICH old preview came back.
+PREVIEW_KEYS = ("images", "animated", "mov", "still", "seq_src", "seq_first", "seq_last", "seq_fps")
 
 
 def _load_io_nodes(tmp):
@@ -53,78 +55,61 @@ def _write(io, frames, **kw):
     imgs[..., 0], imgs[..., 1], imgs[..., 2] = 0.40, 0.60, 0.10
     args = dict(profile="none", from_colorspace="sRGB - Display", output_colorspace="ACEScg",
                 container="sequence", still_format="exr", video_codec="prores_4444", bit_depth="16f",
-                auto_range=False, first_frame=1, last_frame=0, start_number=1001, source_start=1,
-                raw_data=False, filename="prev", fps=23.976, images=imgs)
+                compression="zip", auto_range=False, first_frame=1, last_frame=0, start_number=1001,
+                source_start=1, raw_data=False, colorspace_in_name=False, auto_colorspace=False,
+                filename="prev", fps=23.976, images=imgs)
     args.update(kw)
     res = io.OCIOWrite().write(**args)
     return (res or {}).get("ui", {}) or {}
 
 
-def check_sequence_is_flipbook_only(io):
-    """A multi-frame sequence: the real frames, and nothing standing beside them."""
-    ui = _write(io, 3, output_folder="$OUTPUT/seq3")
-    assert "seq_src" in ui, f"a 3-frame sequence lost its flipbook; ui keys were {sorted(ui)}"
-    assert "mov" not in ui, (
-        f"TWO previews on one node: the flipbook AND the H.264 proxy; ui keys were {sorted(ui)}")
-    # The range has to describe the files that exist, or the flipbook asks /ocio/thumb for frames it will 404 on.
-    first, last = int(ui["seq_first"][0]), int(ui["seq_last"][0])
-    assert (first, last) == (1001, 1003), f"flipbook range {first}..{last} does not match the 3 frames written"
-    folder = ui["seq_src"][0]
-    on_disk = sorted(f for f in os.listdir(folder) if f.endswith(".exr"))
-    assert len(on_disk) == 3, f"flipbook points at {folder}, which holds {on_disk}"
-    assert float(ui["seq_fps"][0]) > 0, "a flipbook with no rate plays at whatever the browser feels like"
+def _assert_no_preview(ui, label):
+    back = [k for k in PREVIEW_KEYS if k in ui]
+    assert not back, (
+        f"the {label} branch is handing back a preview again ({', '.join(back)}); ui keys were {sorted(ui)}. "
+        "OCIO Write reports in text; OCIO Player is the viewer.")
 
 
-def check_video_is_proxy_only(io):
-    """A movie: the proxy, and no flipbook - /ocio/thumb cannot scrub a single container file."""
-    ui = _write(io, 3, container="video", video_codec="h264", output_folder="$OUTPUT/mov")
-    assert "mov" in ui, f"a movie lost its playable preview; ui keys were {sorted(ui)}"
-    assert "seq_src" not in ui and "still" not in ui, (
-        f"a movie was handed a second preview it cannot serve; ui keys were {sorted(ui)}")
+def check_sequence(io):
+    _assert_no_preview(_write(io, 3, output_folder="$OUTPUT/seq3"), "sequence")
 
 
-def check_single_frame_has_no_clip(io):
-    """One frame is a still: its own PNG, and nothing that pretends to move."""
-    ui = _write(io, 1, output_folder="$OUTPUT/one")
-    assert "seq_src" not in ui, f"a single frame was described as a flipbook; ui keys were {sorted(ui)}"
-    assert "mov" not in ui, f"a single frame was given a moving preview; ui keys were {sorted(ui)}"
-    assert "still" in ui, f"a single frame lost its preview; ui keys were {sorted(ui)}"
+def check_video(io):
+    _assert_no_preview(_write(io, 3, container="video", video_codec="h264",
+                              output_folder="$OUTPUT/mov"), "movie")
 
 
-def check_nothing_is_handed_to_the_front_end_to_draw(io):
-    """No container returns `images`, and that is the point.
+def check_single_frame(io):
+    _assert_no_preview(_write(io, 1, output_folder="$OUTPUT/one"), "still")
 
-    `images` is rendered by the front end, in markup this pack does not own - a Vue-managed element on the new
-    frontend. Nothing in an extension can collapse it, so as long as any container used it, OCIO Write could
-    not offer the Viewer toggle OCIO Read has, and a movie had transport controls while a sequence had none.
-    A regression here is silent: the preview still appears, so it looks fine, and only the toggle stops working.
-    """
-    for label, kw in (("sequence", dict(frames=3, output_folder="$OUTPUT/nf_seq")),
-                      ("movie", dict(frames=3, container="video", video_codec="h264",
-                                     output_folder="$OUTPUT/nf_mov")),
-                      ("still", dict(frames=1, output_folder="$OUTPUT/nf_one"))):
-        ui = _write(io, **kw)
-        assert "images" not in ui and "animated" not in ui, (
-            f"the {label} branch handed its preview back as `images` for the front end to draw; "
-            f"ui keys were {sorted(ui)}")
+
+def check_the_text_report_survives(io):
+    """Removing the picture must not remove the delivery report, which is the node's actual output."""
+    ui = _write(io, 3, output_folder="$OUTPUT/report")
+    for k in ("count", "ocio", "saved"):
+        assert k in ui, f"the text report lost '{k}'; ui keys were {sorted(ui)}"
+    assert ui["count"] == ["3"], f"the frame count is wrong: {ui.get('count')}"
+    assert "ACEScg" in ui["ocio"][0], f"the colour transform is not reported: {ui.get('ocio')}"
 
 
 def main():
     tmp = tempfile.mkdtemp(prefix="ocio_prev_")
     io = _load_io_nodes(tmp)
     failures = []
-    for fn in (check_sequence_is_flipbook_only, check_video_is_proxy_only, check_single_frame_has_no_clip,
-               check_nothing_is_handed_to_the_front_end_to_draw):
+    for fn in (check_sequence, check_video, check_single_frame, check_the_text_report_survives):
         try:
             fn(io)
             print(f"  ok  {fn.__name__}")
         except AssertionError as e:
-            failures.append(f"{fn.__name__}: {e}")
+            failures.append(fn.__name__)
             print(f"  FAIL {fn.__name__}: {e}")
+        except Exception as e:                              # a broken probe must not read as a passing test
+            failures.append(fn.__name__)
+            print(f"  ERROR {fn.__name__}: {type(e).__name__}: {e}")
     if failures:
         print(f"\n{len(failures)} failure(s)")
         return 1
-    print("\nOCIO Write shows exactly one preview per container: OK")
+    print("\nOCIO Write returns no preview, and still reports what it wrote: OK")
     return 0
 
 

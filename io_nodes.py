@@ -722,25 +722,45 @@ def _proxy_dir():
     os.makedirs(d, exist_ok=True)
     return d
 
+# Bumped whenever _proxy_transcode_cmd changes what a proxy CONTAINS, because the cache key otherwise only
+# describes the SOURCE. Without this, every proxy already on disk stays valid by that key and keeps being
+# served, so a fix to the transcode is invisible to anyone who has viewed the clip before - which is everyone
+# who would notice. v2: the proxy carries audio (it was built with -an until 2026-08-16).
+_PROXY_RECIPE = "v2-audio"
+
 def _proxy_path(path):
-    """Deterministic cache path for a source's H.264 proxy, keyed by realpath+mtime+size (an edited source
-    re-transcodes). .mp4 (a VIDEO_EXTS ext) so /ocio/stream will serve it back."""
+    """Deterministic cache path for a source's H.264 proxy, keyed by realpath+mtime+size AND the recipe version
+    (an edited source, or a changed transcode, re-transcodes). .mp4 (a VIDEO_EXTS ext) so /ocio/stream will
+    serve it back."""
     try:
         st = os.stat(path)
-        key = f"{os.path.realpath(path)}|{int(st.st_mtime)}|{st.st_size}"
+        key = f"{os.path.realpath(path)}|{int(st.st_mtime)}|{st.st_size}|{_PROXY_RECIPE}"
     except OSError:
-        key = path
+        key = f"{path}|{_PROXY_RECIPE}"
     return os.path.join(_proxy_dir(), hashlib.sha1(key.encode("utf-8", "ignore")).hexdigest()[:16] + ".mp4")
 
 def _proxy_transcode_cmd(src, dst):
     """ffmpeg args to build the H.264 proxy: downscale to _PROXY_MAX_SIDE (even dims for yuv420p), yuv420p +
-    faststart so the <video> streams + seeks, no audio (the Player is muted). One-time; cached by _proxy_path."""
+    faststart so the <video> streams + seeks, and THE FIRST AUDIO TRACK re-encoded to AAC. One-time; cached by
+    _proxy_path.
+
+    The audio used to be dropped here, with `-an` and the reason "the Player is muted". That reason expired:
+    the viewer grew a real audio path (a Web Audio graph, a gain node, a mute button and dBFS meters) and the
+    proxy was never told. The result was a split nobody could have guessed from the interface. An h264 .mp4
+    needs no proxy, so it streams directly and its track plays; a ProRes .mov comes through here and arrived
+    silent. Same node, same viewer, same button, sound in one case and not the other.
+
+    `0:a:0?` with the question mark is OPTIONAL, so a clip with no audio still transcodes rather than failing
+    the whole proxy over a stream that was never there. PCM - what this pack writes into a MOV - has to be
+    re-encoded, because .mp4 is not a home for pcm_s24le. AAC 192k stereo is a review proxy's audio, not a
+    master's; the master on disk is untouched."""
     _require_ffmpeg()
     return [_FFMPEG, "-v", "error", "-y", "-i", src,
-            "-map", "0:v:0",                                  # ONLY the first video stream (drop audio / extra tracks)
+            "-map", "0:v:0", "-map", "0:a:0?",                # first video stream + the first audio stream if there is one
             "-vf", f"scale='min({_PROXY_MAX_SIDE},iw)':-2:flags=bicubic",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
-            "-an", "-write_tmcd", "0",                        # a ProRes/MXF carries a timecode track that ffmpeg auto-writes as a 'tmcd' DATA stream into the mp4; a <video> element can STALL on that extra stream (buffers but no picture). -write_tmcd 0 = a clean VIDEO-ONLY proxy.
+            "-c:a", "aac", "-b:a", "192k", "-ac", "2",
+            "-write_tmcd", "0",                               # a ProRes/MXF carries a timecode track that ffmpeg auto-writes as a 'tmcd' DATA stream into the mp4; a <video> element can STALL on that extra stream (buffers but no picture). -write_tmcd 0 keeps the proxy to picture and sound.
             "-movflags", "+faststart", dst]
 
 
@@ -3158,13 +3178,61 @@ def _convert(image, in_cs, out_cs):
 _VIEW_NONE = "(none) colorimetric, no tone map"
 
 
+# A SECOND ACES VERSION, offered alongside the loaded config's own views.
+#
+# The Output Transform is not one transform, it is a version of one, and two versions do not agree. Measured on
+# a real Rec.709 master: take it to ACEScg through the ACES 2.0 inverse Output Transform and view it back
+# through the SAME 2.0 transform and the round trip is exact to 0.157% of full scale. View that same file
+# through ACES 1.3 instead and the worst pixel is off by 35.5%, the mean by 1.2%. The file is not broken and
+# nothing in it says which version made it - it simply expects a matching viewer.
+#
+# That matters because a facility's Nuke is whatever version it is. Nuke 13 and 14 ship ACES 1.2 / 1.3, and an
+# EXR written here with a 2.0 inverse lands in that comp looking "close but the blacks and highlights are
+# wrong", which is exactly how a version mismatch presents.
+#
+# ocio:// URI, not a bundled file: OCIO 2.5 carries eight configs internally (four ACES 1.3, four 2.0), so this
+# costs no download and no repository weight. Confirmed against the BuiltinConfigRegistry rather than
+# remembered - and worth stating plainly, the oldest built-in line is 1.3, NOT 1.2. A 1.2 config would have to
+# ship as a file.
+_ALT_ACES_URI = "ocio://studio-config-v2.2.0_aces-v1.3_ocio-v2.4"
+_ALT_ACES_LABEL = "ACES 1.3: "
+_ALT_CFG = {}
+
+
+def _alt_aces_config():
+    """The ACES 1.3 built-in config, loaded once. None when this OCIO build does not carry it."""
+    if "cfg" not in _ALT_CFG:
+        cfg = None
+        try:
+            import PyOpenColorIO as OCIO
+            cfg = OCIO.Config.CreateFromFile(_ALT_ACES_URI)
+        except Exception as e:
+            logging.warning("OCIO: the ACES 1.3 built-in config is unavailable (%s); only this config's own "
+                            "views are offered.", e)
+        _ALT_CFG["cfg"] = cfg
+    return _ALT_CFG["cfg"]
+
+
+def _split_view(view):
+    """(config, config_key, view_name) for a `view` widget value. Handles the ACES 1.3 prefix."""
+    if view and view.startswith(_ALT_ACES_LABEL):
+        return _alt_aces_config(), ("alt", _ALT_ACES_URI), view[len(_ALT_ACES_LABEL):]
+    cfg, key = _resolve_config_keyed("")
+    return cfg, key, view
+
+
 def _view_choices():
-    """The do-nothing value, then every view the loaded config offers.
+    """The do-nothing value, then every view the loaded config offers, then the ACES 1.3 views.
 
     Read from the config rather than hardcoded: on ACES 2.0 the view is `ACES 2.0 - SDR 100 nits (Rec.709)`,
     on someone's ACES 1.3 config it is `ACES 1.0 - SDR Video`, and a hardcoded list would be wrong for them.
     Union across displays, since the widget cannot know which display a pair resolves to until both
-    colorspaces are picked."""
+    colorspaces are picked.
+
+    The 1.3 entries are PREFIXED rather than merged. Two reasons, and the second is the important one: `Raw`
+    and `Un-tone-mapped` exist in both configs and would collide, and more to the point an artist choosing a
+    rendering transform has to be able to see WHICH ACES they are choosing. A list where the version is
+    implied is a list that produces mismatched EXRs."""
     out = [_VIEW_NONE]
     try:
         _require_ocio()
@@ -3174,6 +3242,16 @@ def _view_choices():
                 for v in cfg.getViews(d):
                     if v not in out:
                         out.append(v)
+    except Exception:
+        pass
+    try:
+        alt = _alt_aces_config()
+        if alt is not None:
+            for d in alt.getDisplays():
+                for v in alt.getViews(d):
+                    lab = _ALT_ACES_LABEL + v
+                    if lab not in out:
+                        out.append(lab)
     except Exception:
         pass
     return out
@@ -3234,23 +3312,30 @@ def _convert_via_view(image, in_cs, out_cs, view):
         return _convert(image, in_cs, out_cs)
     display, scene, direction = cross
     _require_ocio()
-    cfg, cfg_key = _resolve_config_keyed("")
+    # The view carries its own config: a `ACES 1.3: ` entry is resolved against the ACES 1.3 built-in, not
+    # against the loaded one. Two versions of the Output Transform do not agree (35.5% on the worst pixel,
+    # measured), so which one renders the picture has to follow the artist's choice rather than the config
+    # that happens to be loaded.
+    cfg, cfg_key, view_name = _split_view(view)
     if cfg is None:
         return image
-    offered = list(cfg.getViews(display))
-    if view not in offered:
+    try:
+        offered = list(cfg.getViews(display))
+    except Exception:
+        offered = []
+    if view_name not in offered:
         raise ValueError(
-            f"OCIO Write: view '{view}' does not exist on display '{display}'. This config offers {offered}. "
-            f"A view belongs to a display, and picking one from a different display is how this usually goes "
-            f"wrong.")
+            f"OCIO Write: view '{view_name}' does not exist on display '{display}'. That config offers "
+            f"{offered}. A view belongs to a display, and picking one from a different display is how this "
+            f"usually goes wrong.")
 
     def build():
         import PyOpenColorIO as OCIO
-        t = OCIO.DisplayViewTransform(src=scene, display=display, view=view)
+        t = OCIO.DisplayViewTransform(src=scene, display=display, view=view_name)
         d = OCIO.TRANSFORM_DIR_INVERSE if direction == "inverse" else OCIO.TRANSFORM_DIR_FORWARD
         return cfg.getProcessor(t, d)
 
-    cpu = _cached_cpu_processor(cfg_key, ("displayview", scene, display, view, direction), build)
+    cpu = _cached_cpu_processor(cfg_key, ("displayview", scene, display, view_name, direction), build)
     return _apply_processor(image, cpu)
 
 
@@ -3323,20 +3408,6 @@ def _lut_rgba8(in_cs, out_cs, size=33, raw=False, allow_shaper=False):
 
 def _cs_combo(default):
     return _combo_or_string(_colorspace_names(), default, "Colorspace from the active OCIO (ACES) config.")
-
-
-def _save_preview_png(frame0, filename):
-    """Save one frame as an 8-bit PNG to the ComfyUI temp dir and return the ComfyUI ui 'images' list. Shared by
-    OCIORead._preview and OCIOWrite._preview (same shape: naive display of the frame in its own colorspace)."""
-    if folder_paths is None:
-        return []
-    tdir = folder_paths.get_temp_directory()
-    os.makedirs(tdir, exist_ok=True)
-    if hasattr(frame0, "detach"):                 # torch Tensor (OCIORead passes rgb[0]); OCIOWrite passes numpy
-        frame0 = frame0.detach().cpu().numpy()
-    px = (np.clip(np.asarray(frame0, np.float32), 0.0, 1.0) * 255.0).astype(np.uint8)
-    Image.fromarray(px).save(os.path.join(tdir, filename))
-    return [{"filename": filename, "subfolder": "", "type": "temp"}]
 
 
 # --------------------------------------------------------------------------- nodes
@@ -4043,103 +4114,20 @@ class OCIOWrite:
             bits.append(meta_note)
         if bits:
             ui["meta"] = ["; ".join(bits)]
-        if container == "video":
-            # The output video can sit ANYWHERE on disk; ComfyUI's native preview only serves output/temp/input, and a
-            # still PNG renders broken inside its <video> for a video node ("Invalid URL"). So write a small, always-
-            # servable H.264 preview into the temp dir.
-            #
-            # UNDER `mov`, NOT `images` (2026-08-16). Handed back as `images` the front end renders it ITSELF, in
-            # markup this pack does not own: on the Vue frontend that is a Vue-managed element whose classes are
-            # its own business and change between versions. Nothing in an extension can collapse it, so the node
-            # could not offer the Viewer toggle OCIO Read has, and the movie had a player while a sequence had
-            # none. Under a key core does not know, the node draws the movie in its own DOM widget instead, and
-            # one toggle and one transport then cover all three containers.
-            #
-            # The cost, named rather than glossed: a preview under this key does not appear in ComfyUI's output
-            # gallery or queue history. For an output node whose product is the file on disk, that is the right
-            # trade; it is not free.
-            # apcm, not the raw AUDIO: it is already cut to this write's range, so the preview cannot disagree
-            # with the master about where the clip starts.
-            ui["mov"] = self._video_preview(sub, fps, saved, apcm)
-        elif container == "sequence" and int(getattr(written, "shape", [0])[0] or 0) > 1:
-            # A SEQUENCE IS A CLIP, AND WAS SHOWN AS ONE STILL FRAME. Every format this branch writes - EXR, DPX,
-            # TIFF, PNG - is one the browser either cannot decode at all or cannot animate, so a frame range came
-            # back as a single picture and there was no way to see the motion without opening the folder in a
-            # player. The video branch already solved this for its own case, and the same helper works here: a
-            # small H.264 copy in the temp dir, played on the node. The master on disk is untouched.
-            #
-            # THE FRAMES THEMSELVES, so the front end flips through what was written instead of an H.264 copy of
-            # it. OCIO Read already does this: /ocio/thumb renders ONE frame server-side through OCIO and the
-            # browser runs a Nuke-style flipbook over it, which is why a colorspace change there is exact rather
-            # than approximate. A pack about colour should show the frames it actually wrote, at their real
-            # depth. thumb_frame reads them with _read_still, the same reader OCIO Read uses, so every still
-            # format this branch can write is one the flipbook can serve back.
-            #
-            # The path is the written sequence's own directory pattern, and the range is the frame numbers on
-            # disk, so the viewer and the master cannot disagree about which frames exist.
-            flip = False
-            try:
-                first_written = paths[0] if paths else None
-                if first_written:
-                    ui["seq_src"] = [os.path.dirname(first_written)]
-                    ui["seq_first"] = [int(start_number)]
-                    ui["seq_last"] = [int(start_number) + int(written.shape[0]) - 1]
-                    ui["seq_fps"] = [float(fps) if fps and fps > 0 else 24.0]
-                    flip = True
-            except Exception as e:                       # a preview must never take the write down with it
-                logging.warning("OCIO Write: could not describe the sequence for the flipbook: %s", e)
-            if not flip:
-                # Only when the flipbook could NOT be described. Shipping both put TWO previews on one node
-                # (2026-08-15) - the real frames above a darker 8-bit copy of them, disagreeing about colour,
-                # with nothing to say which was the master. The proxy stays as the fallback because it needs no
-                # round trip, but it is a fallback, not a companion.
-                #
-                # No audio on this path even when a track is wired: a frame sequence carries none, and a preview
-                # that plays sound the written files do not have would misrepresent what was produced.
-                ui["mov"] = self._video_preview(written, fps, saved)
-        else:
-            # A still, under `still` for the same reason the movie moved to `mov`: the node draws its own
-            # preview so one Viewer toggle covers every container.
-            ui["still"] = self._preview(preview)
+        # NO PREVIEW OF ANY KIND (2026-08-16). This node used to hand back a picture - a still PNG, an animated
+        # H.264 copy, then a flipbook of the written frames with its own transport. All of it is gone, and the
+        # node reports in TEXT only: what it wrote, the colour transform, the metadata verdict.
+        #
+        # The reason is that the pack already has a viewer, and it is a better one. OCIO Player is a float
+        # viewport with in / out points, reverse, an exposure strip, audio metering and a GPU frame cache. A
+        # second, smaller player living on every Write node meant a graph of four writes was a column of four
+        # video players, each competing for the same screen and none of them the one built for looking at
+        # pictures. Wire OCIO Player where you want to look.
+        #
+        # Kept deliberately: `count`, `ocio`, `meta` and `audio` above. Those are a delivery report, not a
+        # preview - dropped frames, clipped values, a track that did not travel - and text is the right shape
+        # for them.
         return {"ui": ui, "result": (saved,)}
-
-    def _preview(self, frame0):
-        """First written frame, shown naively in its output colorspace (a wrong pick looks visibly wrong)."""
-        return _save_preview_png(frame0, "ocio_write_preview.png")
-
-    def _video_preview(self, arr, fps, seed="", audio_pcm=None):
-        """A small, always-servable H.264 preview of the just-written clip, in ComfyUI's TEMP dir, for the node's
-        video preview (the real output may be an absolute path ComfyUI cannot serve). Downscaled to <=512 wide and
-        capped to 96 frames, so it is cheap and browser-playable (h264) even when the master is ProRes/DNxHR. Returns
-        the ui 'images' list; pair with 'animated': (True,) so ComfyUI shows a playing video.
-
-        The preview carries the audio too (AAC in the mp4), trimmed to the SAME frame cap - so lip sync can be
-        checked on the node instead of only after opening the master in a player."""
-        if folder_paths is None:
-            return []
-        try:
-            tdir = folder_paths.get_temp_directory()
-            os.makedirs(tdir, exist_ok=True)
-            cap = min(int(arr.shape[0]), 96)
-            a = np.asarray(arr, np.float32)[:cap, :, :, :3]                            # cap frames, RGB only
-            h, w = int(a.shape[1]), int(a.shape[2])
-            if w > 512:
-                import cv2
-                nw = 512
-                nh = max(2, int(round(h * (512.0 / w))))
-                nh -= nh % 2                                                          # even dims for h264
-                a = np.stack([cv2.resize(f, (nw, nh), interpolation=cv2.INTER_AREA) for f in a])
-            rate = float(fps) if fps and fps > 0 else 24.0
-            ap = None
-            if audio_pcm is not None:
-                samples, sr, ch = audio_pcm
-                keep = max(1, int(round(cap / rate * sr)))                             # same cut as the frames above
-                ap = (np.ascontiguousarray(samples[:keep]), sr, ch)
-            name = "ocio_write_prev_" + hashlib.md5(str(seed).encode("utf-8", "ignore")).hexdigest()[:8] + ".mp4"
-            save_video(a, os.path.join(tdir, name), "h264", rate, None, ap)
-            return [{"filename": name, "subfolder": "", "type": "temp"}]
-        except Exception:
-            return []
 
 
 # --------------------------------------------------------------------------- OCIO Player (in-graph float viewer)

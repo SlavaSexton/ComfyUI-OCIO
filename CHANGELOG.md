@@ -1,6 +1,58 @@
 # Changelog
 
-## OCIO Write draws its own viewport, and the .json beside a render is now a choice
+## The view picks its ACES version, a ProRes preview has sound again, and OCIO Write stops trying to be a player
+
+**`view` now offers ACES 1.3 as well as the loaded config's own transforms**, prefixed so the version is
+visible rather than implied.
+
+The Output Transform is not one transform, it is a version of one, and two versions do not agree. Measured on
+a real Rec.709 master: take it to ACEScg through the ACES 2.0 inverse Output Transform and view it back
+through the SAME 2.0 transform, and the round trip is exact to 0.157% of full scale. View that identical file
+through ACES 1.3 instead and the worst pixel is off by **35.5%**, the mean by 1.2%. Nothing in the file says
+which version made it; it simply expects a matching viewer, and when it does not get one the picture reads as
+"close, but the blacks and the highlights are wrong".
+
+That is not a corner case. A Nuke 13 or 14 comp is on ACES 1.2 / 1.3, and in an ACES project Nuke's own Read
+applies the inverse Output Transform on the way in while the viewer applies the forward one - so an EXR
+written here has to have been rendered by the version that comp will view it with. Hence the choice.
+
+No download and no repository weight: OCIO 2.5 carries eight configs internally, four on the ACES 1.3 line and
+four on 2.0, and this reads the 1.3 studio config straight out of the library. Asked of
+`BuiltinConfigRegistry` rather than remembered, and worth saying plainly - **the oldest built-in line is 1.3,
+not 1.2**. A 1.2 config would have to ship as a file.
+
+The 1.3 entries are prefixed because `Raw` and `Un-tone-mapped` exist in both configs and would otherwise
+collide silently, and because choosing a rendering transform without seeing its version is how a mismatched
+EXR gets made in the first place. The default is untouched.
+
+**A ProRes preview has its audio back.** The H.264 proxy that OCIO Read and OCIO Player build for codecs a
+browser cannot decode was assembled with `-map 0:v:0` and `-an`, on the stated reasoning that "the Player is
+muted". That reasoning expired: the viewer grew a real audio path - a Web Audio graph, a gain node, a mute
+button and dBFS meters - and the proxy was never told. The result was a split with no reason behind it. An
+h264 .mp4 needs no proxy, so it streamed directly and its track played; a ProRes .mov went through the proxy
+and arrived silent. Same node, same viewer, same button.
+
+The proxy now carries the first audio track, re-encoded to AAC (`0:a:0?`, optional, so a clip with no audio
+still transcodes). Verified on a real ProRes 4444 master: the rebuilt proxy comes back with
+`aac, 48000 Hz, stereo, 5.000 s` against a silent one before. The proxy cache key gained a recipe version,
+because it otherwise describes only the SOURCE - every proxy already on disk would have stayed valid and kept
+being served, making the fix invisible to exactly the people who had viewed the clip before.
+
+**OCIO Player shows its audio meters on a video source.** The row was force-hidden in both of the Player's
+paths, while OCIO Read's identical path showed it. On the float-frame path hiding it is right - half-float
+textures are pictures with no track at all - but on the video path the Player is driving a `<video>` element
+over the file, and that element carries the sound. It starts muted, so nothing makes noise unasked.
+
+**OCIO Write has no preview at all any more.** No flipbook, no player, no transport, no Viewer toggle; the
+last widget on the node is `▶ Render`. It reports in text - frames written, colour transform, metadata
+verdict, audio verdict.
+
+This reverses a direction taken one step at a time over two days, and the reversal is the right call. The
+pack already has a viewer and it is a better one: OCIO Player is a float viewport with in / out points,
+reverse, an exposure strip, audio metering and a GPU frame cache. A second, smaller player on every Write
+node turned a graph of four writes into a column of four video players, none of them the one built for
+looking at pictures. `_video_preview` and `_save_preview_png` went with it, 49 lines that no longer had a
+caller.
 
 **The sidecar can be declined.** A `<name>.json` landed beside every render with no way to say no. The new
 `write_sidecar` widget turns it off, and it defaults to ON, so nothing a saved graph does changes.

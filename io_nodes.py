@@ -1030,6 +1030,52 @@ _DPX_TRANSFER = {
     5: "SMPTE 274M", 6: "ITU-R 709-4", 7: "ITU-R 601-5 B/G", 8: "ITU-R 601-5 M", 9: "NTSC composite",
     10: "PAL composite", 11: "Z linear", 12: "Z homogeneous",
 }
+def _stamp_dpx_transfer(path, colorspace):
+    """Correct the DPX transfer and colorimetric descriptors, which ffmpeg writes as `Linear` for everything.
+
+    Measured 2026-08-15: an ADX10 write and a Rec.709 write both came back with byte 801 = 2 (`Linear`) and
+    byte 802 = 2 (`Unspecified`). ffmpeg's dpx encoder does not take these from anywhere - it stamps one
+    answer regardless of content - so a printing-density scan and a broadcast picture ship claiming to be the
+    same thing, and the one thing neither of them is.
+
+    This is the same defect just fixed on the video side, in a different container: a file stating something
+    about itself that is not true. Unlike CICP, SMPTE ST 268 HAS the codes - 1 is printing density, 3 is
+    logarithmic, 6 is ITU-R 709 - so here the honest answer is to write the right one rather than to stay
+    silent. Only where nothing fits does it leave ffmpeg's value alone.
+
+    Two single bytes at fixed offsets in the generic image header, patched in place after the encode. The
+    layout is not in doubt: this pack's own reader already parses these exact offsets (`_DPX_TRANSFER` and
+    `_DPX_COLORIMETRIC` below, read at buf[801] and buf[802]), and every write here is verified by reading it
+    back with that reader."""
+    if not colorspace:
+        return
+    try:
+        _require_ocio()
+        cfg, _ = _resolve_config_keyed("")
+        cs_obj = cfg.getColorSpace(colorspace) if cfg is not None else None
+        enc = (cs_obj.getEncoding() or "") if cs_obj is not None else ""
+    except Exception:
+        enc = ""
+    low = colorspace.lower()
+    if low.startswith("adx"):
+        transfer = colorimetric = 1                     # printing density, what ADX encodes and DPX exists for
+    elif enc == "log":
+        transfer = colorimetric = 3                     # logarithmic; a camera log is not printing density
+    elif enc == "scene-linear":
+        transfer = colorimetric = 2                     # linear: ffmpeg's value happens to be right here
+    elif "709" in low or "1886" in low:
+        transfer = colorimetric = 6                     # ITU-R 709-4
+    else:
+        return                                          # nothing in ST 268 fits: leave what ffmpeg wrote
+    try:
+        with open(path, "r+b") as f:
+            f.seek(801)
+            f.write(bytes([transfer, colorimetric]))
+    except Exception as e:                               # a descriptor must never cost the artist the frame
+        logging.warning("OCIO Write: could not stamp the DPX transfer descriptor on %s: %s",
+                        os.path.basename(path), e)
+
+
 _DPX_COLORIMETRIC = {
     0: "User defined", 1: "Printing density", 2: "Unspecified", 3: "Unspecified", 4: "Unspecified video",
     5: "SMPTE 274M", 6: "ITU-R 709-4", 7: "ITU-R 601-5 B/G", 8: "ITU-R 601-5 M", 9: "NTSC composite",
@@ -2565,6 +2611,7 @@ def _save_still(path, rgb, fmt, bit_depth, alpha=None, colorspace=None, compress
             raise RuntimeError(
                 f"DPX write produced no file at {os.path.basename(path)}: "
                 f"{proc.stderr.decode('utf-8', 'ignore')[:200]}")
+        _stamp_dpx_transfer(path, colorspace)
         return
     if fmt in ("tif", "tiff"):
         if bit_depth == "32f":

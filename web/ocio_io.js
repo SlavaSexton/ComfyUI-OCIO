@@ -111,6 +111,15 @@ const STILL_EXT = { exr: "exr", tiff: "tif", png: "png", jpeg: "jpg", dpx: "dpx"
 // preview .mov while the backend wrote .mxf: 'dnxhr_hq_mxf'.startsWith('dnxhr') is true. A prefix test is a
 // second copy of a rule that already lives in this table, and the two drift the moment a codec is added.
 // tools/test_codec_ext_parity.py reads both sides and fails if they ever disagree again.
+// THE ProRes 4444 ROWS SAY 12-bit AND THAT IS CORRECT, though the reason is worth writing down because it is
+// not the obvious one. ffmpeg's prores_ks advertises only 10-bit pixel formats, and this pack asks it for
+// yuv444p10le - so it is tempting to conclude the files are 10-bit. They are not: ProRes 4444 stores in a
+// 12-bit grid, and a decoder reads the written file back as yuv444p12le, which is what
+// tools/test_codec_ext_parity.py measures on a real encode rather than restating from a help page. That test
+// caught this table being "corrected" to 10-bit on 2026-08-15 and was right to.
+//
+// Related, since it comes up: there is no separate codec to install that would change any of this. Nuke on
+// Windows carries avcodec-58.dll, the same ffmpeg, because Apple ended QuickTime for Windows in 2016.
 const CODEC_INFO = {
     prores_4444: { bits: "12-bit", ext: ".mov" }, prores_422hq: { bits: "10-bit", ext: ".mov" },
     prores_422: { bits: "10-bit", ext: ".mov" }, dnxhr_hq: { bits: "8-bit", ext: ".mov" },

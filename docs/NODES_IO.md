@@ -429,6 +429,26 @@ reaches 128. Neither is wrong; they are different versions of the standard.
 `RETURN_TYPES = (STRING,)`, `RETURN_NAMES = ("path",)`. `OCIO Write` is an `OUTPUT_NODE`, meaning it
 runs as a side effect (it writes the file) whether or not this output is wired to anything.
 
+### What appears on the node after a write
+
+**A `video` container** shows a small H.264 copy, playing. The master can sit anywhere on disk, and ComfyUI's
+native preview only serves `output`, `temp` and `input`; a still PNG also renders broken inside a video
+node's player. So a browser-playable proxy goes to the temp dir instead. It carries the audio too, trimmed to
+the same frame cap, so lip sync can be checked without opening the master.
+
+**A `sequence` of more than one frame** plays as **its own frames**, not as a proxy. Every format that branch
+writes - EXR, DPX, TIFF, PNG - is one a browser either cannot decode or cannot animate, so a frame range used
+to come back as a single still. It now flips through the written files, each rendered server-side through
+OCIO by the same `/ocio/thumb` route `OCIO Read`'s viewer uses. That matters for a pack whose argument is
+that it does not throw information away: an 8-bit re-encode is a poor way to show frames just written at 16
+or 32 bits. The H.264 proxy stays alongside as the fallback.
+
+No audio on the sequence path even when a track is wired, because a frame sequence carries none, and a
+preview that played sound the files do not have would misrepresent what was produced.
+
+**A single still** shows that one frame naively, in its output colorspace - so a wrong colorspace pick looks
+visibly wrong rather than quietly wrong.
+
 | Output | Type | What it connects to |
 |---|---|---|
 | `path` | STRING | The absolute path of the first file actually written (frame one of a sequence, the still, or the movie file). Useful wired into a notes/logging node, or into a downstream automation step that needs to know exactly where the render landed. Most graphs leave it unconnected, since the write already happened by the time this value exists. |

@@ -424,7 +424,15 @@ match.
 
 #### When to turn it on
 
-`tiled` off is the default so no existing graph changes behaviour. Note that off does not mean "never
+**`tiled` is ON by default since v1.3.0**, and the reasoning that used to put it off is worth keeping rather
+than deleting. Off was chosen so that adding this node to a saved graph could not change what that graph
+produced, which is a sound instinct. What it missed is which default fails *worse*: whole-frame is the
+setting that runs out of memory on a real clip, and it is slower even when it fits - 912 s against 60 s over
+121 frames at float32. A default that works and can be switched off beats one that is safe and stops the
+render. Saved graphs are unaffected either way, since `widgets_values` carries the value chosen when the node
+was added; only newly created nodes pick this up.
+
+Note that off does not mean "never
 tiled": `vae.decode` falls back to tiled decoding by itself when it runs out of memory
 (`comfy/sd.py:1216-1223`), and this node inherits that because it calls `vae.decode`. So off means "tile
 only if forced, at ComfyUI's own choice of sizes", and on means "tile to these sizes". `vae.decode_tiled`,

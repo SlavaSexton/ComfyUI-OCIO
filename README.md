@@ -883,16 +883,19 @@ ByteDance2TextToVideoNode -> OCIO Write (the `video` input)
 The clip is rendered out with every other Write setting you have set (container, codec, colorspace, bit depth),
 and a `video` container inherits the movie's own frame rate rather than the `fps` widget.
 
-There is an older route through a file, and it is **not** a peer of the direct wire. Reach for it only when you
-genuinely need the clip on disk in between, or need OCIO Read's frame range and metadata panel:
+There is a route through a file, for when you genuinely need the clip on disk in between, or need OCIO Read's
+frame range and metadata panel. **Write that intermediate file with OCIO Write, not with SaveVideo**, and make
+it ProRes 4444 rather than an mp4:
 
 ```
-ByteDance2TextToVideoNode -> SaveVideo -> OCIO Read (the saved .mp4) -> OCIO Write
+ByteDance2TextToVideoNode -> OCIO Write (ProRes 4444 .mov) -> OCIO Read (the .mov) -> OCIO Write
 ```
 
-**What that intermediate file costs you is RANGE, not bit depth.** It is an integer, display-referred
-container: its ceiling is white and its floor is black, so anything a colour operation put above 1.0 or below
-0 is gone at that step, and no amount of code values brings it back. Put a grade or a display transform
+**Any intermediate file costs you RANGE, whatever it is.** An integer, display-referred container has white
+for a ceiling and black for a floor, so anything a colour operation put above 1.0 or below 0 is gone at that
+step, and no amount of code values brings it back. ProRes 4444 at 12 bits keeps far more of what is inside the
+range than an 8-bit mp4 does, which is why the round trip goes through it and not through `SaveVideo` - but it
+is still a round trip, and the direct wire has no such step at all. Put a grade or a display transform
 anywhere in that chain and you are grading what survived the round trip, not what the model produced. The
 direct wire has no such step - the `VIDEO` reaches OCIO Write with its frames intact, and the only encode is
 the one you asked for.

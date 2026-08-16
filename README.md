@@ -764,7 +764,7 @@ flat and grey.
 ComfyUI: their ComfyUI pack ships no 2.5 HDR workflow, and ComfyUI's core has no ACEScct path at all, so a 2.5
 graph here does not produce those codes on its own. This pack briefly shipped an `LTX 2.5 HDR (ACEScct)` write
 preset that assumed otherwise. It was removed, and CHANGELOG.md says why and what that breaks. Undo the curve
-explicitly instead, which is what the diagram below has always shown.
+explicitly instead, with `OCIO LogConvert` set to `Log to Linear` on the ACEScct curve. That is a different route from the Rec.709 one the diagram above draws, and it is the one to take when the material really is ACEScct.
 
 **This is their choice, not ours, and it is written down.** Lightricks' own
 [HDR documentation](https://github.com/Lightricks/LTX-2/blob/main/packages/ltx-pipelines/docs/hdr.md) defines

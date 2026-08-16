@@ -3936,6 +3936,24 @@ class OCIOWrite:
             # plays sound the written files do not have would misrepresent what was produced.
             ui["images"] = self._video_preview(written, fps, saved)
             ui["animated"] = (True,)
+            # AND THE FILES THEMSELVES, so the front end can flip through the real frames instead of an H.264
+            # proxy. OCIO Read already does this: /ocio/thumb renders ONE frame server-side through OCIO and
+            # the browser runs a Nuke-style flipbook over a blob cache, which is why a colorspace change there
+            # is exact rather than approximate. The proxy above stays as the fallback - it needs no round trip
+            # and works before any of this is wired - but a pack about colour should be able to show the
+            # frames it actually wrote, at their real depth, not a 8-bit copy of them.
+            #
+            # The path is the written sequence's own directory pattern, and the range is the frame numbers on
+            # disk, so the viewer and the master cannot disagree about which frames exist.
+            try:
+                first_written = paths[0] if paths else None
+                if first_written:
+                    ui["seq_src"] = [os.path.dirname(first_written)]
+                    ui["seq_first"] = [int(start_number)]
+                    ui["seq_last"] = [int(start_number) + int(written.shape[0]) - 1]
+                    ui["seq_fps"] = [float(fps) if fps and fps > 0 else 24.0]
+            except Exception as e:                       # a preview must never take the write down with it
+                logging.warning("OCIO Write: could not describe the sequence for the flipbook: %s", e)
         else:
             ui["images"] = self._preview(preview)
         return {"ui": ui, "result": (saved,)}

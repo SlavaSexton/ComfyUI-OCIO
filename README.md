@@ -923,12 +923,20 @@ from a real sample.
 Verified that a 10-bit clip (both a Rec.709 and a Rec.2020 / PQ variant) loads through OCIO Read and writes back
 through OCIO Write with the frame count intact.
 
-## Example workflow
+## Example workflows
 
-There is no shipped example graph at the moment. The one that used to sit here was written for an earlier node
-set and would have to be rebuilt around the eleven nodes and the VAE path, which is worth doing properly
-rather than shipping a graph that opens and misleads. The LTX-2.5 recipe above describes that chain node by
-node, with a diagram.
+Two graphs ship in `example_workflows/`, both built around the current node set and both opened and run on a
+live server before being committed.
+
+`OCIO_WORKFLOW_LTX_2.5.json` is the LTX-2.5 image-to-video chain with audio: `OCIO Read` on the way in,
+`OCIO VAE Decode` for the unclamped float32 decode, then `OCIO Write` to ProRes 4444 and to an ACEScg EXR
+sequence. The LTX-2.5 recipe above describes it node by node, with a diagram.
+
+`OCIO_WORKFLOW_LTX_2.5_to_2.3_HDR.json` keeps that whole chain as its first stage and adds a second one that
+turns those frames into linear HDR, using LTX-2.3 with the `ic-lora-hdr-0.9` IC-LoRA. Two stages rather than
+one because the HDR IC-LoRA is trained for 2.3 and will not load onto a 2.5 transformer, and because it wants
+a video guide rather than a still - which is exactly what stage one hands it. `docs/NODES_IO.md` covers the
+colour side under `profile`, in full.
 
 `example_workflows/nyc_skyline.png` stays, and not as a leftover: it is the source image the accuracy suite
 measures against, in `measure_ocio_parity.py`, `measure_histogram_compare.py` and `gen_fixtures.py`. Remove it

@@ -608,6 +608,183 @@ the image comes out flat and grey.
 `auto` can only detect the 2.3 case, by finding `LTXVHDRDecodePostprocess` upstream. It has never had a
 guess for 2.5, and now has no preset to guess toward either.
 
+**Rechecked 2026-08-17, against their pack at `ac4d998`** (their update of 2026-08-11, which is what
+finally made the pack import again after a core RoPE change had broken it). That update added nine new
+workflows for 2.5 - `T2V_I2V` in one and two stages, `V2V`, `T2A`, and IC-LoRAs for Ingredients, Inpaint,
+Outpaint, Motion Track and Union Control - and **none of them is an HDR workflow**. The only HDR graph in
+the pack is still `example_workflows/2.3/LTX-2.3_ICLoRA_HDR_Distilled.json`, and the only HDR weights it
+names are `ltx-2.3-22b-ic-lora-hdr-0.9.safetensors`. So the version number on this preset is not a
+leftover; it is still the whole of what Lightricks ship for ComfyUI.
+
+**Nothing is log-encoded on the way in.** Their `hdr.py` defines a `LogC3` class with both `compress` and
+`decompress`, but `compress` is never called anywhere in the pack - the node only ever decompresses. Their
+own HDR graph wires the source straight from `LoadVideo` into `LTXAddVideoICLoRAGuide` with no colour
+conversion at all. The IC-LoRA takes ordinary display-referred SDR as its guide and emits LogC3; the curve
+exists only on the way out. This matters for what you put in front of it: hand it a scene-linear EXR and
+you are feeding it something it was never trained on. Convert to a display-referred encoding first with
+`OCIO Color Space`.
+
+**Their linear output cannot carry negatives.** `LTXVHDRDecodePostprocess` ends on
+`torch.clamp(hdr, min=0.0, max=1e4)`, so out-of-gamut colour is not representable in what reaches
+`OCIO Write`, whatever the write's own settings are. Worth knowing before reading a gamut plot of this
+material and concluding something about the model.
+
+**The range is real, and it is checkable without trusting anyone.** LogC3 has a fixed ceiling: a code of
+1.0 decodes to 55.08, so a genuine LogC3 decode cannot exceed that. Measured across all 25 frames of a run
+through `example_workflows/OCIO_WORKFLOW_LTX_2.5_to_2.3_HDR.json`: peak 43.37 in ACEScg, 43.04 once
+converted back to linear Rec.709, with 3.11% of pixels above 1.0 and p99.9 at 9.17. Under the ceiling, as
+a LogC3 decode requires, and close enough to it to show the curve is being used rather than nominally
+applied. That is the arithmetic saying the chain is what it claims to be, rather than a preset being taken
+on faith.
+
+Measure the whole sequence, not a few frames. The first four frames of that same run peak at 32.77, which
+is 25% low: the brightest speculars arrive later in the clip, and a short sample simply does not contain
+them.
+
+### The two HDR mechanisms, from their own source
+
+Read from Lightricks' reference repository (`Lightricks/LTX-2` at `fd4ded7`, 2026-08-11). They ship two
+HDR paths, keep them in separate pipelines, and their code will not let you mix them. Knowing which one
+produced your frames is what decides the settings on this node.
+
+**`--hdr {SRGB_LINEAR,ACESCG,ACESCCT}` declares a colour space; it does not switch on an HDR model.**
+`HDRColorSpace` in `ltx_pipelines/utils/media_io/color_config.py` documents itself as the "Explicit HDR
+source / working colour space", where `None` means SDR. `SRGB_LINEAR` and `ACESCG` are scene-linear and get
+compressed via ACEScct on load; `ACESCCT` is taken as already being log working codes, with no load-time
+transfer. Following it through `distilled.py`, `distilled_mgpu.py`, `ic_lora.py` and `a2vid_two_stage.py`,
+the flag reaches exactly three places: the check that an EXR input declared its space, `vae_dtype_for_hdr`
+(float32 for HDR instead of the bf16 the pipelines otherwise use), and the `color_space` passed to
+conditioning load and to the writer. It selects no checkpoint and loads no LoRA. It is also mandatory
+rather than optional for EXR input: `resolve_hdr_color_space` raises if EXR frames arrive without it.
+
+**The IC-LoRA path is a different pipeline and refuses that flag.** `ltx_pipelines/hdr_ic_lora.py` is its
+own entry point, requires `--hdr-lora`, and describes itself as extending the standard IC-LoRA pipeline
+"with HDR decode via LogC3 inverse transform". Its argument parser deliberately blocks `--hdr` from
+abbreviating into `--hdr-lora`, and the comment on that line says why in their words: the native HDR flag
+is not supported there. So LogC3 belongs to the LoRA path, ACEScct belongs to the native path, and nothing
+in their code produces both at once.
+
+**Which means for this node:** ACEScct material can only have come from their CLI, and LogC3 material can
+only have come from the IC-LoRA - which is the one ComfyUI can run. That is the whole reason the preset
+list carries a 2.3 entry and no 2.5 one.
+
+### What an ACEScct read of LTX-2.5 actually buys
+
+`example_workflows/OCIO_WORKFLOW_LTX_2.5_ACEScct_HDR_probe.json` builds their native-HDR shape here
+(`sRGB -> ACEScg -> Linear to Log (ACEScct) -> LTX-2.5 -> decode -> Log to Linear (ACEScct) -> EXR 32f`)
+so the claim can be measured rather than argued about. Measured 2026-08-17 over 49 frames, the codes
+leaving the VAE ran p50 `0.343`, p99 `0.998`, max `1.041`. Reading those same numbers two ways:
+
+| reading | peak | p99 | range p99/p50 |
+|---|---|---|---|
+| ACEScct | 368.7 | 217.2 | 2847:1, 11.5 stops |
+| Rec.1886 display | 1.10 | 0.995 | 13:1, 3.7 stops |
+
+Identical numbers both times. Nothing asks the model which reading is intended, so the range in the file
+comes from the curve, not from the weights.
+
+**And the two readings are not equally believable.** ACEScct codes diffuse white at `0.5548`, so the share
+of codes above that number is the share of frame a reading claims is brighter than white paper in sunlight.
+Under the ACEScct reading that share is **30.5%**. A lit exterior puts 1-10% of frame above diffuse white -
+the sun disc, speculars, bright sky - and a third of the frame is not a physical picture. Read as display,
+the same pixels put **0.55%** above white, which is ordinary. Rendered side by side the verdict is visible
+rather than statistical: the display reading holds its cloud contrast and specular structure, while the
+ACEScct reading goes milky across the sky even with an honest tonemap instead of a clip.
+
+So on this evidence LTX-2.5 emits codes distributed like an ordinary display picture, and reading them as
+ACEScct stretches the range rather than revealing one.
+
+**The decisive measurement is taken on the finished picture, not on intermediate data.** Convert properly
+first - undo the write's Rec.709 to AP1 matrix, recover the model's display codes, take BT.1886 to linear -
+and only then apply exposure. Done in that order on a 1280x704 run of a deliberately punishing scene (a
+figure leaving a dark cave onto a sunlit ocean, sun flaring into the lens), the headroom above diffuse
+white is **2.21% of samples with a peak of 1.0544**. That is **0.08 of a stop**, not eleven. Step the
+exposure down and the sun is gone by -4 EV, where genuine HDR would still hold a disc at -10. Downward
+range is real: at +4 EV the cave rock still carries texture, so the shadows are not crushed to zero.
+
+Run the exposure ladder before that conversion and it measures the curve instead of the picture, which is
+how the same frames can look like eleven stops of latitude and 0.08 of a stop depending only on where the
+ladder is applied. One scene, one seed, text-to-video - but the gap is three orders of magnitude, not a
+judgement call.
+
+### Both of their HDR mechanisms clip the sun
+
+The obvious follow-up is whether the 2.3 IC-LoRA does better, since that one really is trained on the
+curve. Run on the identical scene and the answer is no.
+
+| | top code | spread across the brightest 0.5% | distinct values (3 dp) |
+|---|---|---|---|
+| LTX-2.5 + ACEScct | 1.0033 | 0.0026 | 3 |
+| LTX-2.3 + HDR IC-LoRA | 0.9999 | 0.0025 | 4 |
+
+The IC-LoRA's peak lands on LogC3 code 1.0 exactly, which decodes to the curve's 55.08 ceiling, and above
+code 1.01 there is not a single pixel. Both models paint the sun as a flat white patch. What separates the
+two files is only how far the curve stretches that same clipped code: 55.08 through LogC3, 276 through
+ACEScct.
+
+**The clip is theirs, not ours.** On these paths `OCIO VAE Decode` runs `clamp = False`, the curve decode
+is a plain function with no limiting, and the write is 32f with `auto_range` off, so nothing here could
+have removed gradation that arrived.
+
+Keep the scope honest: one scene, and a sun pointed into the lens clips on a real sensor too. But an HDR
+model would be expected to hold gradation around the disc, and neither does.
+
+### Two stock clamps sit between the model and an HDR file
+
+This is the case `OCIO VAE Decode` was written for, and it is worth stating precisely because that
+node's own docstring correctly says it does **not** rescue range on ordinary material.
+
+`comfy/sd.py` builds every VAE with
+`process_output = lambda image: image.add_(1.0).div_(2.0).clamp_(0.0, 1.0)`, so `VAEDecodeTiled` cuts
+at 1.0. Lightricks' `LTXVHDRDecodePostprocess` then clamps again
+(`logc = torch.clamp((z + 1.0) / 2.0, 0.0, 1.0)`), though by then there is nothing left to catch.
+Measured on the two-stage graph, the decoder actually emits up to **1.16**, and 0.08 to 0.12% of
+samples sit above 1.0.
+
+On display-referred material that overshoot is worth about a twentieth of a stop, which is why the
+node's docstring plays it down. On **log-encoded** material it is worth far more, because LogC3 is
+exponential near code 1.0: the ceiling at code 1.0 is 55.08, while code 1.16 decodes past 240. The
+same 0.08% therefore carries **1.84 stops**.
+
+Replacing both stock nodes with the pack's own - `OCIO VAE Decode` at `clamp = False` and
+`OCIO LogConvert` (`Log to Linear`, `ARRI LogC3`, identical published constants, no clamp on either
+end) - measured on one frame at 1280x704, across the brightest 0.1%:
+
+| | stock chain | pack chain |
+|---|---|---|
+| distinct values | 46 | 334 |
+| range | 0.03 stops | 0.82 stops |
+| pixels at the maximum | 259, a plateau | 1, a real peak |
+
+What it does not fix: the sun disc stays flat. A profile through it reads 54.0 across ninety pixels
+in both chains, which is code 0.998 - the model painted the disc as a fill, and no decode invents
+gradation that was never generated. What returns is the specular structure around it.
+
+`example_workflows/OCIO_WORKFLOW_LTX_2.5_to_2.3_HDR.json` ships wired this way.
+
+### Which display colorspace to read the output as
+
+The rule is short and it decides several widgets at once: **the output is read back the way the input was
+converted.**
+
+Image-to-video converts the plate `sRGB - Display` -> `Rec.1886 Rec.709 - Display` before the model, so
+every node treating the decode as a display signal uses `Rec.1886 Rec.709 - Display`. Text-to-video has no
+plate and no conversion, so the model emits its own sRGB-like signal and those same nodes must say
+`sRGB - Display`. Linear spaces are unaffected: `Linear Rec.709 (sRGB)` names both, since Rec.709 and sRGB
+share primaries and differ only in transfer.
+
+`bypass` on `LTXVImgToVideoInplace` is what switches the mode, and their code makes it total:
+`if bypass: return (latent,)` in `comfy_extras/nodes_lt.py` skips the input image and every colour
+conversion in front of it.
+
+Getting it wrong reads as a grading fault rather than a settings one. Measured: a text-to-video sequence
+read as Rec.1886 needed x8.52 to reach mid grey where its reference needed x2.97, about 1.5 stops adrift.
+Read correctly as sRGB the same pair came out at x1.21 and x0.96.
+
+One trap that graph documents, because it silently voids the input half of the test: switching it to
+text-to-video sets `bypass` on `LTXVImgToVideoInplace`, and `comfy_extras/nodes_lt.py` then returns the
+latent untouched. The input image, and any colour conversion in front of it, is skipped entirely.
+
 The two `LumiPic` presets do something the `LTX 2.3 HDR` preset doesn't: they run a curve decode on the pixel
 values themselves (`_logc3_to_lin`/`_logc4_to_lin`, published ARRI constants applied directly, not an
 OCIO colorspace lookup) before setting the colorspaces. This is deliberately not the same as picking

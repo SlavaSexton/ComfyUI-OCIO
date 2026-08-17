@@ -10,6 +10,8 @@ from .io_nodes import (NODE_CLASS_MAPPINGS as _IO_CLASSES,
                        NODE_DISPLAY_NAME_MAPPINGS as _IO_NAMES)
 from .vae_nodes import (NODE_CLASS_MAPPINGS as _VAE_CLASSES,
                         NODE_DISPLAY_NAME_MAPPINGS as _VAE_NAMES)
+from .repair_nodes import (NODE_CLASS_MAPPINGS as _REPAIR_CLASSES,
+                           NODE_DISPLAY_NAME_MAPPINGS as _REPAIR_NAMES)
 # 2026-07-04: OCIO Grade / Grade Match / Apply Grade DISABLED (not in use yet). The code stays in
 # grade_nodes.py; re-enable by uncommenting this import AND the two .update() calls below.
 # from .grade_nodes import (NODE_CLASS_MAPPINGS as _GRADE_CLASSES,
@@ -30,6 +32,18 @@ NODE_DISPLAY_NAME_MAPPINGS.update(_IO_NAMES)
 # grepping this file for either key finds nothing - which is exactly why they are written out here.
 NODE_CLASS_MAPPINGS.update(_VAE_CLASSES)
 NODE_DISPLAY_NAME_MAPPINGS.update(_VAE_NAMES)
+
+# OCIO Clip Repair (2026-08-17), key OCIOClipRepair, from repair_nodes.py. Written out here for the
+# same reason as the VAE pair above: the dict merge means grepping this file for the key finds nothing.
+# It composites an SDR-to-HDR reconstruction into a plate's clipped ends ONLY, because those passes
+# rewrite the whole frame - measured on one shot, full-frame application moved channel balance outside
+# the damaged area from R/B 2.34 to 1.44 and made per-frame highlights flicker at 22.7% against the
+# source's 2.1%. Its shadow repair defaults OFF: on the same material the reconstruction smoothed the
+# blacks instead of restoring their texture, and a local-contrast metric scored that HIGHER because it
+# was reading the mask edge. The thresholds are widgets rather than constants because detail dies
+# before the code reaches 1.0, and where it dies belongs to the plate.
+NODE_CLASS_MAPPINGS.update(_REPAIR_CLASSES)
+NODE_DISPLAY_NAME_MAPPINGS.update(_REPAIR_NAMES)
 
 # A standalone OCIO Metadata node was registered here on 2026-08-13 and removed the same day. It did two
 # things: it SHOWED the plate's identity, and it let a reel / scene / shot / take / camera / lens be set or

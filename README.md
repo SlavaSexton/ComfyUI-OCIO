@@ -21,11 +21,12 @@
 `OCIO VAE Decode` runs the decode at **float32 with nothing clamped**, and that one choice is what the rest of
 this pack is built on.
 
-**There is no ceiling to hit.** How many stops a render carries is a property of that render, not of this
-pack: nothing here caps it, and float32 holds whatever came out of the decode. One frame of one LTX-2.5 master
-written through these nodes, opened and counted: peak **131.75**, which is 7 stops over diffuse white, and
-**14.25 stops** between the 0.1 and 99.9 percentiles. The next render will read differently. That is the
-point - the number comes from the material, and nothing on the way out decides it for you.
+**There is no ceiling to hit.** How many stops a frame carries is a property of the material, not of this
+pack: nothing here caps it, and float32 holds whatever came out of the decode. What that means in practice
+depends entirely on what you feed it. An ordinary SDR generation is display-referred and stays that way -
+removing the clamp does not turn it into HDR, and this pack does not pretend otherwise; measured on one,
+declining the clamp changed 0.06% of samples. Material that genuinely carries scene-linear range keeps it,
+all of it, out to the file.
 
 **Values below 0 survive too, and that matters more than it sounds.** A negative is not noise to clean up - it
 is what a colour outside the working gamut looks like from inside it. Clamp the black and that colour is gone,

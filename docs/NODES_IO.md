@@ -629,13 +629,18 @@ you are feeding it something it was never trained on. Convert to a display-refer
 `OCIO Write`, whatever the write's own settings are. Worth knowing before reading a gamut plot of this
 material and concluding something about the model.
 
-**The range is real, and it is checkable without trusting anyone.** LogC3 has a fixed ceiling: a code of
-1.0 decodes to 55.08, so a genuine LogC3 decode cannot exceed that. Measured across all 25 frames of a run
-through `example_workflows/OCIO_WORKFLOW_LTX_2.5_to_2.3_HDR.json`: peak 43.37 in ACEScg, 43.04 once
-converted back to linear Rec.709, with 3.11% of pixels above 1.0 and p99.9 at 9.17. Under the ceiling, as
-a LogC3 decode requires, and close enough to it to show the curve is being used rather than nominally
-applied. That is the arithmetic saying the chain is what it claims to be, rather than a preset being taken
-on faith.
+**The range is real, and it is checkable without trusting anyone.** LogC3 puts code 1.0 at 55.08, so a
+decode of codes confined to [0, 1] lands under 55.08. Read the condition, not just the number: the decode
+is a plain function with no domain limit, and codes above 1.0 decode above 55.08 - which is exactly what
+happens once the stock clamp is out of the chain (see the sun measurement further down, where the same
+material reaches code 1.16 and 246 linear). So this check confirms the curve is being applied; it is
+**not** evidence of a ceiling in the material.
+
+Measured across all 25 frames of a run through
+`example_workflows/OCIO_WORKFLOW_LTX_2.5_to_2.3_HDR.json`: peak 43.37 in ACEScg, 43.04 once converted
+back to linear Rec.709, with 3.11% of pixels above 1.0 and p99.9 at 9.17. Under 55.08 and close enough to
+it to show the curve is being used rather than nominally applied. That is the arithmetic saying the chain
+is what it claims to be, rather than a preset being taken on faith.
 
 Measure the whole sequence, not a few frames. The first four frames of that same run peak at 32.77, which
 is 25% low: the brightest speculars arrive later in the clip, and a short sample simply does not contain
@@ -707,27 +712,33 @@ how the same frames can look like eleven stops of latitude and 0.08 of a stop de
 ladder is applied. One scene, one seed, text-to-video - but the gap is three orders of magnitude, not a
 judgement call.
 
-### Both of their HDR mechanisms clip the sun
+### What the 2.3 IC-LoRA does at the sun, measured without the clamp
 
-The obvious follow-up is whether the 2.3 IC-LoRA does better, since that one really is trained on the
-curve. Run on the identical scene and the answer is no.
+An earlier revision of this page reported that the IC-LoRA's peak lands on LogC3 code 1.0 exactly and
+that no pixel exists above code 1.01, and concluded that the model paints the sun as a flat white
+patch. **That was measured through the stock clamp described in the next section, so it could not have
+shown anything above code 1.0 whatever the model did.** Re-measured on the same shot with the clamp
+removed, the numbers are different enough to change the conclusion:
 
-| | top code | spread across the brightest 0.5% | distinct values (3 dp) |
-|---|---|---|---|
-| LTX-2.5 + ACEScct | 1.0033 | 0.0026 | 3 |
-| LTX-2.3 + HDR IC-LoRA | 0.9999 | 0.0025 | 4 |
+| same shot, 49 frames | top code | linear | spread, brightest 0.5% | distinct (3 dp) | px above code 1.01 |
+|---|---|---|---|---|---|
+| through the stock clamp | 1.0000 | 55.08 | 0.0000 | 1 | 0 |
+| `OCIO VAE Decode`, `clamp = False` | **1.1607** | **246.1** | 0.1616 | 117 | **12 014** |
 
-The IC-LoRA's peak lands on LogC3 code 1.0 exactly, which decodes to the curve's 55.08 ceiling, and above
-code 1.01 there is not a single pixel. Both models paint the sun as a flat white patch. What separates the
-two files is only how far the curve stretches that same clipped code: 55.08 through LogC3, 276 through
-ACEScct.
+Code 1.1607 is **2.16 stops above** the code-1.0 value the old text called a ceiling. And the extra
+range is not scattered noise: on one frame, pixels above code 1.01 make up 1.086% of a 121x121 box
+centred on the disc against 0.005% of the rest of the frame, so they are concentrated where the sun is
+by a factor of about 200.
 
-**The clip is theirs, not ours.** On these paths `OCIO VAE Decode` runs `clamp = False`, the curve decode
-is a plain function with no limiting, and the write is 32f with `auto_range` off, so nothing here could
-have removed gradation that arrived.
+**What survives from the old reading.** The disc still carries a broad near-flat shoulder just under
+code 1.0 - a horizontal profile through it sits between 0.995 and 1.002 over roughly half its width -
+so the model's gradation there is shallow, and a sun pointed into the lens clips on a real sensor too.
+What is not true is that nothing exists above the curve's code-1.0 value; 12 014 pixels do, and the
+stock path threw all of them away.
 
-Keep the scope honest: one scene, and a sun pointed into the lens clips on a real sensor too. But an HDR
-model would be expected to hold gradation around the disc, and neither does.
+The lesson generalises past this model: a peak landing exactly on a known constant is evidence about
+the pipeline before it is evidence about the generator. Count distinct values in the top band - a real
+clip puts nearly every pixel on one value, as the top row above shows.
 
 ### Two stock clamps sit between the model and an HDR file
 

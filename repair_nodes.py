@@ -111,16 +111,15 @@ class OCIOClipRepair:
                                                     "mid-tones before compositing, so the patch "
                                                     "sits at the plate's exposure instead of its "
                                                     "own."}),
-            "threshold_space": (["display codes", "scene linear"],
-                                {"default": "display codes",
-                                 "tooltip": "Which numbers the two levels refer to. Clipping "
-                                            "happens in DISPLAY codes, so the levels are quoted "
-                                            "there by default and stay meaningful (0.97, 0.01) "
-                                            "even when the plate arriving here is scene-linear - "
-                                            "the node converts internally for the mask only, and "
-                                            "composites in whatever space you gave it. Set to "
-                                            "scene linear to read the levels as linear values "
-                                            "instead."}),
+            "plate_space": (["display codes", "scene linear"],
+                            {"default": "display codes",
+                             "tooltip": "What the plate is in, which the node cannot reliably "
+                                        "detect: a scene-linear plate made from an 8-bit source "
+                                        "peaks at exactly 1.0, same as a display one. Say it "
+                                        "here. The two levels are ALWAYS quoted in display codes, "
+                                        "because that is where clipping happens; on a linear "
+                                        "plate the node encodes internally for the mask only and "
+                                        "still composites in linear."}),
         }}
 
     RETURN_TYPES = ("IMAGE", "MASK", "STRING")
@@ -135,7 +134,7 @@ class OCIOClipRepair:
 
     def repair(self, plate, reconstruction, repair_highlights, highlight_level,
                repair_shadows, shadow_level, grow, feather, match_levels,
-               threshold_space="display codes"):
+               plate_space="display codes"):
         p = _to_numpy(plate)
         r = _to_numpy(reconstruction)
         if r.shape[0] == 1 and p.shape[0] > 1:
@@ -152,11 +151,12 @@ class OCIOClipRepair:
         hi_pct = lo_pct = mask_pct = 0.0
         gain_used = 1.0
 
-        # Clipping happens in display codes, so the levels are quoted there. When the plate arrives
-        # scene-linear (the usual case downstream of OCIO Read), the mask is built on a display
-        # encoding of it; the COMPOSITE still runs in the space that was handed in, untouched.
-        as_display = threshold_space == "display codes"
-        linear_plate = as_display and float(p.max()) > 1.001
+        # Clipping happens in display codes, so the levels are quoted there. A scene-linear plate is
+        # encoded to display for the mask only; the COMPOSITE always runs in the space handed in.
+        # This is declared rather than detected: an earlier version guessed from the maximum and was
+        # wrong every time, because a linear plate built from an 8-bit source peaks at exactly 1.0
+        # like a display one. It found 0.08% of clipped highlights where there were several percent.
+        linear_plate = plate_space == "scene linear"
 
         for i in range(p.shape[0]):
             pl, rc = p[i], r[i]

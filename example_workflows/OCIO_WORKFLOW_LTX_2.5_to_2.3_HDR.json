@@ -4041,8 +4041,8 @@
         true,
         768,
         256,
-        8,
-        4
+        4096,
+        32
       ],
       "title": "OCIO VAE Decode - unclamped, replaces VAEDecodeTiled",
       "color": "#432",

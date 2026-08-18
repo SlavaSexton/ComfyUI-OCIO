@@ -24,12 +24,23 @@ plate, bands from 0.60 to 0.99 still held 88-139% of the mid-tone structure, whi
 lost most of its own by 0.04 (30% at 0.000-0.004, 25% at 0.004-0.010, 49% at 0.020-0.040). That is
 why both thresholds are widgets: the right value is a property of the plate, not a constant.
 
-PICK THE HIGHLIGHT LEVEL FROM THE RECONSTRUCTION, NOT FROM THE PLATE. The useful question is not
-"where does the plate clip" but "where does the pass hold more than the plate could". Measured on one
-shot, by band of plate code against the reconstruction's median value there: 0.70-0.80 -> 0.67,
-0.80-0.90 -> 1.22, 0.90-0.95 -> 2.55, 0.95-0.97 -> 6.15, 0.97-1.01 -> 18.3. Below 0.90 the pass is
-no brighter than the plate, so repairing there swaps one value for another and can only lose the
-plate's own texture. 0.90 was the right stop on that material; it is a measurement, not a default.
+PICK THE HIGHLIGHT LEVEL BY THE GAIN OVER THE PLATE AT THE SAME PIXELS. The tempting comparison -
+reconstruction against 1.0, the plate's ceiling - is wrong and gives an answer that is far too
+conservative: at code 0.85 the plate holds about 0.73, not 1.0, so a pass sitting at 1.81 there is
+2.5x the plate and well worth taking, even though it looks unremarkable next to 1.0. Measured on one
+shot as plate median -> reconstruction median (gain): 0.70-0.80  0.52 -> 0.79 (1.5x); 0.80-0.85
+0.64 -> 1.26 (2.0x); 0.85-0.90  0.73 -> 1.81 (2.5x); 0.90-0.95  0.83 -> 3.14 (3.8x); 0.95-0.97
+0.91 -> 7.65 (8.4x); 0.97-1.01  0.96 -> 23.7 (25x).
+
+The consequence is concrete: rim-lit cloud on that shot sits at code 0.83, so a level of 0.90 or
+0.97 leaves it at exactly 1.00x the plate - untouched, and still flat. Levels around 0.80-0.85 are
+what reach it. Going lower trades away more of the plate's own texture for a shrinking gain, so the
+useful stop is where the gain curve flattens, not where the plate happens to clip.
+
+NOT EVERY PASS GAINS IN THE SAME PLACE. On the same bands a single-image pass (LumiPic on FLUX.2)
+measured 0.45-0.65x the plate below code 0.90 - it DARKENS there - while reaching 7.5x above 0.97.
+Run this band comparison against whichever pass is wired in; a level chosen for one is not
+transferable to another.
 
 A WIDER MASK CAME OUT MORE STABLE, WHICH IS THE OPPOSITE OF THE OBVIOUS GUESS. Dropping the level
 from 0.97 to 0.90 (with grow 6 -> 10 and feather 24 -> 40) moved frame-to-frame drift from 1.96% to

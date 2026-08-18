@@ -23,6 +23,20 @@ THRESHOLDS ARE NOT FIXED AT 1.0. Detail dies before the code reaches white. Scan
 plate, bands from 0.60 to 0.99 still held 88-139% of the mid-tone structure, while the dark end had
 lost most of its own by 0.04 (30% at 0.000-0.004, 25% at 0.004-0.010, 49% at 0.020-0.040). That is
 why both thresholds are widgets: the right value is a property of the plate, not a constant.
+
+PICK THE HIGHLIGHT LEVEL FROM THE RECONSTRUCTION, NOT FROM THE PLATE. The useful question is not
+"where does the plate clip" but "where does the pass hold more than the plate could". Measured on one
+shot, by band of plate code against the reconstruction's median value there: 0.70-0.80 -> 0.67,
+0.80-0.90 -> 1.22, 0.90-0.95 -> 2.55, 0.95-0.97 -> 6.15, 0.97-1.01 -> 18.3. Below 0.90 the pass is
+no brighter than the plate, so repairing there swaps one value for another and can only lose the
+plate's own texture. 0.90 was the right stop on that material; it is a measurement, not a default.
+
+A WIDER MASK CAME OUT MORE STABLE, WHICH IS THE OPPOSITE OF THE OBVIOUS GUESS. Dropping the level
+from 0.97 to 0.90 (with grow 6 -> 10 and feather 24 -> 40) moved frame-to-frame drift from 1.96% to
+1.14% against 0.27% for the source, while lifting the sky's 99th percentile from 4.96 to 6.96. At
+0.97 the mask edge sits exactly where the plate's values are least stable - right at the clip - so
+the mask itself flickers. Widening moves the edge into calmer values and softening spreads what
+remains. Do not assume a tighter mask is the safer one; measure both.
 """
 import numpy as np
 import torch

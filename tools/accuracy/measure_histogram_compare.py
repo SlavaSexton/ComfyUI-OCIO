@@ -74,7 +74,7 @@ NYC = os.path.join(os.path.dirname(C.__file__), "..", "..", "example_workflows",
 # And the verdict does not rest on any of it. Accuracy in this suite is `max_abs_pixel_diff` and PSNR, both
 # per pixel with no binning at all; the four histogram figures are a distribution cross-check beside them.
 #
-# Raised as issue #2, asking whether there was a reason behind the number. There was; it was not written down,
+# Raised by Sam Hodge as issue #2, asking whether there was a reason behind the number. There was; it was not written down,
 # which for a reader is the same as not having one.
 BINS = 256
 RNG = (0.0, 1.0)

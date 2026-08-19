@@ -34,15 +34,48 @@ NYC = os.path.join(os.path.dirname(C.__file__), "..", "..", "example_workflows",
 # would open empty bins between them, and a difference landing in an empty bin reads as a difference in shape
 # when it is only a difference in resolution.
 #
-# The verdict does not rest on this number, which is the part worth stating. Accuracy in this suite is
-# `max_abs_pixel_diff` and PSNR, both computed per pixel with no binning at all; the four histogram figures are
-# a distribution cross-check beside them. Measured across bin counts on the same comparison, correlation,
-# chi-square, intersection and Bhattacharyya come out identical at 64, 128, 256, 512 and 1024, and only start
-# to move at 4096, where bins outnumber codes. The reading is stable across a factor of sixteen around the
-# value chosen.
+# MEASURED, on both comparisons this file makes, rather than asserted.
 #
-# Raised by Sam Hodge as issue #2, asking whether there was a reason behind the number. There was; it was not
-# written down, which for a reader is the same as not having one.
+# Panel A, our node path against the raw PyOpenColorIO reference. They agree to the bit (max abs pixel diff
+# 0.0), so correlation, chi-square and Bhattacharyya are 1 / 0 / 0 at every bin count and say nothing about
+# binning. Intersection is the only one carrying information here, and it settles:
+#
+#     bins       64       128       256       512      1024      4096
+#     inter  11.3898   21.8636   43.1061   43.1061   43.1061   43.1061
+#
+# Panel C, the round trip against the original, which does carry a real error (max abs pixel diff 1.74e-05,
+# PSNR 107.7 dB). Four metrics averaged over R/G/B:
+#
+#     bins   correlation    chi_square   intersection   bhattacharyya
+#       64      0.999725        0.0043      11.389811        0.006119
+#      128      0.999449        0.0168      21.863564        0.009023
+#      256      0.998894        0.0763      43.106098        0.015020
+#      512      0.999183        0.0763      43.106098        0.015020
+#     1024      0.999276        0.0763      43.106098        0.015020
+#     4096      0.998984        0.1344      43.047981        0.027498
+#
+# Read both as a CONVERGENCE, not a plateau, and note that they converge at the same place. Below 256 the
+# figures still depend on the bin count, because bins are merging codes the file distinguishes: intersection
+# climbs 11.39 -> 21.86 -> 43.11 on both panels, and on panel C chi-square and Bhattacharyya climb with it.
+# At 256 they stop moving - identical to six decimals at 256, 512 and 1024. That is the argument for this
+# number: 256 is the SMALLEST count at which the answer no longer depends on the count, which is
+# one-bin-per-code seen from the metric side. Panel C moves again at 4096, where empty bins between codes
+# begin to register as distribution shape; panel A does not, having nothing to register.
+#
+# Correlation is the exception on panel C and does not settle: it wanders between 0.9989 and 0.9997 with no
+# trend, because on MINMAX-normalised histograms it is dominated by the peak bin, which shifts as bins are
+# redrawn. Do not read its last three digits as signal.
+#
+# Note the SCALE of intersection. `hist_compare` normalises with NORM_MINMAX, so cv2.HISTCMP_INTERSECT of two
+# identical histograms is their sum - about 43 here at 256 bins, and per-channel 55.30 / 34.52 / 39.50 on the
+# real fixture - never 1.0. A figure near 1.0 would mean an L1-normalised histogram, which this file does not
+# produce; an earlier write-up of this sweep reported 1.000000 for that column and was wrong.
+#
+# And the verdict does not rest on any of it. Accuracy in this suite is `max_abs_pixel_diff` and PSNR, both
+# per pixel with no binning at all; the four histogram figures are a distribution cross-check beside them.
+#
+# Raised as issue #2, asking whether there was a reason behind the number. There was; it was not written down,
+# which for a reader is the same as not having one.
 BINS = 256
 RNG = (0.0, 1.0)
 

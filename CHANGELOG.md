@@ -1,35 +1,27 @@
 # Changelog
 
-## 1.3.1: the upload route wrote where it was told, and it should not have
+## 1.3.1: security fix in the upload route
 
-Version 1.3.0 was banned from the Comfy Registry. The reason was real, and this release is the fix.
+**Affected: every release up to and including 1.3.0. Update to 1.3.1.**
 
-The `/ocio/upload` route sanitised its `subfolder` field with `os.path.basename`. That reads like
-protection and is not: `basename("..")` returns `".."` unchanged, because `..` carries no directory part
-to trim. A request sending `subfolder=".."` therefore resolved one level above `input/`, into the
-ComfyUI install root, the directory holding `main.py` and `extra_model_paths.yaml`. The route is
-unauthenticated, and ComfyUI's local server has no CSRF protection, so any page open in a browser on
-that machine could reach it.
+`/ocio/upload` built its destination by joining a caller-supplied `subfolder` onto the ComfyUI input
+directory, after passing it through `os.path.basename`. That call strips a directory component but
+leaves a relative segment intact, so a crafted value could resolve above the input directory. The
+route is unauthenticated, and ComfyUI's local server carries no CSRF protection, so it was reachable
+from the browser on the same machine. The Comfy Registry classified this as an arbitrary file write
+during review and banned 1.3.0; the same code path is present in every earlier release.
 
-Confirmed over live HTTP in both directions, on an isolated sandbox, rather than argued from path
-arithmetic. Against 1.3.0 the request returned 200 and the file landed outside `input/`. Against this
-release it returns 400 and writes nothing, while an honest upload still lands in `input/ocio_assets/`.
+1.3.1 resolves the destination before writing and refuses anything that does not land inside the
+input directory, the approach ComfyUI core takes in `server.py`. Resolution goes through `realpath`,
+so a symlink inside `input/` that points elsewhere is refused as well, and a comparison that cannot
+be made at all is treated as outside. The destination directory is created only after the check
+passes, so a refused upload leaves nothing behind.
 
-The guard checks the resolved path, not the string, the way ComfyUI core does it in `server.py`: build
-`input_root/sub/name`, resolve it, and refuse unless the result is still inside `input_root`. It uses
-`realpath` rather than `normpath`, so a symlink inside `input/` pointing out is caught as well. A
-cross-drive comparison raises `ValueError` from `commonpath`, and that is treated as outside, failing
-closed. `basename` stays on both fields as a first line. `makedirs` now runs after the refusal, so a
-rejected upload no longer leaves an empty directory behind in an arbitrary place.
+Covered by `tools/test_upload_confinement.py`, which exercises the guard directly and asserts both
+sides: traversal is refused, and an ordinary upload still succeeds.
 
-`tools/test_upload_confinement.py` calls the guard directly rather than counting substrings in the
-source. It asserts refusal on `..`, `../..`, an absolute path, another drive and a backslash separator;
-it asserts the honest case still passes, so a guard that refused everything could not score green; and
-it asserts a refused write creates nothing on disk. Proven by mutation: restoring the string-only
-behaviour turns the refusal assertions red, and reverting turns them green.
-
-The read routes are untouched. They accept a path by design, because the disk browser in `OCIO Read`
-depends on it, and narrowing that is a decision of its own rather than a quiet side effect of a security
+The read routes are unchanged. They take a path because the disk browser in `OCIO Read` depends on
+it, and narrowing that is a separate change with its own trade-off rather than a side effect of this
 fix.
 
 ## OCIO Clip Repair

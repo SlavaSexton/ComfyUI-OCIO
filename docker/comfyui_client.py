@@ -14,6 +14,7 @@ OCIO_NODE_CLASSES = [
     "OCIOColorSpace", "OCIOLogConvert", "OCIODisplay", "OCIOCDLTransform",
     "OCIOFileTransform", "OCIOLookTransform", "OCIORead", "OCIOWrite", "OCIOPlayer",
     "OCIOVAEDecode", "OCIOVAEEncode",
+    "OCIOClipRepair",
 ]
 
 

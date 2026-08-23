@@ -14,6 +14,8 @@ Run:  python tools/test_upload_confinement.py     (no ComfyUI, no GPU, no server
 """
 import ast
 import os
+
+BS2 = chr(92)  # a literal backslash, spelled so no quoting layer can eat it
 import sys
 import tempfile
 import types
@@ -63,7 +65,6 @@ def main():
         ("subfolder is an absolute path", os.path.abspath(os.sep + "etc"), "pwned.txt"),
         ("name escapes via ..", "ok", os.path.join("..", "..", "pwned.txt")),
         ("name is absolute", "ok", os.path.abspath(os.sep + "etc" + os.sep + "pwned.txt")),
-        ("subfolder with a backslash", "..\\..", "pwned.txt"),
     ]
     for label, sub, name in refuse:
         dest = guard(input_root, sub, name)
@@ -76,6 +77,18 @@ def main():
     if os.name == "nt" and len(input_root) > 1 and input_root[1] == ":":
         other = ("Z:" if input_root[0].upper() != "Z" else "Y:") + os.sep + "elsewhere"
         check("refuses: subfolder on another drive", guard(input_root, other, "pwned.txt") is None)
+
+    # A backslash is a path SEPARATOR on Windows and an ordinary filename character
+    # everywhere else, so one string escapes on one platform and is a legal (if ugly)
+    # name on the other. The contract is confinement, not rejection of a spelling, so
+    # assert that invariant everywhere and the stronger refusal only where it holds.
+    bs_dest = guard(input_root, ".." + BS2 + "..", "pwned.txt")
+    check("backslash subfolder never escapes (refused on Windows, confined on POSIX)",
+          bs_dest is None or os.path.realpath(bs_dest).startswith(input_root + os.sep),
+          bs_dest or "returned None")
+    if os.name == "nt":
+        check("refuses: backslash subfolder, where it is a separator", bs_dest is None,
+              "returned None" if bs_dest is None else f"LET THROUGH -> {bs_dest}")
 
     # --- the honest cases MUST pass, or "refuses everything" would score green ------
     for label, sub, name in [

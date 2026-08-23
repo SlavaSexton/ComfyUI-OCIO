@@ -1,5 +1,58 @@
 # Changelog
 
+## 1.3.1: the upload route wrote where it was told, and it should not have
+
+Version 1.3.0 was banned from the Comfy Registry. The reason was real, and this release is the fix.
+
+The `/ocio/upload` route sanitised its `subfolder` field with `os.path.basename`. That reads like
+protection and is not: `basename("..")` returns `".."` unchanged, because `..` carries no directory part
+to trim. A request sending `subfolder=".."` therefore resolved one level above `input/`, into the
+ComfyUI install root, the directory holding `main.py` and `extra_model_paths.yaml`. The route is
+unauthenticated, and ComfyUI's local server has no CSRF protection, so any page open in a browser on
+that machine could reach it.
+
+Confirmed over live HTTP in both directions, on an isolated sandbox, rather than argued from path
+arithmetic. Against 1.3.0 the request returned 200 and the file landed outside `input/`. Against this
+release it returns 400 and writes nothing, while an honest upload still lands in `input/ocio_assets/`.
+
+The guard checks the resolved path, not the string, the way ComfyUI core does it in `server.py`: build
+`input_root/sub/name`, resolve it, and refuse unless the result is still inside `input_root`. It uses
+`realpath` rather than `normpath`, so a symlink inside `input/` pointing out is caught as well. A
+cross-drive comparison raises `ValueError` from `commonpath`, and that is treated as outside, failing
+closed. `basename` stays on both fields as a first line. `makedirs` now runs after the refusal, so a
+rejected upload no longer leaves an empty directory behind in an arbitrary place.
+
+`tools/test_upload_confinement.py` calls the guard directly rather than counting substrings in the
+source. It asserts refusal on `..`, `../..`, an absolute path, another drive and a backslash separator;
+it asserts the honest case still passes, so a guard that refused everything could not score green; and
+it asserts a refused write creates nothing on disk. Proven by mutation: restoring the string-only
+behaviour turns the refusal assertions red, and reverting turns them green.
+
+The read routes are untouched. They accept a path by design, because the disk browser in `OCIO Read`
+depends on it, and narrowing that is a decision of its own rather than a quiet side effect of a security
+fix.
+
+## OCIO Clip Repair
+
+A compositing utility rather than a color node, and the first node here that is not one. It takes a
+plate and an SDR-to-HDR reconstruction of the same frames, and composites the reconstruction into the
+plate's clipped highlights only, leaving everything that was never damaged as the plate had it.
+
+The reason is what a reconstruction pass does to the rest of the frame. Measured on one shot, applied
+full-frame it moved colour balance across the 97% that never clipped (R/G 1.30 to 1.70) and produced 72%
+more local contrast than the plate carried, which is detail the model invented in place of the plate's
+own. Masking the pass to the clipped ends keeps tone, texture and frame-to-frame stability everywhere
+the plate still held information.
+
+The two ends are not symmetrical and the defaults say so. Highlights come back with a falloff where
+there had been a flat white patch. Shadows, on the same material, came back smoothed: real grain
+replaced by a clean gradient, which reads worse than the damage. So `repair_shadows` is off by default.
+
+Thresholds are widgets because detail dies before a code reaches 1.0, and where it dies belongs to the
+plate rather than to a constant. `plate_space` is set by hand for the same kind of reason: a
+scene-linear plate that came from an 8-bit source peaks at 1.0 exactly like a display-referred one, so
+nothing in the pixels can tell them apart.
+
 ## What the stock path costs, shown on one clip
 
 Four side-by-side frames in `docs/assets/comparison/`, and a section in the README built around them: the same

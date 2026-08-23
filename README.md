@@ -74,6 +74,13 @@ now also carry a native ComfyUI **VIDEO** input and output beside the IMAGE one,
 ComfyUI's native video graph as color and light stages: `Load Video -> OCIO color node -> Video Combine / Save
 Video`. Same nodes, same math, now on the native VIDEO wire.
 
+Alongside the eleven color nodes there is one compositing utility, **OCIO Clip Repair**: it takes an
+SDR-to-HDR reconstruction pass and composites it into a plate's clipped highlights (and, off by default,
+crushed shadows) *only*, leaving the rest of the frame untouched. It exists because an SDR-to-HDR model
+rewrites the whole frame - shifting tone and texture in the 90%+ that was never damaged - and this confines
+that to the ends that actually clipped. Thresholds are widgets, because where detail dies is a property of
+the plate, not a constant. Full description in [docs/NODES_IO.md](docs/NODES_IO.md).
+
 <div align="center">
 
 <img src="docs/assets/nodes.png" width="880" alt="The OCIO nodes in a ComfyUI workflow: native Load Image and Load Video feed OCIO Read, ColorSpace, LogConvert, Display, CDLTransform, FileTransform, LookTransform, Player and Write through paired OCIO Img/Seq/Vid and ComfyUI Video sockets">

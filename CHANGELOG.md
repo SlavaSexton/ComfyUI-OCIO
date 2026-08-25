@@ -1,5 +1,59 @@
 # Changelog
 
+## 1.3.3: the ACEScct route into LTX-2.5, which ComfyUI has no other way to reach
+
+LTX-2.5 has a native HDR path. It takes EXR in, works in ACEScct, and writes EXR out plus a
+BT.2020 HLG master. The flag that turns it on lives in Lightricks' own command line tool,
+`--hdr {SRGB_LINEAR,ACESCG,ACESCCT}`, and there is no route to it from ComfyUI: searched on
+2026-08-25, the official Comfy template library holds **1030 workflows and none of them
+mentions ACEScct**, while every LTX template in it has no colour management of any kind.
+
+What this release adds is the two ends of that path. The middle is their tool.
+
+    OCIO Read -> OCIO ColorSpace to ACEScg -> OCIO LogConvert, Linear to Log on ACEScct
+       [ their CLI ]
+    OCIO LogConvert, Log to Linear on ACEScct -> OCIO Write
+
+### Why the curve matters
+
+At code 1.0 ACEScct reaches **222.9** in linear scene units. The ARRI LogC3 curve that the
+LTX-2.3 HDR IC-LoRA path is fixed to reaches **55.1**, four times less. That is the whole
+reason to care which of the two paths a shot goes down.
+
+Whether a given shot needs the difference is a separate question, and on the one measured here
+it did not: the frames top out at code 0.906 with no sample at the ceiling. A bright shot is the
+test of the extra range and a dark neon portrait is not.
+
+### That it works, measured
+
+The plate encoded to ACEScct had a code median of **0.3295** and came back from the model at
+**0.3298**, so the level is preserved rather than drifting. Decoded, the output peaks at
+**71.38** linear. `example_workflows/acescct_native/` holds the plate, two frames of the output,
+a ProRes review and the numbers behind each.
+
+The encoder was checked against the published constants before any of that: linear 0.18 gives
+code 0.413588 and linear 0.0 gives 0.0729055, and the delivered plate round-trips back to the
+linear original with a worst relative error of 3.7e-05.
+
+### New
+
+`example_workflows/OCIO_Example_LTX25_native_ACEScct.json` builds that shape inside ComfyUI, with
+a note listing which weights each side needs. They are not the same files: ComfyUI loads the INT8
+`convrot` pair at about 34 GiB and their tool cannot read those at all, wanting the bf16 pair at
+about 64 GiB.
+
+`docs/assets/ltx25_acescct_pipeline.svg` draws the route, with the ceilings and the weights on it.
+
+### One failure worth recording
+
+The command line half is not part of this pack and is not supported here, but on Windows it
+fails most of the time for a reason that has nothing to do with the GPU. Safetensors' default
+mmap backend takes a commit charge the size of the whole checkpoint at open, before a tensor is
+read: measured on the 39.13 GiB transformer, available commit fell from 147.23 to 106.42 GiB
+while free physical memory moved half a gigabyte. When the commit limit runs out the process
+dies as a `RuntimeError` about an invalid python storage, as a bare segfault, or as
+`OSError 1455`. Passing `backend="pread"` to `safe_open` charges nothing and the run completes.
+
 ## 1.3.2: an exposure node, and a reference for the two nodes that did not have one
 
 ### OCIO Exposure

@@ -818,8 +818,9 @@ EXR out, which is what `OCIO Read`, `OCIO LogConvert` on the ACEScct curve and `
 from their CLI rather than from ComfyUI, and it wants the LTX-2.5 weight set: the bf16 files their README puts
 at roughly 66 GiB, of which the transformer alone is 39 GiB, so it does not load unquantized on a 24 GB card.
 
-**It has since been run here, and the card was never the obstacle.** With `--offload disk` the weights stream
-from system memory and the pipeline completes on two 24 GB cards. Feeding it a plate this pack encoded to
+**It has since been run here, and the card was never the obstacle.** With `--offload disk` the weights are read
+off disk on demand through a small CPU buffer rather than held in VRAM, and the pipeline completes on two 24 GB
+cards. Feeding it a plate this pack encoded to
 ACEScct, the output came back at a code median of **0.3298** against the plate's **0.3295**, so the level is
 preserved, and decoded it peaks at **71.38** linear. Those frames and the material behind this paragraph are in
 `example_workflows/acescct_native/`.

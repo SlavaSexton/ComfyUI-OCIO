@@ -729,6 +729,55 @@ class OCIOLogConvert:
         return True
 
 
+class OCIOExposure:
+    """Exposure in STOPS, as a pure linear multiply (Nuke: Exposure / Grade's multiply).
+
+    out = in * 2**exposure, on RGB only, with alpha passed through. Nothing is clamped at
+    either end: values above 1.0 keep going and negatives stay negative, because a multiply
+    preserves sign. That is the whole point of having it here rather than reaching for a
+    node from another pack, most of which clamp to 0..1 by default and quietly throw away
+    the range this pack exists to carry.
+
+    WHERE THIS IS ACTUALLY NEEDED, and it is not a creative grade. An HDR reconstruction
+    pass does not return the plate's level: it re-renders into its own tonal distribution,
+    so the result sits below the plate and has to be lifted before the two can be compared
+    or cut together. Measured on three shots from one session, the lift was 1.56, 1.24 and
+    1.01 stops - steady inside a shot (1.53 to 1.62 across 121 frames, a 5.7% spread) and
+    NOT transferable between shots. Find it as log2 of the ratio of median luminance, plate
+    over pass. Do not carry a number over from another shot.
+
+    Exposure belongs in the grade, not baked into a scene-linear master, so leave this at
+    0.0 unless the deliverable is meant to sit at the plate's level and nobody downstream
+    will be matching it. At 0.0 the node is a pass-through.
+    """
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "exposure": ("FLOAT", {"default": 0.0, "min": -20.0, "max": 20.0, "step": 0.01,
+                                   "tooltip": "Stops. out = in * 2**exposure. 0.0 is a pass-through. "
+                                              "Nothing is clamped: highlights above 1.0 and negatives "
+                                              "both survive."}),
+            "mix": _mix_input(),
+        }, "optional": {"image": ("IMAGE",), "video": ("VIDEO",)}}
+
+    RETURN_TYPES = ("IMAGE", "VIDEO")
+    RETURN_NAMES = ("image/sequence/video", "ComfyUI Video")
+    OUTPUT_TOOLTIPS = ("Image scaled by 2**exposure. Nothing is clamped at either end.",)
+    FUNCTION = "run"
+    CATEGORY = "OCIO"
+
+    def run(self, image=None, exposure=0.0, mix=1.0, video=None):
+        gain = 2.0 ** float(exposure)
+
+        def _apply(img):
+            arr = img.detach().cpu().numpy().astype(np.float32)
+            out = arr.copy()
+            out[..., :3] = arr[..., :3] * gain          # alpha, if present, is left alone
+            return _blend(img, torch.from_numpy(out).to(img.device, img.dtype), mix)
+
+        return _dual_io(_apply, image, video, label="OCIO Exposure")
+
 class OCIOColorSpace:
     """Convert between two OCIO colorspaces (Nuke: OCIOColorSpace). 'swap in/out' button flips them."""
 
@@ -951,6 +1000,7 @@ class OCIOLookTransform:
 NODE_CLASS_MAPPINGS = {
     "OCIOColorSpace": OCIOColorSpace,
     "OCIOLogConvert": OCIOLogConvert,
+    "OCIOExposure": OCIOExposure,
     "OCIODisplay": OCIODisplay,
     "OCIOCDLTransform": OCIOCDLTransform,
     "OCIOFileTransform": OCIOFileTransform,
@@ -960,6 +1010,7 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "OCIOColorSpace": "OCIO ColorSpace",
     "OCIOLogConvert": "OCIO LogConvert",
+    "OCIOExposure": "OCIO Exposure",
     "OCIODisplay": "OCIO Display",
     "OCIOCDLTransform": "OCIO CDLTransform",
     "OCIOFileTransform": "OCIO FileTransform",

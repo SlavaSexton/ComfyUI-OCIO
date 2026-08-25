@@ -797,9 +797,12 @@ decode to float precision. As with any EXR here, set `OPENCV_IO_ENABLE_OPENEXR=1
 
 ### Why the highlights only go so far
 
-The path this recipe drives is Lightricks' `HDRICLoraPipeline`, and it is fixed to one curve. Their own code
-calls ARRI LogC3 EI 800 the HDR IC-LoRA default, and there is no way to ask for another. The alternatives are
-not close: at code 1.0, LogC3 reaches **55.1** in linear scene units, ACEScct **222.9**, LogC4 **469.8**.
+The path this recipe drives is Lightricks' `HDRICLoraPipeline`, and it takes its curve from the LoRA's own
+safetensors metadata, falling back to ARRI LogC3 EI 800 when the file does not name one. The shipped
+`T2_IC_SDR2HDR_LTX_LoRA.safetensors` carries only `{"reference_downscale_factor": "1"}`, so this recipe gets
+LogC3; the curve travels in the LoRA rather than on the command line, and their IC-LoRA entry point refuses the
+native `--hdr` flag. The alternatives are not close: at code 1.0, LogC3 reaches **55.1** in linear scene units,
+ACEScct **222.9**, LogC4 **469.8**.
 
 That looks like the ceiling on highlight detail, and it is not. The decode clamps codes to 1.0 before
 converting out of log, and the clamp is what capped the result. The model emits codes above 1.0 and the curve
@@ -819,8 +822,8 @@ from their CLI rather than from ComfyUI, and it wants the LTX-2.5 weight set: th
 at roughly 66 GiB, of which the transformer alone is 39 GiB, so it does not load unquantized on a 24 GB card.
 
 **It has since been run here, and the card was never the obstacle.** With `--offload disk` the weights are read
-off disk on demand through a small CPU buffer rather than held in VRAM, and the pipeline completes on two 24 GB
-cards. Feeding it a plate this pack encoded to
+off disk on demand through a small CPU buffer rather than held in VRAM, and the pipeline completes on a single
+24 GB card, which is all it ever uses: it binds to one CUDA device and has no multi-GPU path. Feeding it a plate this pack encoded to
 ACEScct, the output came back at a code median of **0.3298** against the plate's **0.3295**, so the level is
 preserved, and decoded it peaks at **71.38** linear. Those frames and the material behind this paragraph are in
 `example_workflows/acescct_native/`.
@@ -869,7 +872,7 @@ pass through with no load-time transfer. ACEScct is the space the VAE actually s
 conveniences that get converted into it. The same page records that their decode runs in **float32** for HDR
 while SDR stays bf16, and that it writes half-float EXR frames plus a BT.2020/HLG master, which is why the
 recipe below writes EXR at `16f`. ACEScct itself is a published standard, ACES log with a
-toe, black at `0.0729`, defined in SMPTE S-2016-001 - so both ends of the chain are specified by someone other
+toe, black at `0.0729`, defined in AMPAS S-2016-001 - so both ends of the chain are specified by someone other
 than us.
 
 

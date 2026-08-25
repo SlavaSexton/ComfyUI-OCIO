@@ -4,8 +4,9 @@ LTX-2.5 native HDR, the ACEScct route
 LTX-2.5 has a native HDR path that takes EXR in and writes EXR out. It is not reachable from
 ComfyUI: the flag lives in Lightricks' own CLI, `--hdr {SRGB_LINEAR,ACESCG,ACESCCT}`, and
 ComfyUI's core has no ACEScct path at all. Searched on 2026-08-25, the official Comfy template
-library carries 1030 workflows and none of them mentions ACEScct; every LTX template in it has
-no colour management of any kind.
+library lists 599 templates in 8 categories and none of them mentions ACEScct; every LTX
+template in it has no colour management of any kind. The same search finds KSampler in 251 and
+a nonsense token in none, so it is looking rather than failing quietly.
 
 What this pack supplies is the two ends of that path. The middle is their CLI.
 
@@ -81,4 +82,5 @@ THE GRAPH
     differ from the ones the CLI needs.
 
     It is the SHAPE, not the vendor's pipeline. Theirs does the compression internally, keeps
-    the VAE in float32, and writes the EXR frames and the HLG master in this folder.
+    the VAE in float32, and writes EXR frames tagged ACEScct plus a BT.2020 HLG master. The two
+    frames here are copies of that output; the master is not included.

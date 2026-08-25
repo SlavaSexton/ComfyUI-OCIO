@@ -5,8 +5,9 @@
 LTX-2.5 has a native HDR path. It takes EXR in, works in ACEScct, and writes EXR out plus a
 BT.2020 HLG master. The flag that turns it on lives in Lightricks' own command line tool,
 `--hdr {SRGB_LINEAR,ACESCG,ACESCCT}`, and there is no route to it from ComfyUI: searched on
-2026-08-25, the official Comfy template library holds **1030 workflows and none of them
-mentions ACEScct**, while every LTX template in it has no colour management of any kind.
+2026-08-25, the official Comfy template library lists **599 templates in 8 categories and none
+mentions ACEScct**, while every LTX template in it has no colour management of any kind. The
+same search finds `KSampler` in 251 of them and a nonsense token in none, so it is looking.
 
 What this release adds is the two ends of that path. The middle is their tool.
 
@@ -20,9 +21,15 @@ At code 1.0 ACEScct reaches **222.9** in linear scene units. The ARRI LogC3 curv
 LTX-2.3 HDR IC-LoRA path is fixed to reaches **55.1**, four times less. That is the whole
 reason to care which of the two paths a shot goes down.
 
-Whether a given shot needs the difference is a separate question, and on the one measured here
-it did not: the frames top out at code 0.906 with no sample at the ceiling. A bright shot is the
-test of the extra range and a dark neon portrait is not.
+Whether a given shot needs that difference is a separate question, and on three measured here it
+did not. A dark neon portrait topped out at code 0.906. Two bright shots with the sun in frame,
+glass towers and a cave mouth over the ocean, topped out at 0.786 and 0.745. None of the three
+put a single sample at the ceiling.
+
+On both bright shots the model returned LESS range than the plate carried: 45.02 linear in,
+16.60 out, and 12.38 in, 10.03 out. So on this material the limit is the model rather than the
+curve, and the four times headroom is worth having for what it does not clip rather than for
+range it is currently filling.
 
 ### That it works, measured
 

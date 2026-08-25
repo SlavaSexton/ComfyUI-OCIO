@@ -84,3 +84,21 @@ THE GRAPH
     It is the SHAPE, not the vendor's pipeline. Theirs does the compression internally, keeps
     the VAE in float32, and writes EXR frames tagged ACEScct plus a BT.2020 HLG master. The two
     frames here are copies of that output; the master is not included.
+
+THE TWO ROUTES SIDE BY SIDE
+
+    ../comparisons/LogC3_vs_ACEScct_towers.png
+    ../comparisons/LogC3_vs_ACEScct_cave.png
+
+    Each sheet is one shot, walked down four stops. The top row is the LTX-2.3 HDR IC-LoRA pass
+    on LogC3, the bottom is LTX-2.5's native path through ACEScct, and the levels are matched
+    first, because the two routes do not return the same exposure and comparing them unmatched
+    compares exposures rather than reconstructions. The lift applied is printed on each sheet.
+
+    They do not flatter ACEScct, and that is the point of including them. On both bright shots
+    the LogC3 route carried more range: peak 53.43 linear against 16.60 on the towers, and 50.41
+    against 8.10 on the cave. Neither route put a meaningful number of samples at its own ceiling
+    (0.0000% and 0.0001% for LogC3, none at all for ACEScct), so on this material the limit is
+    the model rather than the curve.
+
+    Both paths ship. Which one suits a shot is a decision to make on numbers like these.

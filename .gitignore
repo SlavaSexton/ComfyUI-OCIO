@@ -26,6 +26,16 @@ example_workflows/output/
 example_workflows/**/*.mp4
 example_workflows/**/*.mov
 example_workflows/**/*.exr
+
+# The blanket render rules above stay: they exist to keep TEST renders from accumulating in a working
+# directory, and that job is unchanged. What has changed since they were written is that the folder now
+# publishes graphs, and a published graph is worth little without something to open beside it. So the
+# deliverables are named one at a time, exactly as the comment above prescribes for renders that are not
+# inputs: the first and last frame of each sequence, and the two review movies. A stray test render
+# dropped anywhere else in the folder is still ignored.
+!example_workflows/frames/
+!example_workflows/frames/*.exr
+!example_workflows/frames/*.mov
 probe.mp4
 # A reference render brought in from Nuke to compare against, plus the sidecar our own writer drops beside a
 # sequence. Named as a folder rather than by extension: a *.json rule here would also catch the graphs being

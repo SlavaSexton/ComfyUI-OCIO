@@ -11,6 +11,8 @@
 **Now on ComfyUI's native VIDEO wire:**
 <br>
 **Color-Manage HDR, LTX, Flux, Cineon and 10-bit clips inside a native video graph.**
+<br>
+**And the ACEScct route into LTX-2.5's own HDR path, which ComfyUI has no other way to reach.**
 
 **By [AI VFX NEWS](https://aivfxnews.com/) · Slava Sexton.**
 
@@ -868,6 +870,16 @@ while SDR stays bf16, and that it writes half-float EXR frames plus a BT.2020/HL
 recipe below writes EXR at `16f`. ACEScct itself is a published standard, ACES log with a
 toe, black at `0.0729`, defined in SMPTE S-2016-001 - so both ends of the chain are specified by someone other
 than us.
+
+
+<div align="center">
+
+<img src="docs/assets/ltx25_acescct_pipeline.svg" width="880" alt="The ACEScct route as a diagram. Along the top, OCIO Read loads the plate as sRGB - Display, OCIO ColorSpace takes it to scene-linear ACEScg, and OCIO LogConvert compresses it to ACEScct codes. The model sits below, dashed, with a note that its native HDR flag lives in Lightricks' command line tool rather than in ComfyUI. Below that the same two nodes run in reverse: OCIO LogConvert takes ACEScct back to linear and OCIO Write stores a 32-bit float EXR in ACEScg. A panel gives each curve's ceiling at code 1.0, 222.9 for ACEScct against 55.1 for ARRI LogC3. Two more panels list the weights each side needs and note that the command line tool cannot read the INT8 files ComfyUI uses.">
+
+*The same two nodes on both sides of the model. Whatever the input is compressed with, the output is
+expanded with, and the panels carry the numbers that decide whether it worked.*
+
+</div>
 
 ### What the stock path costs, on one clip
 

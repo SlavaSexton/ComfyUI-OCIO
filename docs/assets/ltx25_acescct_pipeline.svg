@@ -1,0 +1,111 @@
+<svg viewBox="0 0 960 640" width="960" height="640" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc" font-family="Inter,Segoe UI,Helvetica,Arial,sans-serif">
+<title id="title">The ACEScct route into LTX-2.5, and back out of it</title>
+<desc id="desc">A symmetric pipeline. On the way in, OCIO Read loads the plate as sRGB - Display, OCIO ColorSpace takes it to scene-linear ACEScg, and OCIO LogConvert compresses it to ACEScct codes, which is the space LTX-2.5's own HDR path works in. The model sits in the middle, dashed, and its native HDR flag lives in Lightricks' command line tool rather than in ComfyUI. On the way out the same two nodes run in reverse: OCIO LogConvert takes ACEScct back to linear and OCIO Write stores a 32-bit float EXR in ACEScg. Two panels carry the numbers. One lists the weights: ComfyUI loads the INT8 convrot transformer at 20.03 gigabytes and the INT8 text encoder at 14.32, while the command line tool cannot read those files at all and needs the bf16 pair at 39.13 and 24.46 gigabytes; the two VAEs and the latent upscaler are the same files on both sides. The other compares the curves, ACEScct reaching 222.9 in linear scene units at code 1.0 where the ARRI LogC3 curve of the LTX-2.3 path reaches 55.1, and records that a plate encoded at a code median of 0.3295 came back at 0.3298.</desc>
+<style>
+  .stage{font:600 11px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#6b7688;letter-spacing:.14em}
+  .ours{fill:#0d1424;stroke:#5BAEE3;stroke-width:1.5}
+  .model{fill:#141821;stroke:#5a6274;stroke-width:1.5;stroke-dasharray:5 3}
+  .panel{fill:#0b1120;stroke:#1b2230;stroke-width:1}
+  .name{font:600 14px Inter,Segoe UI,Helvetica,Arial,sans-serif;fill:#f3f1ea}
+  .sub{font:400 11.5px Inter,Segoe UI,Helvetica,Arial,sans-serif;fill:#9aa3b2}
+  .tag{font:600 10px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#5BAEE3}
+  .gold{font:600 10px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#FFD27D}
+  .w{stroke:#5BAEE3;stroke-width:1.6;fill:none}
+  .wm{stroke:#6b7688;stroke-width:1.6;fill:none}
+  .hdr{font:600 10.5px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#6b7688;letter-spacing:.10em}
+  .num{font:600 12px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#FFD27D}
+  .numd{font:600 12px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#7d879a}
+  .mono{font:400 10.5px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#9aa3b2}
+  .monob{font:600 10.5px ui-monospace,SFMono-Regular,Menlo,monospace;fill:#dfe2e8}
+  .warn{font:600 10.5px Inter,Segoe UI,Helvetica,Arial,sans-serif;fill:#d98a2b}
+  .note{font:400 11.5px Inter,Segoe UI,Helvetica,Arial,sans-serif;fill:#9aa3b2}
+  .noteb{font:600 11.5px Inter,Segoe UI,Helvetica,Arial,sans-serif;fill:#dfe2e8}
+</style>
+<defs>
+  <marker id="ab" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#5BAEE3"/></marker>
+  <marker id="am" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#6b7688"/></marker>
+  <radialGradient id="glow" cx="88%" cy="4%" r="58%">
+    <stop offset="0%" stop-color="#FFD27D" stop-opacity=".13"/><stop offset="100%" stop-color="#FFD27D" stop-opacity="0"/>
+  </radialGradient>
+  <radialGradient id="glow2" cx="5%" cy="97%" r="55%">
+    <stop offset="0%" stop-color="#5BAEE3" stop-opacity=".10"/><stop offset="100%" stop-color="#5BAEE3" stop-opacity="0"/>
+  </radialGradient>
+</defs>
+
+<rect width="960" height="640" fill="#050813"/>
+<rect width="960" height="640" fill="url(#glow)"/>
+<rect width="960" height="640" fill="url(#glow2)"/>
+<rect x="16" y="16" width="928" height="608" rx="14" fill="none" stroke="#FFD27D" stroke-opacity=".14"/>
+
+<text class="stage" x="44" y="56">INTO THE MODEL</text>
+
+<rect class="ours" rx="10" x="44" y="70" width="212" height="76"/>
+<text class="name" x="61" y="96">OCIO Read</text>
+<text class="sub"  x="61" y="115">the plate, still or sequence</text>
+<text class="tag"  x="61" y="134">sRGB - Display</text>
+
+<path class="w" d="M256,108 H304" marker-end="url(#ab)"/>
+
+<rect class="ours" rx="10" x="312" y="70" width="212" height="76"/>
+<text class="name" x="329" y="96">OCIO ColorSpace</text>
+<text class="sub"  x="329" y="115">sRGB  to  ACEScg</text>
+<text class="tag"  x="329" y="134">scene-linear, AP1</text>
+
+<path class="w" d="M524,108 H572" marker-end="url(#ab)"/>
+
+<rect class="ours" rx="10" x="580" y="70" width="316" height="76"/>
+<text class="name" x="597" y="96">OCIO LogConvert</text>
+<text class="sub"  x="597" y="115">Linear to Log, curve ACEScct</text>
+<text class="gold" x="597" y="134">linear 0.18 becomes code 0.413588</text>
+
+<path class="w" d="M738,146 V190" marker-end="url(#ab)"/>
+
+<text class="stage" x="44" y="190">MODEL</text>
+<rect class="model" rx="10" x="196" y="198" width="700" height="70"/>
+<text class="name" x="217" y="224">LTX-2.5</text>
+<text class="sub"  x="217" y="243">Its native HDR path takes EXR in and writes EXR out, and works in ACEScct.</text>
+<text class="sub"  x="217" y="260">The flag is in Lightricks' CLI, not in ComfyUI. The weights differ, see below.</text>
+
+<path class="wm" d="M480,268 V306" marker-end="url(#am)"/>
+
+<text class="stage" x="44" y="306">OUT OF THE MODEL</text>
+
+<rect class="ours" rx="10" x="312" y="314" width="316" height="76"/>
+<text class="name" x="329" y="340">OCIO LogConvert</text>
+<text class="sub"  x="329" y="359">Log to Linear, curve ACEScct</text>
+<text class="tag"  x="329" y="378">the same node, run the other way</text>
+
+<path class="w" d="M628,352 H676" marker-end="url(#ab)"/>
+
+<rect class="ours" rx="10" x="684" y="314" width="212" height="76"/>
+<text class="name" x="701" y="340">OCIO Write</text>
+<text class="sub"  x="701" y="359">sequence - EXR 32f</text>
+<text class="tag"  x="701" y="378">ACEScg, tagged</text>
+
+<rect class="panel" rx="10" x="44" y="314" width="236" height="76"/>
+<text class="hdr"  x="61" y="335">CEILING AT CODE 1.0</text>
+<text class="num"  x="61" y="358">ACEScct   222.9</text>
+<text class="numd" x="61" y="378">ARRI LogC3   55.1</text>
+
+<rect class="panel" rx="10" x="44" y="410" width="480" height="140"/>
+<text class="hdr"  x="62" y="432">WHICH WEIGHTS, AND THEY ARE NOT THE SAME FILES</text>
+<text class="monob" x="62" y="456">in ComfyUI</text>
+<text class="mono" x="62" y="474">ltx-2.5-22b-distilled-transformer-comfy-int8-convrot   20.03 GiB</text>
+<text class="mono" x="62" y="490">gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot        14.32 GiB</text>
+<text class="monob" x="62" y="512">in their CLI, which is where the ACEScct flag lives</text>
+<text class="mono" x="62" y="530">ltx-2.5-22b-distilled-transformer-bf16                 39.13 GiB</text>
+<text class="mono" x="62" y="544">gemma4-12b-with-proj-ltx-2.5-bf16                      24.46 GiB</text>
+
+<rect class="panel" rx="10" x="540" y="410" width="356" height="140"/>
+<text class="hdr"  x="558" y="432">WHAT THAT MEANS IN PRACTICE</text>
+<text class="warn" x="558" y="456">Their CLI cannot read the convrot files.</text>
+<text class="note" x="558" y="476">The two VAEs and the latent upscaler are the</text>
+<text class="note" x="558" y="492">same files on both sides. Only the transformer</text>
+<text class="note" x="558" y="508">and the text encoder differ, and that is 64 GiB</text>
+<text class="note" x="558" y="524">to download rather than 34.</text>
+<text class="gold" x="558" y="544">plate 0.3295 in, output 0.3298 out</text>
+
+<rect x="44" y="566" width="852" height="42" rx="8" fill="#0b1120" stroke="#1b2230"/>
+<text class="noteb" x="62" y="584">Blue boxes are this pack's nodes, the dashed box is the model.</text>
+<text class="note"  x="62" y="600">The chain is symmetric: what is compressed on the way in is undone on the way out, by the same node run the other way.</text>
+</svg>

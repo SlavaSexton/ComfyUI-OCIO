@@ -36,6 +36,10 @@ example_workflows/**/*.exr
 !example_workflows/frames/
 !example_workflows/frames/*.exr
 !example_workflows/frames/*.mov
+!example_workflows/acescct_native/
+!example_workflows/acescct_native/*.exr
+!example_workflows/acescct_native/*.mov
+!example_workflows/acescct_native/*.mp4
 probe.mp4
 # A reference render brought in from Nuke to compare against, plus the sidecar our own writer drops beside a
 # sequence. Named as a folder rather than by extension: a *.json rule here would also catch the graphs being

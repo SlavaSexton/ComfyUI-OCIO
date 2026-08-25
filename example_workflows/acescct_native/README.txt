@@ -1,0 +1,70 @@
+LTX-2.5 native HDR, the ACEScct route
+=====================================
+
+LTX-2.5 has a native HDR path that takes EXR in and writes EXR out. It is not reachable from
+ComfyUI: the flag lives in Lightricks' own CLI, `--hdr {SRGB_LINEAR,ACESCG,ACESCCT}`, and
+ComfyUI's core has no ACEScct path at all. Searched on 2026-08-25, the official Comfy template
+library carries 1030 workflows and none of them mentions ACEScct; every LTX template in it has
+no colour management of any kind.
+
+What this pack supplies is the two ends of that path. The middle is their CLI.
+
+    OCIO Read (sRGB or ACEScg)
+      -> OCIO ColorSpace   to ACEScg
+      -> OCIO LogConvert   Linear to Log, curve ACEScct
+      -> OCIO Write        EXR 32f
+            [ their CLI:  ltx_pipelines.distilled --hdr ACESCCT ]
+      -> OCIO Read         their EXR
+      -> OCIO LogConvert   Log to Linear, curve ACEScct
+      -> OCIO Write        EXR or ProRes
+
+FILES
+
+plate_acescct.exr
+    The plate from frames/GIRL_SDR.0001.exr put through the ACEScct transfer by OCIO Write,
+    written 32-bit float and tagged: chromaticities AP1 with ACES white, and
+    com.ocio.colorspace ACEScct. Read it with a Log2Lin on ACEScct and it returns to the
+    linear plate, worst relative error 3.7e-05.
+
+    Verified against the published constants before it was written:
+        linear 0.18 -> code 0.413588   (published mid grey)
+        linear 0.0  -> code 0.0729055  (published ACEScct black)
+
+cli_output.0001.exr, cli_output.0009.exr
+    First and last frame of what their CLI wrote, `--hdr ACESCCT`, fed the file above. Their
+    header declares colorSpace ACEScct on the same AP1 chromaticities. These are CODES.
+
+    Measured against the plate they came from:
+        plate  code p50 0.3295   linear p50 0.0648
+        output code p50 0.3298   linear p50 0.0651   linear max 71.38
+
+    The output sits on the plate's level. That is the check that the input was interpreted
+    correctly: a run fed a LINEAR plate under the same flag, which their docs define as
+    "already ACEScct codes, pass through", came out about five stops darker with a median that
+    decodes slightly negative.
+
+review.mov
+    ProRes 4444, Rec.709, built from the nine frames through the ACES 2.0 SDR output transform.
+    Written at 3 fps so nine frames run three seconds. For looking, not for grading.
+
+their_master_hlg.mp4
+    The HDR master their CLI writes alongside the EXRs: HEVC Main 10, BT.2020 primaries,
+    ARIB STD-B67 transfer, 9 frames at 24 fps. It is 0.375 seconds long, which is why most
+    players will not show it.
+
+WHY THE CEILING MATTERS HERE
+
+The LTX-2.3 HDR IC-LoRA path this pack also documents is fixed to ARRI LogC3, whose ceiling is
+55.1 linear at code 1.0. ACEScct reaches 222.9 at the same code. On the run above, 0.67% of
+pixels sat at exactly code 1.0, so this path reaches its ceiling too; it is simply four times
+further out.
+
+RUNNING IT ON WINDOWS
+
+The CLI half is not part of this pack and is not supported here, but one failure is worth
+recording because it costs a day to find. On Windows, safetensors' default mmap backend takes
+a commit charge the size of the whole checkpoint at open time, before a tensor is read.
+Measured on a 39.13 GiB file: available commit fell 147.23 to 106.42 GiB, a charge of 40.81
+GiB, while free physical memory moved by half a gigabyte. When the commit limit runs out the
+run dies as a RuntimeError about an invalid python storage, as a bare segfault, or as
+OSError 1455. Passing backend="pread" to safe_open charges 0.00 GiB and the run completes.

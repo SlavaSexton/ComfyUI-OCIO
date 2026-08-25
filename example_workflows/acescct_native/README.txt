@@ -68,3 +68,12 @@ Measured on a 39.13 GiB file: available commit fell 147.23 to 106.42 GiB, a char
 GiB, while free physical memory moved by half a gigabyte. When the commit limit runs out the
 run dies as a RuntimeError about an invalid python storage, as a bare segfault, or as
 OSError 1455. Passing backend="pread" to safe_open charges 0.00 GiB and the run completes.
+
+THE GRAPH
+    ../OCIO_Example_LTX25_native_ACEScct.json builds the shape above inside ComfyUI: sRGB in,
+    converted to ACEScg, compressed to ACEScct codes before the model and decompressed after
+    it, written as a linear EXR. One of its notes lists the weights it loads and how they
+    differ from the ones the CLI needs.
+
+    It is the SHAPE, not the vendor's pipeline. Theirs does the compression internally, keeps
+    the VAE in float32, and writes the EXR frames and the HLG master in this folder.

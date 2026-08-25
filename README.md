@@ -816,11 +816,20 @@ EXR out, which is what `OCIO Read`, `OCIO LogConvert` on the ACEScct curve and `
 from their CLI rather than from ComfyUI, and it wants the LTX-2.5 weight set: the bf16 files their README puts
 at roughly 66 GiB, of which the transformer alone is 39 GiB, so it does not load unquantized on a 24 GB card.
 
-What that costs on a 24 GB card, checked but **not run**: their NVFP4 path is closed, since it requires
-Blackwell, and an Ampere card reports compute capability 8.6. Their `fp8-cast` path is not closed, because it
-stores the transformer at FP8 and upcasts during inference, which needs FP8 *storage* rather than FP8 matmul,
-and FP8 storage allocates on 8.6. The INT8 checkpoints in the model repository are built for ComfyUI and their
-CLI does not read them. So the barrier is the 63.6 GiB of bf16 weights their CLI does read, not the card.
+**It has since been run here, and the card was never the obstacle.** With `--offload disk` the weights stream
+from system memory and the pipeline completes on two 24 GB cards. Feeding it a plate this pack encoded to
+ACEScct, the output came back at a code median of **0.3298** against the plate's **0.3295**, so the level is
+preserved, and decoded it peaks at **71.38** linear. Those frames and the material behind this paragraph are in
+`example_workflows/acescct_native/`.
+
+Two things about that run are worth knowing before anyone repeats it. The INT8 checkpoints in the model
+repository are built for ComfyUI and their CLI does not read them, so it wants the bf16 pair, 63.6 GiB for the
+transformer and the text encoder together. And on Windows the run fails most of the time for a reason that has
+nothing to do with the GPU: safetensors' default mmap backend takes a commit charge the size of the whole
+checkpoint at open, before a tensor is read. Measured on the 39.13 GiB transformer, available commit fell from
+147.23 to 106.42 GiB, a charge of 40.81 GiB, while free physical memory moved half a gigabyte. When the commit
+limit runs out the process dies as a `RuntimeError` about an invalid python storage, as a bare segfault, or as
+`OSError 1455`. Passing `backend="pread"` to `safe_open` charges nothing and the run completes.
 
 **Against other models the trade is range for stability.** A LogC4-trained alternative reached a peak of
 **541.8** where this path with the clamp removed reached **197.1**, so 2.7 times the range. Its median
@@ -1003,7 +1012,7 @@ through OCIO Write with the frame count intact.
 
 ## Example workflows
 
-Three graphs ship in `example_workflows/`, all built around the current node set and all opened and run on a
+Four graphs ship in `example_workflows/`, all built around the current node set and all opened and run on a
 live server before being committed.
 
 `OCIO_WORKFLOW_LTX_2.5.json` is the LTX-2.5 image-to-video chain with audio: `OCIO Read` on the way in,
@@ -1020,6 +1029,12 @@ time, and `docs/NODES_IO.md` covers the colour side under `profile`.
 Split, each stage loads one model instead of holding both, and an HDR setting can be re-tried without
 regenerating. `example_workflows/comparisons/` holds exposure ramps for six shots, and
 `example_workflows/frames/` the first and last frame of each sequence as ACEScg EXR plus the two reviews.
+
+`OCIO_Example_LTX25_native_ACEScct.json` builds the shape of LTX-2.5's native HDR path inside ComfyUI: sRGB
+in, converted to ACEScg, compressed to ACEScct codes before the model and decompressed after it, written as a
+linear EXR. That path's own flag lives in Lightricks' CLI rather than in ComfyUI, so this graph is the shape
+rather than the pipeline; `example_workflows/acescct_native/` holds what their CLI produced when the two were
+run against each other, and one of the graph's notes lists which weights each side needs.
 
 `example_workflows/nyc_skyline.png` stays, and not as a leftover: it is the source image the accuracy suite
 measures against, in `measure_ocio_parity.py`, `measure_histogram_compare.py` and `gen_fixtures.py`. Remove it

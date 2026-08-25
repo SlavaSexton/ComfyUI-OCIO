@@ -832,8 +832,8 @@ Two things about that run are worth knowing before anyone repeats it. The INT8 c
 repository are built for ComfyUI and their CLI does not read them, so it wants the bf16 pair, 63.6 GiB for the
 transformer and the text encoder together. And on Windows the run fails most of the time for a reason that has
 nothing to do with the GPU: safetensors' default mmap backend takes a commit charge the size of the whole
-checkpoint at open, before a tensor is read. Measured on the 39.13 GiB transformer, available commit fell from
-147.23 to 106.42 GiB, a charge of 40.81 GiB, while free physical memory moved half a gigabyte. When the commit
+checkpoint at open, before a tensor is read. Measured twice on the 39.13 GiB transformer, available commit fell
+by 39.22 and 39.21 GiB, essentially the size of the file, while free physical memory did not move at all. When the commit
 limit runs out the process dies as a `RuntimeError` about an invalid python storage, as a bare segfault, or as
 `OSError 1455`. Passing `backend="pread"` to `safe_open` charges nothing and the run completes.
 

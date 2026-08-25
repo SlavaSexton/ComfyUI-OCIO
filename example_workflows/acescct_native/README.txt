@@ -70,8 +70,8 @@ RUNNING IT ON WINDOWS
 The CLI half is not part of this pack and is not supported here, but one failure is worth
 recording because it costs a day to find. On Windows, safetensors' default mmap backend takes
 a commit charge the size of the whole checkpoint at open time, before a tensor is read.
-Measured on a 39.13 GiB file: available commit fell 147.23 to 106.42 GiB, a charge of 40.81
-GiB, while free physical memory moved by half a gigabyte. When the commit limit runs out the
+Measured twice on a 39.13 GiB file: available commit fell by 39.22 and 39.21 GiB, which is
+the size of the file, while free physical memory did not move at all. When the commit limit runs out the
 run dies as a RuntimeError about an invalid python storage, as a bare segfault, or as
 OSError 1455. Passing backend="pread" to safe_open charges 0.00 GiB and the run completes.
 

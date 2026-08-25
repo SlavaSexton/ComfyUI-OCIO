@@ -43,21 +43,26 @@ cli_output.0001.exr, cli_output.0009.exr
     "already ACEScct codes, pass through", came out about five stops darker with a median that
     decodes slightly negative.
 
-review.mov
-    ProRes 4444, Rec.709, built from the nine frames through the ACES 2.0 SDR output transform.
-    Written at 3 fps so nine frames run three seconds. For looking, not for grading.
+review.mov, review.json
+    ProRes 4444, Rec.709, written by this pack's own OCIO Write from the nine frames with the
+    ACES 2.0 SDR output transform applied on the way out. 3 fps, so nine frames run three
+    seconds and a player will show them. For looking, not for grading. The sidecar beside it is
+    what OCIO Write records about the write.
 
-their_master_hlg.mp4
-    The HDR master their CLI writes alongside the EXRs: HEVC Main 10, BT.2020 primaries,
-    ARIB STD-B67 transfer, 9 frames at 24 fps. It is 0.375 seconds long, which is why most
-    players will not show it.
+    Their CLI also writes an HDR master beside the EXRs, HEVC Main 10 in BT.2020 with the HLG
+    transfer. It is not included here: at 24 fps nine frames last 0.375 seconds, which most
+    players will not show at all, and the review above carries the same picture in a container
+    that opens everywhere.
 
 WHY THE CEILING MATTERS HERE
 
 The LTX-2.3 HDR IC-LoRA path this pack also documents is fixed to ARRI LogC3, whose ceiling is
-55.1 linear at code 1.0. ACEScct reaches 222.9 at the same code. On the run above, 0.67% of
-pixels sat at exactly code 1.0, so this path reaches its ceiling too; it is simply four times
-further out.
+55.1 linear at code 1.0. ACEScct reaches 222.9 at the same code, four times further out.
+
+This particular run did not go anywhere near either. The two frames here top out at code 0.906
+and 0.875, with no sample at the ceiling at all, which decodes to a peak of 71.38 linear. So the
+headroom was there and the shot did not need it. A brighter shot would be the test of whether
+the extra range is reached, and this one is not that test.
 
 RUNNING IT ON WINDOWS
 

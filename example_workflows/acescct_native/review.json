@@ -1,0 +1,41 @@
+{
+  "file": "review.mov",
+  "writer": "ComfyUI-OCIO",
+  "codec": "prores_4444",
+  "framesPerSecond": 3.0,
+  "container_keeps": [
+    "colorInteropID",
+    "com.ocio.colorspace",
+    "com.ocio.gamut",
+    "imageCounter"
+  ],
+  "sidecar_only": [
+    "adoptedNeutral",
+    "captureRate",
+    "chromaticities",
+    "framesPerSecond"
+  ],
+  "attributes": {
+    "chromaticities": [
+      0.64,
+      0.33,
+      0.3,
+      0.6,
+      0.15,
+      0.06,
+      0.3127,
+      0.329
+    ],
+    "com.ocio.gamut": "Rec.709",
+    "adoptedNeutral": [
+      0.3127,
+      0.329
+    ],
+    "colorInteropID": "rec1886_rec709_display",
+    "com.ocio.colorspace": "Rec.1886 Rec.709 - Display",
+    "framesPerSecond": 3.0,
+    "captureRate": 3.0,
+    "imageCounter": 1
+  },
+  "kind": "video"
+}

@@ -99,15 +99,17 @@ pip install -r ComfyUI-OCIO/requirements.txt
 
 Restart ComfyUI. The nodes appear under the **OCIO** category.
 
-**ComfyUI Manager:** the pack is in the Comfy Registry and installs from Manager's node list. In the
-**Select Version** dialog pick **Nightly**, which is what Manager offers by default and what tracks this
-repository.
+**ComfyUI Manager:** the pack is in the Comfy Registry and installs from Manager's node list. A plain
+install resolves to the current published version; **Nightly** in the **Select Version** dialog tracks this
+repository instead, and is the one to pick if you want what is on `main` rather than what is released.
 
-The numbered entries there are older on purpose. The registry holds 1.2.3 and 1.2.4, both sitting `Flagged`
-after its automated scan read the pack's `ffmpeg` and `ffprobe` calls as a risk, and publishing is paused
-while that stands, so newer versions are GitHub releases only. Picking `Latest` or a number in that dialog
-therefore installs code from before the fixes in 1.2.5 and 1.2.6. Nightly, or the manual clone above, gets
-you the current one.
+**One entry in that dialog is worth avoiding.** It labels an option `Latest` and points it at 1.2.6, which
+is an older release and marked deprecated. That label comes from a stale field on the pack record rather
+than from what an install actually resolves to, so picking it by name gets you something older than a plain
+install would. Take the highest numbered version, or Nightly.
+
+Some earlier versions show a warning in that list. 1.2.3, 1.2.4 and 1.3.0 are banned: they carry an upload
+route that could write outside ComfyUI's input directory, fixed in 1.3.1. Do not install them.
 
 > **EXR note.** OpenCV reads and writes EXR only when `OPENCV_IO_ENABLE_OPENEXR=1` is set in the environment
 > **before** ComfyUI starts. Set it in your launcher (`set OPENCV_IO_ENABLE_OPENEXR=1` on Windows,

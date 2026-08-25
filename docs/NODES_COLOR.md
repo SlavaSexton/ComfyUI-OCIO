@@ -1,4 +1,4 @@
-# The six colour operators and the viewer
+# The seven colour operators and the viewer
 
 Reference for `OCIO ColorSpace`, `OCIO LogConvert`, `OCIO Display`, `OCIO CDLTransform`, `OCIO FileTransform`,
 `OCIO LookTransform` and `OCIO Player`. Every input, every allowed value, what to wire into each socket, what
@@ -42,7 +42,7 @@ set, then the built-in ACES studio config. Confirmed by measurement that the bui
 
 ---
 
-## Part 1: behaviour every one of the six operators shares
+## Part 1: behaviour every one of the seven operators shares
 
 ### Two inputs for pixels, and they exclude each other
 
@@ -646,7 +646,7 @@ never had.
   magnitudes involved rather than a difference in the maths. That is Canon's 0.9 reflectance convention. Pick
   one convention for a shot and stay on it; mixing them puts a 0.152 stop exposure error into the plate (a factor of 1/0.9) with no
   error message. The other eight comparable curves agree with the config to between 2.3e-06 and 5.1e-05
-  relative (see the parity table in Part 9).
+  relative (see the parity table in Part 10).
 - Decoding with the wrong curve is silent. A LogC3 plate decoded as LogC4 is dark and flat, not broken.
 - `Cineon` `Linear to Log` floors below linear -0.010916 and is not invertible there.
 
@@ -1290,7 +1290,81 @@ this config.
 
 ---
 
-## Part 8: `OCIO Player`
+## Part 8: `OCIO Exposure`
+
+### What it is for
+
+An exposure move in **stops**, as a pure linear multiply. Nuke's *Exposure*, or the multiply half of *Grade*.
+
+It exists because the pack had no exposure control at all, which is an odd gap in a colour pack, and because
+the obvious substitutes clamp. Every candidate outside this pack that was checked clamps to 0..1 either by
+default or behind a toggle, and a clamp here destroys exactly what the rest of the pack exists to carry: the
+values above 1.0 an HDR pass produces, and the negatives an unclamped VAE decode leaves behind.
+
+### Inputs
+
+| Widget | Type | Default | What it does |
+| --- | --- | --- | --- |
+| `exposure` | FLOAT, -20 to 20 | **0.0** | Stops. `out = in * 2**exposure`. At 0.0 the node is a pass-through. |
+| `mix` | FLOAT, 0 to 1 | 1.0 | Blend with the original. 0.0 is a bit-exact bypass. |
+| `image` | IMAGE, optional | - | One pixel input, mutually exclusive with `video` (Part 1). |
+| `video` | VIDEO, optional | - | The other one. |
+
+No config is read and PyOpenColorIO is not needed: a multiply is a multiply.
+
+### Outputs
+
+`image/sequence/video:IMAGE` and `ComfyUI Video:VIDEO`, the same pair every operator in this file returns.
+
+### The colour behaviour that decides whether the result is right
+
+**It is linear gain, so it belongs in a linear space.** Applied to display codes it is a gamma-space stretch,
+not an exposure, and the result looks crushed or burnt in a way that is an artefact of where it was applied
+rather than of the number. Put it before a display transform, never after one.
+
+**Nothing is clamped at either end, and that is the whole point.** RGB is scaled and alpha is passed through
+untouched. A multiply preserves sign, so a negative stays negative and scales with everything else.
+`tools/test_exposure.py` holds the node to that with a control: 12.0 at +1 stop must come out 24.0 and -0.25
+must come out -0.5, and the same test shows that a clamped result would fail both.
+
+### Worked chain: matching an HDR pass to its plate
+
+The case this was added for. An SDR-to-HDR pass does not return the plate's level, because it re-renders into
+its own tonal distribution: shadows and mid-tones come down, highlights go up. Compare the two at the same
+exposure and the pass simply looks darker, which is a comparison of exposures rather than of reconstructions.
+
+Find the number as `log2(median luminance of the plate / median luminance of the pass)` and set it here.
+
+Measured on six shots from the LTX-2.3 HDR path, at five frames spread through each clip:
+
+| shot | plate median | pass median | lift |
+| --- | --- | --- | --- |
+| cyberpunk portrait, neon | 0.0647 | 0.0219 | **1.56 stops** |
+| the same shot, camera panned onto the city | 0.0688 | 0.0230 | **1.58 stops** |
+| dragon in a cave, fire from the mouth | 0.0665 | 0.0291 | **1.23 stops** |
+| city street, traffic, sun down the street | 0.0896 | 0.0449 | **0.98 stops** |
+| cave mouth, a figure, a ship beyond | 0.1254 | 0.0645 | **0.97 stops** |
+| glass towers, sun in the gap | 0.1697 | 0.1157 | **0.55 stops** |
+
+### Traps
+
+**A number from one shot is wrong on the next.** The six above span 0.55 to 1.58, over a full stop.
+
+**One number per shot is not always safe either.** Where the framing is held it is steady: the portrait varied
+3.0% across its clip and the dragon 4.8%. Where the camera travels onto a different subject it is not: a pan
+off the figure onto the city varied 45.3% and a dolly-and-tilt up a street 30.2%. On a moving shot, measure at
+several frames and either animate the value or accept the drift knowingly.
+
+**Leave it at 0.0 in a master.** Exposure belongs in the grade, where it can still be changed. Baking it into a
+scene-linear master is a viewing decision written into a deliverable that other people will match to.
+
+### What could not be verified here
+
+The lifts above were measured on one model's HDR pass. Nothing here says another pass would land in the same
+range, and the band comparison in the Clip Repair reference shows two passes disagreeing about where they gain
+at all. Measure yours.
+
+## Part 9: `OCIO Player`
 
 ### What you are actually looking at
 
@@ -1312,7 +1386,7 @@ Three practical consequences:
 
 **If your monitor is a calibrated HDR panel, this viewer will still look SDR on it today.** That is this viewer's
 implementation, not a browser limit, and the distinction is measured rather than assumed: Chrome does ship a
-16-bit float drawing buffer for WebGL2, this viewer does not ask for it, and Part 8's accuracy section carries the
+16-bit float drawing buffer for WebGL2, this viewer does not ask for it, and Part 9's accuracy section carries the
 exact call, the two preconditions it needs, and the read-back that proves values above one survive in it. Treat
 the viewport as a reliable instrument for judging RANGE and colour decisions, and your grading monitor as the
 authority on how the picture looks.
@@ -1611,7 +1685,7 @@ live route, but the on-screen result was not observed.
 
 ---
 
-## Part 9: traps that cross more than one node
+## Part 10: traps that cross more than one node
 
 Ranked by how much damage they do quietly.
 
@@ -1705,7 +1779,7 @@ it is wired but doing nothing.
 
 ---
 
-## Part 10: what could not be verified, all in one place
+## Part 11: what could not be verified, all in one place
 
 - **Nothing was run through the ComfyUI queue.** The node classes were imported from the deployed pack folder
   and called directly in the ComfyUI interpreter, which exercises the same `run` and `convert` functions the
@@ -1734,7 +1808,7 @@ it is wired but doing nothing.
   was not tested.
 - **The `alpha` input on `OCIO Player`** was not measured.
 
-## Part 11: reproducing any number in this file
+## Part 12: reproducing any number in this file
 
 Two commands cover everything.
 

@@ -1,11 +1,12 @@
-# The eleven nodes: what connects to what
+# The thirteen nodes: what connects to what
 
 This is the wiring map for the whole pack. It answers three questions and nothing else: what shape is each node,
 what may be plugged into it, and what does it plug into. For every widget, every allowed value and every
 per-node detail, read the reference for that group:
 
 - **[NODES_IO.md](NODES_IO.md)** - `OCIO Read` and `OCIO Write`, the two nodes that touch disk.
-- **[NODES_COLOR.md](NODES_COLOR.md)** - the six colour operators plus `OCIO Player`.
+- **[NODES_COLOR.md](NODES_COLOR.md)** - the seven colour operators plus `OCIO Player`.
+- **[NODES_REPAIR.md](NODES_REPAIR.md)** - `OCIO Clip Repair`, which composites a reconstruction into a plate.
 - **[NODES_VAE.md](NODES_VAE.md)** - `OCIO VAE Decode` and `OCIO VAE Encode`.
 
 Everything below was read from the running server's `/object_info`, not from memory. If your install disagrees,
@@ -25,9 +26,11 @@ validate. Widgets are left out here on purpose; the group references cover them.
 | `OCIO CDLTransform` | `image:IMAGE*`, `video:VIDEO*` | `image/sequence/video:IMAGE`, `ComfyUI Video:VIDEO` |
 | `OCIO FileTransform` | `image:IMAGE*`, `video:VIDEO*` | `image/sequence/video:IMAGE`, `ComfyUI Video:VIDEO` |
 | `OCIO LookTransform` | `image:IMAGE*`, `video:VIDEO*` | `image/sequence/video:IMAGE`, `ComfyUI Video:VIDEO` |
+| `OCIO Exposure` | `image:IMAGE*`, `video:VIDEO*` | `image/sequence/video:IMAGE`, `ComfyUI Video:VIDEO` |
 | `OCIO Player` | `images:IMAGE*`, `video:VIDEO*`, `alpha:MASK*`, `audio:AUDIO*` | **none** |
 | `OCIO VAE Encode` | `pixels:IMAGE`, `vae:VAE` | `latent:LATENT` |
 | `OCIO VAE Decode` | `samples:LATENT`, `vae:VAE` | `image/sequence/video:IMAGE`, `range report:STRING` |
+| `OCIO Clip Repair` | `plate:IMAGE`, `reconstruction:IMAGE` | `image:IMAGE`, `repair mask:MASK`, `report:STRING` |
 | `OCIO Write` | `images:IMAGE*`, `video:VIDEO*`, `alpha:MASK*`, `audio:AUDIO*`, `source_meta:STRING*` | `path:STRING` |
 
 Four things fall straight out of that table.

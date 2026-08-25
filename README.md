@@ -272,7 +272,7 @@ inside a native ComfyUI video graph, without bouncing frames out to a folder and
 
 ---
 
-## The eleven nodes
+## The thirteen nodes
 
 <div align="center">
 
@@ -491,6 +491,37 @@ Apply an **OCIO look** (Nuke: *OCIOLookTransform*). **in_colorspace -> out_color
 from the config (e.g. *ACES 1.3 Reference Gamut Compression*), **invert_direction**, **mix**. The **swap** button
 flips in / out. Also takes a **ComfyUI Video** input, mutually exclusive with the image (see *Image and Video*
 above).
+
+### OCIO Exposure
+
+An exposure move in **stops**, as a pure linear multiply (Nuke: *Exposure*, or the multiply in *Grade*).
+**exposure** (`out = in * 2**exposure`, 0.0 is a pass-through) and **mix**. Nothing is clamped at either end:
+values above 1.0 keep going and negatives stay negative, which is why this is here rather than borrowed from
+another pack, since the usual substitutes clamp to 0..1 by default. It is linear gain, so apply it **before** a
+display transform, never after. Also takes a **ComfyUI Video** input, mutually exclusive with the image (see
+*Image and Video* above).
+
+The case it was added for: an SDR-to-HDR pass comes back below its plate, and the two cannot be compared until
+that is matched. Measured on six shots the lift ran from **0.55 to 1.58 stops**, so it is one number per shot
+and not transferable. [NODES_COLOR.md](docs/NODES_COLOR.md) has the table and the caveat about moving shots.
+
+### OCIO Clip Repair
+
+Composite an SDR-to-HDR **reconstruction** back into the plate it came from, **only where the plate is
+damaged**. **plate** and **reconstruction** in, **image**, **repair mask** and **report** out; the mask is built
+from the plate's own code values with **highlight_level**, **shadow_level**, **grow** and **feather**, and
+**match_levels** scales the reconstruction to the plate's mid-tones first.
+
+The point is the restriction. A reconstruction pass rewrites the whole frame, and measured on one shot that
+rewrite moved the picture's channel balance, while the masked composite kept it and kept the plate's own
+texture everywhere the plate was fine. Shadow repair is **off** by default because on measured material the
+reconstruction returned smooth shadows rather than detailed ones.
+
+**Choosing the level is the whole job, and the intuitive choice is wrong.** Do not measure the reconstruction
+against 1.0: at code 0.85 the plate holds about 0.73, so a pass sitting at 1.81 there is 2.5x the plate.
+Rim-lit cloud on that shot sits at code 0.83, so a level of 0.90 or 0.97 leaves it untouched and still flat.
+[NODES_REPAIR.md](docs/NODES_REPAIR.md) has the band table, the wiring traps and why this is restoration rather
+than conversion.
 
 ### OCIO VAE Decode
 
@@ -759,6 +790,44 @@ targets). With `colorspace_in_name` on (default) the files come out `name_acescg
 Verified on a live ComfyUI: the real `LTXVHDRDecodePostprocess` `hdr_linear` -> OCIO Write path writes a two-frame
 ACEScg EXR sequence with HDR values (well above 1.0) preserved; the `logc3` curve round-trips and matches LTX's own
 decode to float precision. As with any EXR here, set `OPENCV_IO_ENABLE_OPENEXR=1` before ComfyUI starts.
+
+### Why the highlights only go so far
+
+The path this recipe drives is Lightricks' `HDRICLoraPipeline`, and it is fixed to one curve. Their own code
+calls ARRI LogC3 EI 800 the HDR IC-LoRA default, and there is no way to ask for another. The alternatives are
+not close: at code 1.0, LogC3 reaches **55.1** in linear scene units, ACEScct **222.9**, LogC4 **469.8**.
+
+That looks like the ceiling on highlight detail, and it is not. The decode clamps codes to 1.0 before
+converting out of log, and the clamp is what capped the result. The model emits codes above 1.0 and the curve
+extrapolates through them: on the frame where it cut most, removing the clamp took the peak from **55.08 to
+197.12** and recovered **1.84 stops**.
+
+What remains after that is the model's own reconstruction, and that is the real limit. On a dragon breathing
+fire the pass peaks at **43.3** across all 121 frames, with no pixel near the ceiling. It is not running out of
+range. It is not putting structure there.
+
+**ACEScct is not on this route, and it is not a different model either.** It belongs to LTX-2.5's native HDR
+path, which is a separate recipe with its own section below: *Recipe: LTX-2.5 HDR, which is a different
+mechanism from 2.3*. Lightricks' own pipeline notes say to prefer `--hdr` with the distilled, retake or TI2V
+pipelines over the HDR IC-LoRA when you already have EXR plates. That path reads EXR in and writes half-float
+EXR out, which is what `OCIO Read`, `OCIO LogConvert` on the ACEScct curve and `OCIO Write` are for. It runs
+from their CLI rather than from ComfyUI, and it wants the LTX-2.5 weight set: the bf16 files their README puts
+at roughly 66 GiB, of which the transformer alone is 39 GiB, so it does not load unquantized on a 24 GB card.
+
+What that costs on a 24 GB card, checked but **not run**: their NVFP4 path is closed, since it requires
+Blackwell, and an Ampere card reports compute capability 8.6. Their `fp8-cast` path is not closed, because it
+stores the transformer at FP8 and upcasts during inference, which needs FP8 *storage* rather than FP8 matmul,
+and FP8 storage allocates on 8.6. The INT8 checkpoints in the model repository are built for ComfyUI and their
+CLI does not read them. So the barrier is the 63.6 GiB of bf16 weights their CLI does read, not the card.
+
+**Against other models the trade is range for stability.** A LogC4-trained alternative reached a peak of
+**541.8** where this path with the clamp removed reached **197.1**, so 2.7 times the range. Its median
+frame-to-frame step was **4.42%** against **0.82%**, so 5.4 times the drift. Those were 12 frames of the first
+against 49 of the second, which is enough to see the direction and not enough to defend the ratio to a decimal.
+
+Comparing the clamped 55.08 to that 541.8 would have made the gap look like 9.8x, and it is not: the clamp is
+ours to remove and removing it costs nothing here. The same 49 frames stepped **0.81%** with the clamp and
+**0.82%** without.
 
 ---
 

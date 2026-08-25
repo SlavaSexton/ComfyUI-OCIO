@@ -9,12 +9,14 @@ import time
 import urllib.request
 import urllib.error
 
-# The 9 nodes ComfyUI-OCIO registers (must all appear in /object_info once the pack loads).
+# Every node ComfyUI-OCIO registers: all of these must appear in /object_info once the pack
+# loads. Keep this list equal to NODE_CLASS_MAPPINGS - a name missing here means the smoke
+# test stays green while that node fails to register, which is how Clip Repair shipped in
+# 1.3.1 unchecked.
 OCIO_NODE_CLASSES = [
-    "OCIOColorSpace", "OCIOLogConvert", "OCIODisplay", "OCIOCDLTransform",
+    "OCIOColorSpace", "OCIOLogConvert", "OCIOExposure", "OCIODisplay", "OCIOCDLTransform",
     "OCIOFileTransform", "OCIOLookTransform", "OCIORead", "OCIOWrite", "OCIOPlayer",
-    "OCIOVAEDecode", "OCIOVAEEncode",
-    "OCIOClipRepair",
+    "OCIOClipRepair", "OCIOVAEDecode", "OCIOVAEEncode",
 ]
 
 

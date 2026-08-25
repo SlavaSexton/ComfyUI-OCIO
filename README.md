@@ -1003,18 +1003,23 @@ through OCIO Write with the frame count intact.
 
 ## Example workflows
 
-Two graphs ship in `example_workflows/`, both built around the current node set and both opened and run on a
+Three graphs ship in `example_workflows/`, all built around the current node set and all opened and run on a
 live server before being committed.
 
 `OCIO_WORKFLOW_LTX_2.5.json` is the LTX-2.5 image-to-video chain with audio: `OCIO Read` on the way in,
 `OCIO VAE Decode` for the unclamped float32 decode, then `OCIO Write` to ProRes 4444 and to an ACEScg EXR
 sequence. The LTX-2.5 recipe above describes it node by node, with a diagram.
 
-`OCIO_WORKFLOW_LTX_2.5_to_2.3_HDR.json` keeps that whole chain as its first stage and adds a second one that
-turns those frames into linear HDR, using LTX-2.3 with the `ic-lora-hdr-0.9` IC-LoRA. Two stages rather than
-one because the HDR IC-LoRA is trained for 2.3 and will not load onto a 2.5 transformer, and because it wants
-a video guide rather than a still - which is exactly what stage one hands it. `docs/NODES_IO.md` covers the
-colour side under `profile`, in full.
+`OCIO_Example_Generate_then_HDR.json` keeps that whole chain as its first half and adds a second that turns
+those frames into linear HDR with LTX-2.3 and the HDR IC-LoRA. Two halves rather than one model because the
+HDR IC-LoRA is trained for 2.3 and will not load onto a 2.5 transformer, and because it wants a video guide
+rather than a still, which is exactly what the first half hands it. Its own notes carry the traps that cost
+time, and `docs/NODES_IO.md` covers the colour side under `profile`.
+
+`OCIO_STAGE2_SDR_to_HDR.json` is that second half on its own, driven from the ProRes the first half writes.
+Split, each stage loads one model instead of holding both, and an HDR setting can be re-tried without
+regenerating. `example_workflows/comparisons/` holds exposure ramps for six shots, and
+`example_workflows/frames/` the first and last frame of each sequence as ACEScg EXR plus the two reviews.
 
 `example_workflows/nyc_skyline.png` stays, and not as a leftover: it is the source image the accuracy suite
 measures against, in `measure_ocio_parity.py`, `measure_histogram_compare.py` and `gen_fixtures.py`. Remove it

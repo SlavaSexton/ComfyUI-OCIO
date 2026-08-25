@@ -636,9 +636,8 @@ happens once the stock clamp is out of the chain (see the sun measurement furthe
 material reaches code 1.16 and 246 linear). So this check confirms the curve is being applied; it is
 **not** evidence of a ceiling in the material.
 
-Measured across all 25 frames of a two-stage run through
-`example_workflows/OCIO_WORKFLOW_LTX_2.5_to_2.3_HDR.json` (LTX-2.5 generate -> LTX-2.3 HDR IC-LoRA ->
-OCIO VAE Decode unclamped -> OCIO LogConvert, ARRI LogC3): peak 43.37 in ACEScg, 43.04 once converted
+Measured across all 25 frames of a two-stage run (LTX-2.5 generate -> LTX-2.3 HDR IC-LoRA -> OCIO VAE
+Decode unclamped -> OCIO LogConvert, ARRI LogC3): peak 43.37 in ACEScg, 43.04 once converted
 back to linear Rec.709, with 3.11% of pixels above 1.0 and p99.9 at 9.17. Under 55.08 and close enough to
 it to show the curve is being used rather than nominally applied. That is the arithmetic saying the chain
 is what it claims to be, rather than a preset being taken on faith.
@@ -676,8 +675,8 @@ list carries a 2.3 entry and no 2.5 one.
 
 ### What an ACEScct read of LTX-2.5 actually buys
 
-`example_workflows/OCIO_WORKFLOW_LTX_2.5_ACEScct_HDR_probe.json` builds their native-HDR shape here
-(`sRGB -> ACEScg -> Linear to Log (ACEScct) -> LTX-2.5 -> decode -> Log to Linear (ACEScct) -> EXR 32f`),
+Their native-HDR shape is
+`sRGB -> ACEScg -> Linear to Log (ACEScct) -> LTX-2.5 -> decode -> Log to Linear (ACEScct) -> EXR 32f`,
 so the claim can be measured rather than argued about. Measured 2026-08-17 over 49 frames, the codes
 leaving the VAE ran p50 `0.343`, p99 `0.998`, max `1.041`. Reading those same numbers two ways:
 
@@ -771,8 +770,6 @@ end) - measured on one frame at 1280x704, across the brightest 0.1%:
 What it does not fix: the sun disc stays flat. A profile through it reads 54.0 across ninety pixels
 in both chains, which is code 0.998 - the model painted the disc as a fill, and no decode invents
 gradation that was never generated. What returns is the specular structure around it.
-
-`example_workflows/OCIO_WORKFLOW_LTX_2.5_to_2.3_HDR.json` ships wired this way.
 
 
 ### Which display colorspace to read the output as

@@ -636,8 +636,9 @@ happens once the stock clamp is out of the chain (see the sun measurement furthe
 material reaches code 1.16 and 246 linear). So this check confirms the curve is being applied; it is
 **not** evidence of a ceiling in the material.
 
-Measured across all 25 frames of a run through
-`example_workflows/OCIO_WORKFLOW_LTX_2.5_to_2.3_HDR.json`: peak 43.37 in ACEScg, 43.04 once converted
+Measured across all 25 frames of a two-stage run through
+`example_workflows/OCIO_WORKFLOW_LTX_2.5_to_2.3_HDR.json` (LTX-2.5 generate -> LTX-2.3 HDR IC-LoRA ->
+OCIO VAE Decode unclamped -> OCIO LogConvert, ARRI LogC3): peak 43.37 in ACEScg, 43.04 once converted
 back to linear Rec.709, with 3.11% of pixels above 1.0 and p99.9 at 9.17. Under 55.08 and close enough to
 it to show the curve is being used rather than nominally applied. That is the arithmetic saying the chain
 is what it claims to be, rather than a preset being taken on faith.
@@ -676,7 +677,7 @@ list carries a 2.3 entry and no 2.5 one.
 ### What an ACEScct read of LTX-2.5 actually buys
 
 `example_workflows/OCIO_WORKFLOW_LTX_2.5_ACEScct_HDR_probe.json` builds their native-HDR shape here
-(`sRGB -> ACEScg -> Linear to Log (ACEScct) -> LTX-2.5 -> decode -> Log to Linear (ACEScct) -> EXR 32f`)
+(`sRGB -> ACEScg -> Linear to Log (ACEScct) -> LTX-2.5 -> decode -> Log to Linear (ACEScct) -> EXR 32f`),
 so the claim can be measured rather than argued about. Measured 2026-08-17 over 49 frames, the codes
 leaving the VAE ran p50 `0.343`, p99 `0.998`, max `1.041`. Reading those same numbers two ways:
 
@@ -772,6 +773,7 @@ in both chains, which is code 0.998 - the model painted the disc as a fill, and 
 gradation that was never generated. What returns is the specular structure around it.
 
 `example_workflows/OCIO_WORKFLOW_LTX_2.5_to_2.3_HDR.json` ships wired this way.
+
 
 ### Which display colorspace to read the output as
 
@@ -1040,3 +1042,36 @@ read in source but not executed live in this pass. The 16-bit PNG identity-chunk
 which writes iTXt chunks directly before `IDAT` so both 8-bit and 16-bit PNGs now carry the same identity
 set) was read in source; only the 8-bit PNG path was independently confirmed by writing and reading a
 real file.
+
+## OCIO Clip Repair
+
+Not a color node - a compositing utility. It takes two IMAGE inputs, a `plate` and a
+`reconstruction` (the output of any SDR-to-HDR pass over the same frames), and returns the plate with
+the reconstruction composited into its clipped ends only. Outputs `(IMAGE, MASK, STRING)`: the result,
+the repair mask, and a text report of what it did.
+
+**Why it exists.** An SDR-to-HDR model rewrites the whole frame. Measured on one shot, applying the pass
+full-frame shifted colour balance across the 97% that was never clipped (R/G 1.30 -> 1.70) and invented
+72% more local contrast than the plate carried - detail the model made up, replacing the plate's own.
+Compositing the pass through a mask of the clipped ends keeps tone, texture and frame-to-frame stability
+everywhere the plate still held information, and takes recovered range only where the plate ran out.
+
+**The two ends are not symmetrical, and the defaults say so.** Highlights genuinely reconstruct - a sun
+that was a flat white patch comes back with a falloff. Shadows, on the same material, came back
+*smoothed*: the plate's grainy-but-real texture replaced by a clean gradient, which reads as worse. So
+`repair_shadows` is OFF by default.
+
+**Thresholds are widgets, not constants.** Detail dies before a code reaches 1.0, so the highlight level
+lives in the 0.90-0.99 band, and the right value is a property of the plate. Choose it by where the
+reconstruction holds *more than the plate could*, not by where the plate happens to clip.
+
+| widget | default | what it does |
+|---|---|---|
+| `repair_highlights` | True | rebuild blown highlights - the end that reconstructs well |
+| `highlight_level` | 0.97 | repair above this display code |
+| `repair_shadows` | False | off on purpose; the pass smooths blacks rather than restoring them |
+| `shadow_level` | 0.010 | repair below this display code |
+| `grow` | 6 | expand the mask outward, so repair starts just before the damage |
+| `feather` | 24 | soften the mask edge so the composite reads no seam |
+| `match_levels` | True | scale the reconstruction to the plate's mid-tones before compositing |
+| `plate_space` | display codes | what the plate is in; a scene-linear plate from an 8-bit source peaks at 1.0 like a display one, so it cannot be auto-detected and must be set |

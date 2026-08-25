@@ -89,6 +89,31 @@ __version__ = _pack_version()
 # is unchanged, so saved workflows and node search are unaffected.
 
 
+def _confine_to_input(input_root, sub, name):
+    """Build input_root/sub/name and return it ONLY if it truly lands inside input_root.
+
+    RESPONSIBLE FOR: confining writes from the /ocio/upload route (2026-08-22). Guard the RESOLVED
+    path, not the string: os.path.basename("..") returns ".." unchanged, so the earlier string-only
+    sanitisation let subfolder=".." resolve to the ComfyUI install root and turned an unauthenticated,
+    CSRF-reachable route into an arbitrary write outside input/. Same approach the core uses in
+    server.py (build, normalise, then compare against the allowed root). realpath is used rather than
+    normpath so a symlink inside input/ that points out is also caught. commonpath raises ValueError
+    when the two paths sit on different Windows drives; that is "not inside", not an error to swallow,
+    so it fails closed too.
+
+    Kept at module scope, ABOVE the `try:` that imports the ComfyUI host, so a test can call it
+    directly without a running server.
+    """
+    input_root = os.path.realpath(input_root)
+    dest = os.path.realpath(os.path.join(input_root, sub, name))
+    try:
+        if os.path.commonpath((input_root, dest)) != input_root:
+            return None
+    except ValueError:
+        return None
+    return dest
+
+
 # --- server routes (only inside ComfyUI) --------------------------------------------------------------------
 try:
     import server
@@ -172,9 +197,14 @@ try:
                 if not filename:
                     continue
                 sub = subfolder or _OCIO_SUBDIR
-                dest_dir = os.path.join(folder_paths.get_input_directory(), sub)
-                os.makedirs(dest_dir, exist_ok=True)
-                with open(os.path.join(dest_dir, filename), "wb") as f:
+                # basename above trims a directory part but not "..", which has none; the real
+                # guard is here, on the resolved path. makedirs comes AFTER the refusal so a
+                # rejected upload leaves no empty directory behind in an arbitrary place.
+                dest_path = _confine_to_input(folder_paths.get_input_directory(), sub, filename)
+                if dest_path is None:
+                    return web.json_response({"error": "destination is outside the input folder"}, status=400)
+                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                with open(dest_path, "wb") as f:
                     while True:
                         chunk = await field.read_chunk()
                         if not chunk:

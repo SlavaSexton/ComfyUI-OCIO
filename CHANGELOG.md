@@ -1,5 +1,50 @@
 # Changelog
 
+## 1.3.1: security fix in the upload route
+
+**Affected: every release up to and including 1.3.0. Update to 1.3.1.**
+
+`/ocio/upload` built its destination by joining a caller-supplied `subfolder` onto the ComfyUI input
+directory, after passing it through `os.path.basename`. That call strips a directory component but
+leaves a relative segment intact, so a crafted value could resolve above the input directory. The
+route is unauthenticated, and ComfyUI's local server carries no CSRF protection, so it was reachable
+from the browser on the same machine. The Comfy Registry classified this as an arbitrary file write
+during review and banned 1.3.0; the same code path is present in every earlier release.
+
+1.3.1 resolves the destination before writing and refuses anything that does not land inside the
+input directory, the approach ComfyUI core takes in `server.py`. Resolution goes through `realpath`,
+so a symlink inside `input/` that points elsewhere is refused as well, and a comparison that cannot
+be made at all is treated as outside. The destination directory is created only after the check
+passes, so a refused upload leaves nothing behind.
+
+Covered by `tools/test_upload_confinement.py`, which exercises the guard directly and asserts both
+sides: traversal is refused, and an ordinary upload still succeeds.
+
+The read routes are unchanged. They take a path because the disk browser in `OCIO Read` depends on
+it, and narrowing that is a separate change with its own trade-off rather than a side effect of this
+fix.
+
+## OCIO Clip Repair
+
+A compositing utility rather than a color node, and the first node here that is not one. It takes a
+plate and an SDR-to-HDR reconstruction of the same frames, and composites the reconstruction into the
+plate's clipped highlights only, leaving everything that was never damaged as the plate had it.
+
+The reason is what a reconstruction pass does to the rest of the frame. Measured on one shot, applied
+full-frame it moved colour balance across the 97% that never clipped (R/G 1.30 to 1.70) and produced 72%
+more local contrast than the plate carried, which is detail the model invented in place of the plate's
+own. Masking the pass to the clipped ends keeps tone, texture and frame-to-frame stability everywhere
+the plate still held information.
+
+The two ends are not symmetrical and the defaults say so. Highlights come back with a falloff where
+there had been a flat white patch. Shadows, on the same material, came back smoothed: real grain
+replaced by a clean gradient, which reads worse than the damage. So `repair_shadows` is off by default.
+
+Thresholds are widgets because detail dies before a code reaches 1.0, and where it dies belongs to the
+plate rather than to a constant. `plate_space` is set by hand for the same kind of reason: a
+scene-linear plate that came from an 8-bit source peaks at 1.0 exactly like a display-referred one, so
+nothing in the pixels can tell them apart.
+
 ## What the stock path costs, shown on one clip
 
 Four side-by-side frames in `docs/assets/comparison/`, and a section in the README built around them: the same

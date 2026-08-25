@@ -1,5 +1,60 @@
 # Changelog
 
+## 1.3.2: an exposure node, and a reference for the two nodes that did not have one
+
+### OCIO Exposure
+
+Exposure in **stops**, as a pure linear multiply: `out = in * 2**exposure` on RGB, alpha passed through,
+`mix` to blend. It ships at 0.0, which is a pass-through.
+
+The pack had no exposure control at all, which is a gap in a colour pack, and every substitute checked
+clamps to 0..1 either by default or behind a toggle. A clamp there destroys what the rest of this pack
+exists to carry: the values above 1.0 an HDR pass produces and the negatives an unclamped VAE decode
+leaves behind. Nothing here is clamped at either end, and `tools/test_exposure.py` holds it to that with
+a control showing a clamped result would fail the same checks.
+
+The case it was added for is matching an SDR-to-HDR pass to its plate. The pass re-renders into its own
+tonal distribution and comes back below the plate, so the two cannot be compared until that is matched.
+Measured on six shots, the lift ran from **0.55 to 1.58 stops** - one number per shot, not transferable.
+Inside a shot it holds where the framing holds, varying 3.0% and 4.8% on two such clips, and it does not
+where the camera travels onto a different subject, varying 45.3% on a pan and 30.2% on a dolly and tilt.
+
+### Documentation for OCIO Clip Repair
+
+Clip Repair shipped in 1.3.1 with no reference anywhere. `docs/NODES_REPAIR.md` is that reference: every
+widget, the band table that decides `highlight_level`, the two wiring mistakes that produce a plausible
+but wrong composite, and why it is restoration rather than conversion.
+
+The part worth reading before using it: do not choose the level by comparing the reconstruction to 1.0.
+At code 0.85 the plate holds about 0.73, so a pass sitting at 1.81 there is 2.5x the plate. Rim-lit cloud
+on the measured shot sits at code 0.83, so a level of 0.90 or 0.97 leaves it untouched and still flat.
+
+`OCIO Exposure` is documented in `docs/NODES_COLOR.md`, which now covers seven operators.
+
+### Where the LTX-2.3 highlight range actually stops
+
+A new README section, because the question came up on every flat highlight. The path is fixed to ARRI
+LogC3, whose ceiling is 55.1 linear against 222.9 for ACEScct and 469.8 for LogC4. That looks like the
+limit and it is not: the decode clamps codes to 1.0, and the model emits above that. Removing the clamp
+took one frame's peak from **55.08 to 197.12**, recovering 1.84 stops, and cost nothing in stability - the
+same 49 frames stepped 0.81% with the clamp and 0.82% without.
+
+What is left is the model. On a dragon breathing fire the pass peaks at 43.3 across all 121 frames with no
+pixel near the ceiling: not out of range, just not putting structure there.
+
+### A test that keeps the node list honest
+
+`tools/test_node_inventory.py` compares one source of truth, `NODE_CLASS_MAPPINGS`, against every place a
+reader or a gate looks: the display-name map, the container smoke test's list of names, the README, the
+wiring map, the group references, and the count stated in three files. The smoke test's list is the one
+that matters, because it is how that test decides the pack loaded.
+
+### Example workflows
+
+Two graphs for the two-stage LTX path, `OCIO_Example_Generate_then_HDR.json` and
+`OCIO_STAGE2_SDR_to_HDR.json`, with six exposure-ramp comparisons, the first and last frame of each
+sequence as ACEScg EXR, and the two ProRes reviews.
+
 ## 1.3.1: security fix in the upload route
 
 **Affected: every release up to and including 1.3.0. Update to 1.3.1.**

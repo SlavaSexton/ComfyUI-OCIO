@@ -14,7 +14,7 @@ docs/assets/
 docs/DOCKER.md
 
 # The color-accuracy suite and its Docker harness: a contributor's tools, not a user's.
-tools/
+tests/
 docker/
 docker-compose.yml
 

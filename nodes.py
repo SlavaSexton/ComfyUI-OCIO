@@ -18,7 +18,7 @@
 # (LogConvert).
 #
 # Implementation notes (confirmed vs inferred):
-#  - LogConvert curves are published specs, verified by round-trip + black-point tests (tools/):
+#  - LogConvert curves are published specs, verified by round-trip + black-point tests (tests/):
 #    Cineon (OCIO nuke-default, black 0->0.0928, matches Nuke), ACEScct (S-2016-001), ACEScc (S-2014-003).
 #  - The OpenColorIO-backed paths use the OCIO 2.x Python API (PackedImageDesc + apply), verified at runtime
 #    against the built-in ACES studio config (OCIO 2.5.2). Requires the `opencolorio` package.

@@ -33,7 +33,7 @@ RUN pip install --no-cache-dir torch torchvision torchaudio \
 RUN pip install --no-cache-dir -r requirements.txt requests
 
 # --- The OCIO pack + its deps ---
-# matplotlib is only needed by the optional tools/accuracy suite; kept here so RUN_ACCURACY=1 works.
+# matplotlib is only needed by the optional tests/accuracy suite; kept here so RUN_ACCURACY=1 works.
 # opencv-python-headless is pinned <5 because the opencv 5.0 wheels are built with OpenEXR: NO (no EXR
 # codec at all); the 4.x wheels bundle OpenEXR, enabled by OPENCV_IO_ENABLE_OPENEXR=1 (set below).
 COPY requirements.txt /tmp/ocio-requirements.txt

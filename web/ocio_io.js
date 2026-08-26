@@ -238,7 +238,7 @@ async function applyCsNarrowing(node) {
 // presenting as "close, but the blacks and highlights are wrong" with nothing in the file to say why.
 //
 // Delivering into a 2.0 pipeline is one click away in the same list. This picks the common case.
-// Pure, so tools/test_view_narrowing.py can run it under node against the real config data.
+// Pure, so tests/test_view_narrowing.py can run it under node against the real config data.
 function preferredViewFor(enc, cross) {
     if (!cross) return VIEW_NONE;
     const alt = enc.alt || {};
@@ -284,7 +284,7 @@ async function applyAutoView(node) {
 //      2.0 config only) -> a raw OCIO "Cannot find source color space" from inside the processor build. The
 //      view is perfectly valid for the display in that case, so rule 1 would let it through.
 //
-// Pure and dependency-free on purpose: tools/test_view_narrowing.py lifts THIS function out of the file and
+// Pure and dependency-free on purpose: tests/test_view_narrowing.py lifts THIS function out of the file and
 // runs it under node against the real config data, so the narrowing is tested by execution rather than by a
 // grep for its name. Returns null when there is nothing to narrow by, which means "leave the list alone".
 function viewsForCrossing(enc, cross) {
@@ -364,12 +364,12 @@ const STILL_EXT = { exr: "exr", tiff: "tif", png: "png", jpeg: "jpg", dpx: "dpx"
 // decides an extension. It used to re-derive it from a name prefix instead, which is how dnxhr_hq_mxf came to
 // preview .mov while the backend wrote .mxf: 'dnxhr_hq_mxf'.startsWith('dnxhr') is true. A prefix test is a
 // second copy of a rule that already lives in this table, and the two drift the moment a codec is added.
-// tools/test_codec_ext_parity.py reads both sides and fails if they ever disagree again.
+// tests/test_codec_ext_parity.py reads both sides and fails if they ever disagree again.
 // THE ProRes 4444 ROWS SAY 12-bit AND THAT IS CORRECT, though the reason is worth writing down because it is
 // not the obvious one. ffmpeg's prores_ks advertises only 10-bit pixel formats, and this pack asks it for
 // yuv444p10le - so it is tempting to conclude the files are 10-bit. They are not: ProRes 4444 stores in a
 // 12-bit grid, and a decoder reads the written file back as yuv444p12le, which is what
-// tools/test_codec_ext_parity.py measures on a real encode rather than restating from a help page. That test
+// tests/test_codec_ext_parity.py measures on a real encode rather than restating from a help page. That test
 // caught this table being "corrected" to 10-bit on 2026-08-15 and was right to.
 //
 // Related, since it comes up: there is no separate codec to install that would change any of this. Nuke on
@@ -491,7 +491,7 @@ function pokeWidgets(node) {
 }
 
 // The "_colorspace" the Write node injects before the frame number. MUST stay identical to io_nodes.py
-// _cs_tag - tools/test_cs_tag_unique.py asserts the two agree on every colorspace the config offers, because
+// _cs_tag - tests/test_cs_tag_unique.py asserts the two agree on every colorspace the config offers, because
 // a front-end that previews a different filename than the backend writes is worse than no preview at all.
 //
 // This used to be a table of short tags, and it collapsed 31 of 55 colorspaces onto a shared token (thirteen
@@ -1606,9 +1606,9 @@ function findUpstreamType(node, typeName, seen) {
 // ---- profile widget: HDR source preset -> from/output colorspace + still_format/bit_depth (silent) ---------
 // These must stay byte-identical to the backend mapping in io_nodes.py (OCIOWrite.write), and the from/out
 // strings must be values the input_colorspace combo actually offers - ComfyUI rejects an unknown combo value
-// with HTTP 400 and no fallback. tools/test_ltx_hdr_profiles.py asserts the mirror - it reads this table and
+// with HTTP 400 and no fallback. tests/test_ltx_hdr_profiles.py asserts the mirror - it reads this table and
 // compares it against the backend mapping parsed out of io_nodes.py by AST. (This line used to name
-// tools/test_write_output.py, which contains no profile assertion at all and never has.)
+// tests/test_write_output.py, which contains no profile assertion at all and never has.)
 //
 // "LTX 2.3 HDR" IS A 2.3-ONLY PRESET, and the reason is the transfer the frames arrive in. 2.3's HDR is an
 // IC-LoRA on the ARRI LogC3 (EI 800) curve, and Lightricks' own ComfyUI node for it,
@@ -1622,7 +1622,7 @@ const PROFILE_CS = {
     "LumiPic LogC3 (Flux/Qwen)": { from: "Linear Rec.709 (sRGB)", out: "ACEScg", fmt: "exr", bit: "16f" },
     "LumiPic V10 LogC4":         { from: "Linear Rec.709 (sRGB)", out: "ACEScg", fmt: "exr", bit: "16f" },
     // No fmt/bit: this is the one display-referred preset, so it must NOT force EXR 16f the way the HDR ones
-    // do. tools/test_ltx_hdr_profiles.py reads the backend mapping by AST and compares it against this table.
+    // do. tests/test_ltx_hdr_profiles.py reads the backend mapping by AST and compares it against this table.
     "SDR Rec.709 delivery":      { from: "sRGB - Display",       out: "Rec.1886 Rec.709 - Display" },
 };
 // generic upstream tracer: walk input links back through N nodes until `test(node)` matches

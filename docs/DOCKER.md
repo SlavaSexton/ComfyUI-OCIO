@@ -16,7 +16,7 @@ both work.
 ```bash
 docker compose build                 # build the image
 docker compose run --rm roundtrip     # the flagship round-trip color-accuracy test (below)
-docker compose run --rm test          # standalone tools/test_*.py + node-registration smoke
+docker compose run --rm test          # standalone tests/test_*.py + node-registration smoke
 docker compose up comfyui             # interactive headless server at http://localhost:8188
 ```
 
@@ -63,7 +63,7 @@ Representative result (ACES 1.0.3, `marcie_whacked.exr`):
 | `GATE_CHAINS` | `colorspace` | Which chains' PASS/FAIL sets the exit code. |
 | `TOL_CORR` | `0.99999` | Min histogram correlation to pass. |
 | `TOL_PIX` | `1e-4` | Max absolute pixel error to pass. |
-| `RUN_ACCURACY` | `0` | `1` also runs the `tools/accuracy` suite in the `test` service. |
+| `RUN_ACCURACY` | `0` | `1` also runs the `tests/accuracy` suite in the `test` service. |
 | `OCIO` | bundled `aces_1.0.3/config.ocio` | Path to the OCIO config; set `""` to use the wheel's built-in ACES 2.x. |
 | `COMFYUI_REF` (build arg) | `v0.3.68` | Pin a different ComfyUI version. |
 | `OCIO_CONFIGS_REF` (build arg) | `master` | Branch/tag of `imageworks/OpenColorIO-Configs` to pull the ACES 1.0.3 config from. |

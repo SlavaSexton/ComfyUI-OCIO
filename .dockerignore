@@ -4,9 +4,9 @@
 data/
 docs/assets/
 example_workflows/*.png
-tools/accuracy/fixtures/
-tools/accuracy/plots/
-tools/accuracy/results/
+tests/accuracy/fixtures/
+tests/accuracy/plots/
+tests/accuracy/results/
 **/__pycache__/
 **/*.pyc
 .DS_Store

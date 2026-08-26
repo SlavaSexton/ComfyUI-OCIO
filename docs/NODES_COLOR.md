@@ -1324,7 +1324,7 @@ rather than of the number. Put it before a display transform, never after one.
 
 **Nothing is clamped at either end, and that is the whole point.** RGB is scaled and alpha is passed through
 untouched. A multiply preserves sign, so a negative stays negative and scales with everything else.
-`tools/test_exposure.py` holds the node to that with a control: 12.0 at +1 stop must come out 24.0 and -0.25
+`tests/test_exposure.py` holds the node to that with a control: 12.0 at +1 stop must come out 24.0 and -0.25
 must come out -0.5, and the same test shows that a clamped result would fail both.
 
 ### Worked chain: matching an HDR pass to its plate

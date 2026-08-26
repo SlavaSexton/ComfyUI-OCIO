@@ -5,7 +5,7 @@ __pycache__/
 Thumbs.db
 
 # Local asset generators (they depend on the private herogen; only the rendered PNGs in docs/assets ship)
-tools/assets/
+tests/assets/
 
 # Docker test-env working dir: downloaded inputs (Marcie), round-trip outputs, server logs
 data/
@@ -19,7 +19,7 @@ scratchpad/
 # because a blanket `git add` swept them up. Everything below keeps the renders, references and sidecars that
 # accumulate while testing out of the repository.
 #
-# NOT *.png: nyc_skyline.png is the accuracy suite's source image (tools/accuracy reads it, ATTRIBUTION.md
+# NOT *.png: nyc_skyline.png is the accuracy suite's source image (tests/accuracy reads it, ATTRIBUTION.md
 # credits it) and it does ship, so a blanket picture rule here would be wrong. Renders that are NOT inputs
 # get named one at a time instead.
 example_workflows/output/

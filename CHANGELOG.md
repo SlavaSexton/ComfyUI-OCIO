@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+`tools/` is now `tests/`. Nobody installing the pack ever received that folder: `.comfyignore`
+excludes it along with `docker/` and `.github/`, so it reached only people reading the repository
+on GitHub, where its name suggested it held something a user was meant to run. It holds the test
+gate, and `tests/` says so.
+
+Earlier entries in this file name the new path as well, so their references still resolve. They
+described `tools/` when they were written, and nothing about what those releases did has changed.
+
+One line changed beyond the rename. `test_cache_parity.py` built the path for its scratch LUT by
+walking up to the repository root and rejoining the folder name, so it broke the moment the folder
+was renamed, and the gate caught it at 48 of 49. It writes beside itself now, which no future
+rename can break.
+
 ## 1.3.3: the ACEScct route into LTX-2.5, which ComfyUI has no other way to reach
 
 LTX-2.5 has a native HDR path. It takes EXR in, works in ACEScct, and writes EXR out plus a
@@ -71,7 +86,7 @@ Exposure in **stops**, as a pure linear multiply: `out = in * 2**exposure` on RG
 The pack had no exposure control at all, which is a gap in a colour pack, and every substitute checked
 clamps to 0..1 either by default or behind a toggle. A clamp there destroys what the rest of this pack
 exists to carry: the values above 1.0 an HDR pass produces and the negatives an unclamped VAE decode
-leaves behind. Nothing here is clamped at either end, and `tools/test_exposure.py` holds it to that with
+leaves behind. Nothing here is clamped at either end, and `tests/test_exposure.py` holds it to that with
 a control showing a clamped result would fail the same checks.
 
 The case it was added for is matching an SDR-to-HDR pass to its plate. The pass re-renders into its own
@@ -105,7 +120,7 @@ pixel near the ceiling: not out of range, just not putting structure there.
 
 ### A test that keeps the node list honest
 
-`tools/test_node_inventory.py` compares one source of truth, `NODE_CLASS_MAPPINGS`, against every place a
+`tests/test_node_inventory.py` compares one source of truth, `NODE_CLASS_MAPPINGS`, against every place a
 reader or a gate looks: the display-name map, the container smoke test's list of names, the README, the
 wiring map, the group references, and the count stated in three files. The smoke test's list is the one
 that matters, because it is how that test decides the pack loaded.
@@ -133,7 +148,7 @@ so a symlink inside `input/` that points elsewhere is refused as well, and a com
 be made at all is treated as outside. The destination directory is created only after the check
 passes, so a refused upload leaves nothing behind.
 
-Covered by `tools/test_upload_confinement.py`, which exercises the guard directly and asserts both
+Covered by `tests/test_upload_confinement.py`, which exercises the guard directly and asserts both
 sides: traversal is refused, and an ordinary upload still succeeds.
 
 The read routes are unchanged. They take a path because the disk browser in `OCIO Read` depends on
@@ -224,7 +239,7 @@ Three nodes were asking the same question in two vocabularies: `OCIO Read` and `
 
 **A workflow saved from the canvas is unaffected.** Its `widgets_values` is a positional array with no field
 names in it, so what matters is the slot, and the input keeps the same one, second in `required`. Checked
-against a real graph rather than assumed. `tools/test_input_colorspace_rename.py` asserts the slot, so a later
+against a real graph rather than assumed. `tests/test_input_colorspace_rename.py` asserts the slot, so a later
 edit cannot quietly move it and shift every widget after it by one.
 
 **A workflow saved in API format with the old key will be refused, and the fix is one word.** ComfyUI checks
@@ -235,7 +250,7 @@ make it liftable would push every widget after it one slot along, corrupting the
 currently survive untouched. So rename `from_colorspace` to `input_colorspace` in the JSON.
 
 `write()` itself still accepts the old keyword, for the callers that reach it directly rather than through a
-prompt: this repo's own `tools/` scripts, `docker/`, and anything driving the node from Python.
+prompt: this repo's own `tests/` scripts, `docker/`, and anything driving the node from Python.
 
 ## The view list narrows to what a pair can render, the thumbnail stops clamping, and the Player gets a soundtrack
 
@@ -288,14 +303,14 @@ the one call that draws them lived in OCIO Read's animation loop, and neither of
 it. Both do now, so a streamed movie meters as well.
 
 Three test files are added, and two of them run the front-end JavaScript rather than reading it:
-`tools/test_view_narrowing.py` lifts the narrowing function out of `web/ocio_io.js` and executes it under node
+`tests/test_view_narrowing.py` lifts the narrowing function out of `web/ocio_io.js` and executes it under node
 against the real config data, then puts every entry it keeps through the real conversion;
-`tools/test_player_audio.py` does the same with the clock that keeps the soundtrack on the picture, including
+`tests/test_player_audio.py` does the same with the clock that keeps the soundtrack on the picture, including
 the loop case, where the frame clock wraps by modulo and never re-anchors itself; and
-`tools/test_thumb_no_clamp.py` builds its own lossless fixture and checks the codes came back off the disk
+`tests/test_thumb_no_clamp.py` builds its own lossless fixture and checks the codes came back off the disk
 unchanged before believing a single number it measures.
 
-**`tools/check_deploy_sync.py` can now fix the drift it reports**, with `--apply`. It answered "these two
+**`tests/check_deploy_sync.py` can now fix the drift it reports**, with `--apply`. It answered "these two
 copies differ" and left the copying to whoever read it, which on a dev box is a hand-copy per edit and a
 question of which files were missed. It copies only: files that exist just in the install are still reported
 and never removed, because this script cannot tell a stale leftover from something somebody put there on
@@ -367,7 +382,7 @@ what is already in the frames. So it is worth keeping for a movie and worth decl
 going to a client who did not ask for it. Read `sidecar_only` in the file before deciding.
 
 The switch touches the sidecar and nothing else. The pixels, the container tags, the EXR header and the .wav
-that ships beside a sequence are all unaffected, which `tools/test_write_sidecar_toggle.py` asserts by reading
+that ships beside a sequence are all unaffected, which `tests/test_write_sidecar_toggle.py` asserts by reading
 the header back off a frame written with the sidecar turned off.
 
 **The node now draws all three of its previews itself** - the sequence flipbook, the movie and the still - in
@@ -457,7 +472,7 @@ one of two legitimate operations, and the other was unreachable.
 The new `view` widget picks between them. **Optional, appended, and defaulting to a do-nothing sentinel**, so
 no saved workflow moves: ComfyUI fills a missing widget with the node's current default, a new *required*
 input is a hard validation error for API callers, and a widget inserted mid-list shifts every value in every
-saved graph. All three were caught by `tools/test_write_metadata.py` on the way in. Choices are read from the
+saved graph. All three were caught by `tests/test_write_metadata.py` on the way in. Choices are read from the
 loaded config, so an ACES 1.3 user sees their own view names. Whether the fork exists is asked of OCIO via
 `getReferenceSpaceType()`, so a view is inert on camera logs, scene-to-scene and display-to-display pairs -
 exercised across all 414 crossing pairs and all 9 displays.
@@ -500,11 +515,11 @@ disagreeing about colour, with nothing to say which was the master. An artist re
 is the whole failure this pack exists to prevent. The proxy is now the fallback it was meant to be: it ships
 only when the flipbook cannot be described. A movie still gets the proxy and no flipbook, because a container
 file has no frame range to scrub; a single frame still gets its own PNG thumb and nothing that pretends to
-move. `tools/test_write_preview_single.py` reads the counts off a real write of each of the three.
+move. `tests/test_write_preview_single.py` reads the counts off a real write of each of the three.
 
 ## A tool that checks the installed copy against the repository
 
-`tools/check_deploy_sync.py` compares the repository with the copy ComfyUI actually loads and exits non-zero
+`tests/check_deploy_sync.py` compares the repository with the copy ComfyUI actually loads and exits non-zero
 when they differ, reporting per file: identical, differs, missing, or extra. It exists because live runs were
 being made against a stale installed copy while the repository's own gate was green, and nothing could tell
 the difference. Verified by mutation on the real pair - a differing file, a missing file, an extra file and a
@@ -546,7 +561,7 @@ before `OCIO VAE Encode`. The maths is identical; nothing about the colour chang
 `LTXVHDRDecodePostprocess` already undoes it, so linear is what arrives. The two LumiPic presets and
 `SDR Rec.709 delivery` are untouched as well.
 
-`tools/test_ltx_hdr_profiles.py` now asserts the removed value is absent from all four surfaces it occupied:
+`tests/test_ltx_hdr_profiles.py` now asserts the removed value is absent from all four surfaces it occupied:
 the combo, the backend branch in `write()`, the front-end `PROFILE_CS` table, and the EXR-16f forcing list.
 Verified by mutation rather than by reading: putting the value back into all three files turned six assertions
 red, and restoring turned them green. The same rewrite closed a hole found on the way past - the two LumiPic
@@ -572,7 +587,7 @@ this point, so unclamped output is not guaranteed. `docs/NODES_VAE.md` carries t
 one sentence there that drew the wrong conclusion outright, that the eleven identity VAEs are models "where
 neither path clamps".
 
-Two assertions in `tools/test_vae_decode_tiling.py` hold the wording now: the false half must be absent and
+Two assertions in `tests/test_vae_decode_tiling.py` hold the wording now: the false half must be absent and
 the caveat must be present. Verified by restoring the old sentence and watching both go red, since a check
 written after the fix proves nothing until it has failed once.
 
@@ -600,7 +615,7 @@ write error offered `OPENCV_IO_ENABLE_OPENEXR=1` as a general remedy, which does
 say which major each remedy applies to.
 
 Nothing was checking either message, which is how the two versions drifted apart in the first place.
-`tools/test_install_advice_matches_deps.py` asserts that every `pip install "OpenEXR>=X"` in shipped code names
+`tests/test_install_advice_matches_deps.py` asserts that every `pip install "OpenEXR>=X"` in shipped code names
 the floor the requirements actually declare, and that `requirements.txt` and `pyproject.toml` agree with each
 other. It checks agreement, not wording, so the sentences stay free to change.
 
@@ -725,7 +740,7 @@ disk to learn its width. Reported independently as
 [#4](https://github.com/SlavaSexton/ComfyUI-OCIO/issues/4) by
 [@Sudhzpatil](https://github.com/Sudhzpatil), out of the source, before the fix shipped.
 
-`tools/test_exr_read_no_envflag.py` now runs a fourth arrangement, cv2 not importable at all, which is how the
+`tests/test_exr_read_no_envflag.py` now runs a fourth arrangement, cv2 not importable at all, which is how the
 pack behaves on an OpenCV build with no EXR codec. The three existing cases all had cv2 present, so nothing
 exercised the path where the OpenEXR module is the only reader. The case reports whether cv2 was really absent,
 because otherwise a green result cannot be told from an import block that failed to take.
@@ -1019,9 +1034,9 @@ comments stripped are byte-identical to v1.2.2, so nothing that runs has moved.
   bt709 mp4 is treated as an internet deliverable, why the Player looked flat without `allow_shaper`, and the
   warning against mutating links while a graph is loading.
 - Removed a shorthand task taxonomy that read like a code convention but resolved to nothing in this repository.
-- `tools/accuracy/gen_fixtures.py` reads the EXR sequence path from `OCIO_ACCURACY_EXR_SEQ` instead of a
+- `tests/accuracy/gen_fixtures.py` reads the EXR sequence path from `OCIO_ACCURACY_EXR_SEQ` instead of a
   hardcoded absolute path, so the accuracy suite runs anywhere rather than only on one machine.
-- `tools/accuracy/measure_ocio_parity.py` resolves `nyc_skyline.png` from its own location. That image ships in
+- `tests/accuracy/measure_ocio_parity.py` resolves `nyc_skyline.png` from its own location. That image ships in
   this repository, so the script now works on a fresh clone.
 - The two README screenshots have their path fields redacted. The graphs, nodes and viewer frames are unchanged.
 
@@ -1104,4 +1119,4 @@ A big feature release: the color nodes, Read, Write and Player now live on Comfy
 
 ### Verified
 - Bit-exact OCIO parity (worst max-abs error 0.000e+00 across 9 transforms x 4 fixtures) plus the full
-  color-accuracy suite (`tools/accuracy`); charts in `docs/assets/accuracy/`.
+  color-accuracy suite (`tests/accuracy`); charts in `docs/assets/accuracy/`.

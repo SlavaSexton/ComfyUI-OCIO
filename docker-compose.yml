@@ -30,7 +30,7 @@ services:
     #   - ./data:/data
     #   - ./:/opt/ComfyUI/custom_nodes/ComfyUI-OCIO
 
-  # Standalone tools/test_*.py + "do the nodes register in ComfyUI?" smoke.
+  # Standalone tests/test_*.py + "do the nodes register in ComfyUI?" smoke.
   test:
     <<: *image
     command: ["bash", "docker/run_tests.sh"]

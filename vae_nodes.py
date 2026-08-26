@@ -400,7 +400,7 @@ def _tiling_kwargs(vae, tile_size, overlap, temporal_size, temporal_overlap):
     space and the latent check can never fire at all (searched exhaustively, with a ceiling of either
     half or a quarter of the tile: zero cases). That is a guard in name only, and a guard whose failure
     cannot be observed is not a guard. One bound, on the number the tiler actually steps with, is
-    reachable - and its failure IS observed, in tools/test_vae_decode_tiling.py.
+    reachable - and its failure IS observed, in tests/test_vae_decode_tiling.py.
 
     Returns `(kwargs, notes)`, or `(None, notes)` when the VAE will not say what its ratios are - in
     which case the caller decodes untiled rather than inventing a divisor. Three states, not two:

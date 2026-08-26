@@ -757,7 +757,7 @@ def _read_video_frame(path):
     format - so the same file gave the viewport one picture and the thumbnail another. Measured on a flat
     limited-range frame (Y 16, Cb 240, Cr 128, BT.709): the file carries green at -0.0937, and rgb48le handed
     back exactly 0.0. On a real ProRes 4444 from this pack's own writer the two paths differed on 0.30% of
-    samples. tools/test_thumb_no_clamp.py holds both decodes to the same numbers now."""
+    samples. tests/test_thumb_no_clamp.py holds both decodes to the same numbers now."""
     _require_ffmpeg()
     probe = subprocess.run([_FFPROBE, "-v", "error", "-select_streams", "v:0",
                             "-show_entries", "stream=width,height,pix_fmt,color_space,color_range",
@@ -1790,7 +1790,7 @@ _META_FORBIDDEN = (
 #   MEASURED, and it is worse than the argument alone: OpenEXR does NOT type-check this name, so with the strip
 #   removed a plate value of [1, 2, 3] arriving over the JSON wire landed in a delivered header as a V3f
 #   array([1., 2., 3.]) - a three-vector for an attribute the specification defines as one float. Nothing
-#   rejected it. tools/test_write_metadata.py already asserted against exactly this and caught it.
+#   rejected it. tests/test_write_metadata.py already asserted against exactly this and caught it.
 #
 # Not knowing the true value is a reason not to inherit someone else's, not a reason to pass it on. OCIO's
 # `white_luminance` role is the config's reference display rather than a property of this file, so it is not a
@@ -3051,7 +3051,7 @@ def video_ext(video_codec):
     It lived inline in write_paths() and was mirrored by a name-prefix test in web/ocio_io.js, which is how
     dnxhr_hq_mxf came to preview .mov on the node while this side wrote .mxf: 'dnxhr_hq_mxf' also startswith
     'dnxhr'. Two copies of a rule drift the moment a codec is added, so there is now one function and
-    tools/test_codec_ext_parity.py reads both this and the JS table and fails if they disagree.
+    tests/test_codec_ext_parity.py reads both this and the JS table and fails if they disagree.
 
     MXF IS TESTED FIRST and that order is load-bearing, for the same startswith reason."""
     c = str(video_codec)
@@ -3488,7 +3488,7 @@ def _convert_via_view(image, in_cs, out_cs, view):
     that is already scene-referred must NOT be put through a rendering transform.
 
     Deliberately NOT inside `_convert`: that is shared by OCIO Read, OCIO Write, the viewport LUT, the
-    /ocio/thumb preview and six scripts under tools/accuracy. Changing behaviour there would move all of them
+    /ocio/thumb preview and six scripts under tests/accuracy. Changing behaviour there would move all of them
     at once, including the measurements this pack's own claims rest on."""
     cross = _crosses_scene_display(in_cs, out_cs)
     if not view or view == _VIEW_NONE or cross is None:
@@ -3720,7 +3720,7 @@ def _cs_tag(name):
     the spelled-out form.
 
     NOT TRUNCATED, deliberately. A fixed-width cut would re-introduce collisions between any two names sharing
-    a prefix, which is the whole defect this removes. tools/test_cs_tag_unique.py asserts that no two
+    a prefix, which is the whole defect this removes. tests/test_cs_tag_unique.py asserts that no two
     colorspaces in the live config collide, so a truncation cannot be reintroduced quietly.
     """
     low = (name or "").lower()
@@ -4009,7 +4009,7 @@ class OCIOWrite:
               metadata="", write_audio=True, write_sidecar=True,
               view=_VIEW_NONE, from_colorspace=None):   # render_nonce: cache-buster (see INPUT_TYPES). images/video: mutually-exclusive inputs.
         # `from_colorspace` is the name this input had before 2026-08-16, and it is still accepted HERE, for
-        # the callers that reach this function directly: the pack's own tools/ scripts, docker/, and anything
+        # the callers that reach this function directly: the pack's own tests/ scripts, docker/, and anything
         # driving OCIOWrite from Python. It is NOT an input on the node - a graph missing `input_colorspace`
         # never gets this far, because ComfyUI refuses the prompt first (measured: HTTP 400
         # `required_input_missing`). It only wins when the new name is still holding its own default, which is

@@ -379,7 +379,7 @@ option safe on a model nobody here has seen yet.
 
 On the encode side the same widget does the same thing, and the code path is now the same shape: it
 consults `working_dtypes` and it catches a refused cast, exactly as the decode does. Both guards were
-confirmed here by mutation - break either one and `tools/test_vae_encode.py` goes red naming it.
+confirmed here by mutation - break either one and `tests/test_vae_encode.py` goes red naming it.
 
 ### 3.3 `tiled`, `tile_size`, `overlap`, `temporal_size`, `temporal_overlap`
 
@@ -473,7 +473,7 @@ Verified by running the node's `_tiling_kwargs` against a VAE reporting 32x spat
 the tile gives a step of zero and a `ValueError`. An overlap larger than the tile gives a negative step, an
 empty range, no tile decoded at all, and then a division of two all-zero buffers, which is a whole clip of
 NaN with no error raised anywhere. The silent NaN is the one to fear, and the bound closes it. The guard's
-failure is exercised in `tools/test_vae_decode_tiling.py`.
+failure is exercised in `tests/test_vae_decode_tiling.py`.
 
 Spatial seams are not the thing to worry about, per the 1.03x to 1.05x gradient measurement above. If a
 decode crawls, lower `tile_size` before blaming `precision`.
@@ -939,7 +939,7 @@ The encode used to be the exception, and it no longer is (fixed in `vae_nodes.py
 before casting the weights, so a refused cast left the flag at float32 over bfloat16 weights with no
 restore. The order is now cast first, bookkeeping second, so nothing is recorded that did not happen.
 Confirmed by mutation rather than by reading: put the two lines back in the old order and
-`tools/test_vae_encode.py` fails on **"vae_dtype is NOT left claiming float32 after a refused cast"**,
+`tests/test_vae_encode.py` fails on **"vae_dtype is NOT left claiming float32 after a refused cast"**,
 reporting `left as torch.float32`; restore the order and it passes. The earlier advice to reload the VAE
 after a failed encode cast is no longer needed.
 
@@ -992,15 +992,15 @@ based on which entry point the node called, not on what ComfyUI did internally a
    `raised_precision = True`, so a raising middle line left the flag changed with `raised_precision` still
    `False` and the `finally` skipping the restore. `vae_nodes.py` now casts first and does the bookkeeping
    after. Verified by mutation, not by reading: restoring the old order makes
-   `tools/test_vae_encode.py` fail on "vae_dtype is NOT left claiming float32 after a refused cast" with
+   `tests/test_vae_encode.py` fail on "vae_dtype is NOT left claiming float32 after a refused cast" with
    `left as torch.float32`.
 
 2. ~~**The encode does not consult `working_dtypes`, and does not catch a refused cast.**~~ **FIXED,
    verified 2026-08-13.** The encode now declines float32 with a note when the VAE does not list it and
    falls back with a note when the weights refuse, the same as the decode. Verified by mutation: disabling
-   the `working_dtypes` test on the encode makes `tools/test_vae_encode.py` fail on "and it really did
+   the `working_dtypes` test on the encode makes `tests/test_vae_encode.py` fail on "and it really did
    encode at that precision, not at float32"; disabling the decode's makes
-   `tools/test_vae_decode_tiling.py` fail on "float32 declined appears in the report". Worth knowing that
+   `tests/test_vae_decode_tiling.py` fail on "float32 declined appears in the report". Worth knowing that
    the decline branch cannot fire for any **core** VAE, since all 23 `working_dtypes` lists in
    `comfy/sd.py` include float32 - it is there for third-party VAE classes, and the tests reach it with a
    stand-in.

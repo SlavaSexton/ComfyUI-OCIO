@@ -228,7 +228,7 @@ amd64 in CI from one `docker/Dockerfile`:
 ```bash
 docker compose build
 docker compose run --rm roundtrip   # round-trips the Kodak "Marcie" image and checks the color math with OpenCV histograms
-docker compose run --rm test        # standalone tools/test_*.py + node-registration smoke
+docker compose run --rm test        # standalone tests/test_*.py + node-registration smoke
 docker compose up comfyui           # interactive headless server on http://localhost:8188
 ```
 
@@ -626,7 +626,7 @@ are feeding it a real HDR plate and want to know what the model was actually giv
 
 ## Every format this pack reads and writes, and the standards behind them
 
-Generated from the node's own tables, not restated by hand. `tools/test_bit_depth_ceiling.py` writes one file
+Generated from the node's own tables, not restated by hand. `tests/test_bit_depth_ceiling.py` writes one file
 per row and reads the depth back with a third-party reader, so a silent drop to 8-bit fails the gate.
 
 **Stills, written**
@@ -707,7 +707,7 @@ claim this pack cannot honour.
 
 ## Color accuracy, measured
 
-Accuracy is a number here, not a claim. The pack ships a color-accuracy regression suite (`tools/accuracy`) that
+Accuracy is a number here, not a claim. The pack ships a color-accuracy regression suite (`tests/accuracy`) that
 checks every transform against an **independent** PyOpenColorIO reference and the published specs, so you can read
 the error instead of trusting the label.
 
@@ -751,7 +751,7 @@ CPU processor, per transform), `log_curves.png` (log round-trips and vendor-spec
 write/read loops), `deltaE_colorchecker.png` (ΔE2000 on the 24 X-Rite patches), `quantisation_dither.png`
 (8/16-bit and EXR write/read-back banding), and `histogram_compare.png` (a per-channel distribution match vs the
 reference - a shape sanity-check, not the accuracy number; the max-abs errors above are the accuracy number).
-See `tools/accuracy/README.md` to run it yourself, or `docs/DOCKER.md` for the end-to-end round-trip in a
+See `tests/accuracy/README.md` to run it yourself, or `docs/DOCKER.md` for the end-to-end round-trip in a
 container.
 
 ---

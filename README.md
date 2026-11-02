@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/cover.png" width="880" alt="OCIO Nodes for ComfyUI - by AI VFX NEWS, Slava Sexton">
+<img src="docs/assets/cover.png" width="880" alt="OCIO Nodes for ComfyUI - by Chronicle of Brothers, Slava Sexton">
 
 # ComfyUI-OCIO
 
@@ -14,7 +14,7 @@
 <br>
 **And the ACEScct route into LTX-2.5's own HDR path, which ComfyUI has no other way to reach.**
 
-**By [AI VFX NEWS](https://aivfxnews.com/) · Slava Sexton.**
+**By [Chronicle of Brothers](https://chronicleofbrothers.com/) · Slava Sexton.**
 
 ---
 
@@ -1081,4 +1081,4 @@ Modelled on **The Foundry Nuke's** OCIO node set, powered by the **Academy Softw
 and the **ACES** reference config. Full credits and licenses in **[ATTRIBUTION.md](ATTRIBUTION.md)**.
 
 Apache-2.0 licensed. Keep the [`NOTICE`](NOTICE) file with any redistribution. By
-**[AI VFX NEWS](https://aivfxnews.com/)**, authored by **Slava Sexton**.
+**[Chronicle of Brothers](https://chronicleofbrothers.com/)**, authored by **Slava Sexton**.
